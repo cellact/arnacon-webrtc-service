@@ -1,0 +1,20 @@
+{
+  "development": {
+    "providerId": "phonemyemail",
+    "static": {
+      "status": "active",
+      "domains": ["phonemyemail.global"],
+      "trustedIngressIps": ["51.85.90.127"],
+      "outboundSbcAddress": "185.62.121.10"
+    }
+  },
+  "production": {
+    "providerId": "phonemyemail",
+    "static": {
+      "status": "active",
+      "domains": ["phonemyemail.global"],
+      "trustedIngressIps": ["51.85.90.127"],
+      "outboundSbcAddress": "185.62.121.10"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "development": {
+    "providerId": "esimera",
+    "static": {
+      "status": "active",
+      "domains": ["esimeratest.global", "esimera.global"],
+      "trustedIngressIps": ["51.85.90.127"],
+      "outboundSbcAddress": "185.62.121.10"
+    }
+  },
+  "production": {
+    "providerId": "esimera",
+    "static": {
+      "status": "active",
+      "domains": ["esimera.global", "esimeratest.global"],
+      "trustedIngressIps": ["51.85.90.127"],
+      "outboundSbcAddress": "185.62.121.10"
+    }
+  }
+}

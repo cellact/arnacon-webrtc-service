@@ -1,0 +1,22 @@
+{
+  "development": {
+    "providerId": "email",
+    "static": {
+      "status": "active",
+      "domains": ["email.global"],
+      "identityType": "email",
+      "trustedIngressIps": ["51.85.90.127"],
+      "outboundSbcAddress": "185.62.121.10"
+    }
+  },
+  "production": {
+    "providerId": "email",
+    "static": {
+      "status": "active",
+      "domains": ["email.global"],
+      "identityType": "email",
+      "trustedIngressIps": ["51.85.90.127"],
+      "outboundSbcAddress": "185.62.121.10"
+    }
+  }
+}

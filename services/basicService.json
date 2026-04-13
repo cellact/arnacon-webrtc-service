@@ -1,0 +1,20 @@
+{
+  "development": {
+    "providerId": "basicService",
+    "static": {
+      "status": "active",
+      "domains": ["basicservice.global"],
+      "trustedIngressIps": ["127.0.0.1"],
+      "outboundSbcAddress": ""
+    }
+  },
+  "production": {
+    "providerId": "basicService",
+    "static": {
+      "status": "active",
+      "domains": ["basicservice.global"],
+      "trustedIngressIps": ["127.0.0.1"],
+      "outboundSbcAddress": ""
+    }
+  }
+}

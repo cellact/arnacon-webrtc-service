@@ -1,0 +1,43 @@
+{
+  "name": "arnacon-webrtc-service",
+  "version": "0.1.0",
+  "description": "Arnacon WebRTC core runtime and service modules",
+  "main": "./webRTCservice/core.js",
+  "type": "commonjs",
+  "exports": {
+    ".": "./webRTCservice/core.js",
+    "./core": "./webRTCservice/core.js",
+    "./service/esimera": "./webRTCservice/services/esimera.js",
+    "./service/esimera/runner": "./webRTCservice/services/esimera.runner.js",
+    "./service/esimera/config": "./services/esimera.json",
+    "./service/basicService": "./webRTCservice/services/basicService.js",
+    "./service/basicService/runner": "./webRTCservice/services/basicService.runner.js",
+    "./service/basicService/config": "./services/basicService.json"
+  },
+  "files": [
+    "webRTCservice/**/*",
+    "services/**/*",
+    "config.json"
+  ],
+  "scripts": {
+    "build": "node webRTCservice/build.js",
+    "clean": "node webRTCservice/clean.js",
+    "validate:exports": "node webRTCservice/validateExports.js",
+    "pack:dry": "npm pack --dry-run",
+    "start:service:esimera": "SERVICE_ID=esimera node webRTCservice/webRTCmanager.js",
+    "start:service:basic": "SERVICE_ID=basicService node webRTCservice/webRTCmanager.js",
+    "prepublishOnly": "npm run build && npm run validate:exports",
+    "publish:patch": "npm version patch && npm publish",
+    "publish:minor": "npm version minor && npm publish",
+    "publish:major": "npm version major && npm publish"
+  },
+  "dependencies": {
+    "ethers": "^5.7.2",
+    "sip.js": "^0.21.2",
+    "werift": "*",
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

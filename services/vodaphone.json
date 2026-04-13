@@ -1,0 +1,20 @@
+{
+  "development": {
+    "providerId": "vodaphone",
+    "static": {
+      "status": "active",
+      "domains": ["vodaphonetest.global", "vodaphone.global"],
+      "trustedIngressIps": ["51.85.90.127"],
+      "outboundSbcAddress": "67.67.67.67"
+    }
+  },
+  "production": {
+    "providerId": "vodaphone",
+    "static": {
+      "status": "active",
+      "domains": ["vodaphone.global", "vodaphonetest.global"],
+      "trustedIngressIps": ["51.85.90.127"],
+      "outboundSbcAddress": "67.67.67.67"
+    }
+  }
+}
