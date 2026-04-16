@@ -151,16 +151,41 @@ const { WebSocket: WsWebSocket } = require("ws");
 // ════════════════════════════════════════════════════════════
 
 // ─── Load config from config.json + services/*.json ──────────
-const fullConfig = require(path.join(__dirname, "..", "config.json"));
+const PACKAGE_ROOT = path.resolve(__dirname, "..");
+const CONFIG_OVERRIDE = process.env.WEBRTC_CONFIG_PATH || process.env.ARNACON_WEBRTC_CONFIG_PATH || "";
+const CONFIG_PATH = CONFIG_OVERRIDE
+    ? (path.isAbsolute(CONFIG_OVERRIDE) ? CONFIG_OVERRIDE : path.resolve(process.cwd(), CONFIG_OVERRIDE))
+    : path.join(PACKAGE_ROOT, "config.json");
+const CONFIG_BASE_DIR = path.dirname(CONFIG_PATH);
+const fullConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+const _deployEnvEarly = process.env.DEPLOY_ENV || "development";
+const _commonEarly = (fullConfig[_deployEnvEarly] || {}).common || {};
+const GLOBAL_CONFIG_OVERRIDE = process.env.WEBRTC_GLOBAL_CONFIG_PATH || process.env.ARNACON_WEBRTC_GLOBAL_CONFIG_PATH || "";
+const GLOBAL_CONFIG_PATH = GLOBAL_CONFIG_OVERRIDE
+    ? (path.isAbsolute(GLOBAL_CONFIG_OVERRIDE) ? GLOBAL_CONFIG_OVERRIDE : path.resolve(process.cwd(), GLOBAL_CONFIG_OVERRIDE))
+    : (_commonEarly.globalServiceConfigPath || path.join(PACKAGE_ROOT, "globalserviceconfig.json"));
+let fullGlobalConfig = {};
+if (fs.existsSync(GLOBAL_CONFIG_PATH)) {
+    fullGlobalConfig = JSON.parse(fs.readFileSync(GLOBAL_CONFIG_PATH, "utf8"));
+}
+
+function resolveRuntimePath(entryPath) {
+    if (!entryPath) return "";
+    if (path.isAbsolute(entryPath)) return entryPath;
+    const fromConfigDir = path.resolve(CONFIG_BASE_DIR, entryPath);
+    if (fs.existsSync(fromConfigDir)) return fromConfigDir;
+    return path.resolve(PACKAGE_ROOT, entryPath);
+}
 const deployEnv = process.env.DEPLOY_ENV || "development";
 const envConfig = fullConfig[deployEnv] || {};
 const commonConfig = envConfig.common || {};
-const serviceRegistry = envConfig.services || {};
+const globalEnvConfig = fullGlobalConfig[deployEnv] || {};
+const serviceRegistry = globalEnvConfig.services || envConfig.services || {};
 const loadedServices = {};
 
 for (const [serviceId, serviceEntry] of Object.entries(serviceRegistry)) {
-    const serviceConfigPath = path.resolve(__dirname, "..", serviceEntry.configPath);
-    const serviceModulePath = path.resolve(__dirname, "..", serviceEntry.modulePath);
+    const serviceConfigPath = resolveRuntimePath(serviceEntry.configPath);
+    const serviceModulePath = resolveRuntimePath(serviceEntry.modulePath);
     const serviceConfigRoot = JSON.parse(fs.readFileSync(serviceConfigPath, "utf8"));
     const serviceConfig = serviceConfigRoot[deployEnv];
     if (!serviceConfig) {
@@ -194,7 +219,25 @@ for (const [serviceId, serviceEntry] of Object.entries(serviceRegistry)) {
     };
 }
 
-const config = commonConfig;
+function pickRuntimeConfig(key, fallback = undefined) {
+    if (globalEnvConfig[key] !== undefined) return globalEnvConfig[key];
+    if (commonConfig[key] !== undefined) return commonConfig[key];
+    return fallback;
+}
+
+const config = {
+    // Source-of-truth stays in Kamailio config.json (no duplication in globalserviceconfig.json).
+    domain: commonConfig.domain,
+    kamailioWssHost: commonConfig.kamailioWssHost,
+    kamailioWssPort: commonConfig.kamailioWssPort,
+    bindIp: commonConfig.bindIp,
+    tlsCertPath: commonConfig.tlsCertPath,
+    roflBaseUrl: pickRuntimeConfig("roflBaseUrl"),
+    messageProcessorUrl: pickRuntimeConfig("messageProcessorUrl"),
+    polygon: pickRuntimeConfig("polygon", {}),
+    sapphire: pickRuntimeConfig("sapphire", {}),
+    sapphireTestnet: pickRuntimeConfig("sapphireTestnet", {}),
+};
 const serviceRuntimes = loadedServices;
 const selectedServiceId = process.env.SERVICE_ID || null;
 const allowMultiListenerMode = process.env.ALLOW_MULTI_LISTENER === "true";
@@ -852,8 +895,8 @@ async function handleIceRestart(sessionId, payload) {
  * a werift RTCPeerConnection. After the call is established, we access PC2 via
  * inviter.sessionDescriptionHandler.peerConnection for RTP piping.
  */
-async function openSipSession(sessionId, callerEns, calleeIdentity) {
-    return sipClientApi.openSipSession(sessionId, sessionStore, { callerEns, calleeIdentity });
+async function openSipSession(sessionId, callerEns, calleeIdentity, sipDirective = null) {
+    return sipClientApi.openSipSession(sessionId, sessionStore, { callerEns, calleeIdentity, sipDirective });
 }
 
 /**

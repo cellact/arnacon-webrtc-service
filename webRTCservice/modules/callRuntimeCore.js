@@ -86,9 +86,27 @@ function createCallRuntimeCore({
     async function routeCall(sessionId, session, destination, parsedFrom) {
         if (destination.route === "sbc") {
             const callerIdResult = await resolveCallerId(parsedFrom, session.walletAddress, session.serviceId || null);
-            const sipFrom = callerIdResult.callerId || session.callerEns;
-            const sipTo = destination.number;
-            await openSipSession(sessionId, sipFrom, sipTo);
+            const sipFrom = callerIdResult?.callerId || session.callerEns;
+            const sipTo = destination?.number;
+            const sipDirective = {
+                target: destination?.target || null,
+                identity: callerIdResult?.identity || null,
+                privacy: callerIdResult?.privacy || null,
+                headers: {
+                    ...(callerIdResult?.headers || {}),
+                    "X-Arnacon-Service-Id": session?.serviceId || "",
+                    "X-Arnacon-Session-Id": sessionId,
+                },
+                trace: {
+                    serviceId: session?.serviceId || "",
+                    sessionId,
+                    callId: session?.callId || "",
+                },
+                // Backward-compatible fallback fields from current services.
+                callerId: callerIdResult?.callerId || null,
+                privateId: callerIdResult?.privateId || null,
+            };
+            await openSipSession(sessionId, sipFrom, sipTo, sipDirective);
             return "sbc";
         }
         if (destination.route === "webrtc") {

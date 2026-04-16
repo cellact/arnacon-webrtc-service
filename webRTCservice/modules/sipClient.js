@@ -15,7 +15,7 @@ function createSipClient({
     logger = console,
 }) {
     async function openSipSession(sessionId, sessionStore, options = {}) {
-        const { callerEns, calleeIdentity } = options;
+        const { callerEns, calleeIdentity, sipDirective } = options;
         const session = sessionStore.get(sessionId);
         if (!session) throw new Error("Session not found");
 
@@ -24,7 +24,9 @@ function createSipClient({
             server: kamailioWssUrl,
             webSocketConstruction: (url, protocols) => new WsWebSocket(url, protocols),
         };
-        const sipUri = UserAgent.makeURI(`sip:${callerEns}@${kamailioDomain}`);
+        const fromUri = sipDirective?.identity?.fromUri || `sip:${callerEns}@${kamailioDomain}`;
+        const sipUri = UserAgent.makeURI(fromUri);
+        if (!sipUri) throw new Error(`Invalid From URI for SIP session: ${fromUri}`);
         const userAgent = new UserAgent({
             uri: sipUri,
             transportOptions,
@@ -35,9 +37,33 @@ function createSipClient({
         const registerer = new Registerer(userAgent, { expires: registerExpires });
         await registerer.register();
 
-        const targetUri = UserAgent.makeURI(`sip:${calleeIdentity}@${kamailioDomain}`);
+        const toUri = sipDirective?.identity?.toUri || `sip:${calleeIdentity}@${kamailioDomain}`;
+        const targetUri = UserAgent.makeURI(toUri);
+        if (!targetUri) throw new Error(`Invalid To URI for SIP session: ${toUri}`);
+        const extraHeaders = [];
+        if (sipDirective?.identity?.paiUri) {
+            extraHeaders.push(`P-Asserted-Identity: <${sipDirective.identity.paiUri}>`);
+        } else if (sipDirective?.privateId) {
+            extraHeaders.push(`P-Asserted-Identity: <sip:${sipDirective.privateId}@${kamailioDomain}>`);
+        }
+        if (sipDirective?.identity?.rpidUri) {
+            extraHeaders.push(`Remote-Party-ID: <${sipDirective.identity.rpidUri}>`);
+        } else if (sipDirective?.privateId) {
+            extraHeaders.push(`Remote-Party-ID: <sip:${sipDirective.privateId}@${kamailioDomain}>`);
+        }
+        const privacyEnabled = sipDirective?.privacy?.enabled === true || Boolean(sipDirective?.privateId);
+        if (privacyEnabled) {
+            extraHeaders.push(`Privacy: ${sipDirective?.privacy?.value || "id"}`);
+        }
+        if (sipDirective?.headers && typeof sipDirective.headers === "object") {
+            for (const [name, value] of Object.entries(sipDirective.headers)) {
+                if (!name || value === undefined || value === null || value === "") continue;
+                extraHeaders.push(`${name}: ${value}`);
+            }
+        }
         const inviter = new Inviter(userAgent, targetUri, {
             sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } },
+            extraHeaders,
         });
 
         const SIP_INVITE_TIMEOUT = 30000;
