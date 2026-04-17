@@ -60,6 +60,8 @@ function createBlockchainApi({
         "function findNextOwnedCallerId(uint256 startIndex, address expectedOwner, uint256 maxAttempts) view returns (string phoneNumber, uint256 foundIndex, bool found)",
         "function getPoolSize() view returns (uint256)",
         "function admin() view returns (address)",
+        "function getTokens() view returns (uint256[])",
+        "function getCallerIdByTokenId(uint256 tokenId) view returns (string phoneNumber, string metadata, address owner)",
     ];
 
     let polygonProvider = null;
@@ -405,12 +407,28 @@ function createBlockchainApi({
 
     async function roflAssignFromNumber() {
         const pool = getRoflCallerIdPoolContract();
-        const roflKeyAddress = getRoflAddress();
-        if (!pool || !roflKeyAddress) return null;
+        if (!pool) return null;
 
         try {
             const poolSize = await pool.getPoolSize();
             if (toSafeNumber(poolSize) <= 0) return null;
+
+            const roflKeyAddress = getRoflAddress();
+
+            // Explicit request: if PKEY is not set, assign directly from pool
+            // without owner filtering (pure round-robin by token list index).
+            if (!roflKeyAddress) {
+                const tokens = await pool.getTokens();
+                if (!tokens || tokens.length === 0) return null;
+
+                const idx = roflCallerIdIndex % tokens.length;
+                const tokenId = tokens[idx];
+                const [fromNumber] = await pool.getCallerIdByTokenId(tokenId);
+                if (!fromNumber || fromNumber === "") return null;
+
+                roflCallerIdIndex = idx + 1;
+                return fromNumber;
+            }
 
             const ownerForPool = (await getRoflPoolOwnerAddress()) || roflKeyAddress;
             if (!ownerForPool) return null;
