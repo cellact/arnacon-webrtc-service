@@ -15,6 +15,23 @@ function createBlockchainApi({
     const SAPPHIRE_RPC = config.sapphire.rpc;
     const SAPPHIRE_TESTNET_RPC = config.sapphireTestnet.rpc;
     const NFT_CALLER_ID_POOL_ADDRESS = config.sapphireTestnet.NFTCallerIdPool;
+    const ROFL_LOGIC_CONFIG = config.roflLogic || {};
+    const ROFL_LOGIC_RPC =
+        process.env.ROFL_LOGIC_RPC_URL ||
+        ROFL_LOGIC_CONFIG.rpc ||
+        SAPPHIRE_TESTNET_RPC ||
+        SAPPHIRE_RPC;
+    const ROFL_LOGIC_CHAIN_ID =
+        Number(process.env.ROFL_LOGIC_CHAIN_ID || ROFL_LOGIC_CONFIG.chainId || 0) || undefined;
+    const ROFL_BUSINESS_NUMBER_DB_ADDRESS =
+        process.env.ROFL_LOGIC_BUSINESS_NUMBER_DB_ADDRESS ||
+        ROFL_LOGIC_CONFIG.businessNumberDbAddress ||
+        "";
+    const ROFL_CALLER_ID_POOL_ADDRESS =
+        process.env.ROFL_LOGIC_CALLER_ID_POOL_ADDRESS ||
+        ROFL_LOGIC_CONFIG.callerIdPoolAddress ||
+        NFT_CALLER_ID_POOL_ADDRESS;
+    const ROFL_PKEY = process.env.ROFL_LOGIC_PKEY || process.env.PKEY || "";
 
     const ENS_REGISTRY_ABI = [
         "function owner(bytes32 node) view returns (address)",
@@ -36,10 +53,25 @@ function createBlockchainApi({
         "function tokenOfOwnerByIndex(address owner, uint256 index) view returns (uint256)",
         "function getCallerIdByTokenId(uint256 tokenId) view returns (string phoneNumber, string metadata, address owner)",
     ];
+    const BUSINESS_NUMBER_DB_ABI = [
+        "function getPhoneNumber(string identifier) view returns (string)",
+    ];
+    const CALLER_ID_POOL_ROFL_ABI = [
+        "function findNextOwnedCallerId(uint256 startIndex, address expectedOwner, uint256 maxAttempts) view returns (string phoneNumber, uint256 foundIndex, bool found)",
+        "function getPoolSize() view returns (uint256)",
+        "function admin() view returns (address)",
+    ];
 
     let polygonProvider = null;
     let sapphireProvider = null;
     let sapphireTestnetProvider = null;
+    let roflLogicProvider = null;
+    let businessNumberDbContract = null;
+    let callerIdPoolRoflContract = null;
+    let roflPoolOwnerAddress = null;
+    let roflCallerIdIndex = 0;
+    let roflAddress = null;
+    let roflOwnerResolved = false;
 
     function getPolygonProvider() {
         if (!polygonProvider) polygonProvider = new ethers.providers.JsonRpcProvider(POLYGON_RPC);
@@ -54,6 +86,77 @@ function createBlockchainApi({
     function getSapphireTestnetProvider() {
         if (!sapphireTestnetProvider) sapphireTestnetProvider = new ethers.providers.JsonRpcProvider(SAPPHIRE_TESTNET_RPC);
         return sapphireTestnetProvider;
+    }
+
+    function getRoflLogicProvider() {
+        if (!roflLogicProvider) {
+            if (ROFL_LOGIC_CHAIN_ID) {
+                roflLogicProvider = new ethers.providers.JsonRpcProvider(ROFL_LOGIC_RPC, ROFL_LOGIC_CHAIN_ID);
+            } else {
+                roflLogicProvider = new ethers.providers.JsonRpcProvider(ROFL_LOGIC_RPC);
+            }
+        }
+        return roflLogicProvider;
+    }
+
+    function normalizeContractAddress(value) {
+        const normalized = String(value || "").trim();
+        if (!normalized || normalized === "0x0000000000000000000000000000000000000000") return "";
+        return normalized;
+    }
+
+    function toSafeNumber(value, fallback = 0) {
+        if (typeof value === "number") return value;
+        if (typeof value === "bigint") return Number(value);
+        if (value && typeof value.toString === "function") return Number(value.toString());
+        return fallback;
+    }
+
+    function getRoflAddress() {
+        if (!roflAddress && ROFL_PKEY) {
+            try {
+                roflAddress = new ethers.Wallet(ROFL_PKEY).address;
+            } catch (err) {
+                logger.error(`[ROFL_LOCAL] invalid PKEY: ${err.message}`);
+            }
+        }
+        return roflAddress;
+    }
+
+    function getBusinessNumberDbContract() {
+        if (!businessNumberDbContract) {
+            const address = normalizeContractAddress(ROFL_BUSINESS_NUMBER_DB_ADDRESS);
+            if (!address) return null;
+            businessNumberDbContract = new ethers.Contract(address, BUSINESS_NUMBER_DB_ABI, getRoflLogicProvider());
+        }
+        return businessNumberDbContract;
+    }
+
+    function getRoflCallerIdPoolContract() {
+        if (!callerIdPoolRoflContract) {
+            const address = normalizeContractAddress(ROFL_CALLER_ID_POOL_ADDRESS);
+            if (!address) return null;
+            callerIdPoolRoflContract = new ethers.Contract(address, CALLER_ID_POOL_ROFL_ABI, getRoflLogicProvider());
+        }
+        return callerIdPoolRoflContract;
+    }
+
+    async function getRoflPoolOwnerAddress() {
+        if (roflOwnerResolved) return roflPoolOwnerAddress || getRoflAddress();
+
+        roflOwnerResolved = true;
+        const pool = getRoflCallerIdPoolContract();
+        if (!pool) {
+            roflPoolOwnerAddress = getRoflAddress();
+            return roflPoolOwnerAddress;
+        }
+        try {
+            roflPoolOwnerAddress = await pool.admin();
+        } catch (err) {
+            logger.warn(`[ROFL_LOCAL] pool admin() failed, falling back to ROFL key address: ${err.message}`);
+            roflPoolOwnerAddress = getRoflAddress();
+        }
+        return roflPoolOwnerAddress;
     }
 
     function isEthAddress(str) {
@@ -285,6 +388,58 @@ function createBlockchainApi({
         }
     }
 
+    async function roflFindBusinessNumber(callee) {
+        const contract = getBusinessNumberDbContract();
+        if (!contract) return null;
+
+        const businessName = String(callee || "").trim().toLowerCase();
+        if (!businessName) return null;
+        try {
+            const phoneNumber = await contract.getPhoneNumber(businessName);
+            return phoneNumber && phoneNumber !== "" ? phoneNumber : null;
+        } catch (err) {
+            logger.error(`[ROFL_LOCAL] find-business-number failed for ${businessName}: ${err.message}`);
+            return null;
+        }
+    }
+
+    async function roflAssignFromNumber() {
+        const pool = getRoflCallerIdPoolContract();
+        const roflKeyAddress = getRoflAddress();
+        if (!pool || !roflKeyAddress) return null;
+
+        try {
+            const poolSize = await pool.getPoolSize();
+            if (toSafeNumber(poolSize) <= 0) return null;
+
+            const ownerForPool = (await getRoflPoolOwnerAddress()) || roflKeyAddress;
+            if (!ownerForPool) return null;
+
+            const [fromNumber, foundIndex, found] = await pool.findNextOwnedCallerId(
+                ethers.BigNumber.from(roflCallerIdIndex),
+                ownerForPool,
+                poolSize,
+            );
+
+            if (!found || !fromNumber || fromNumber === "") return null;
+            roflCallerIdIndex = toSafeNumber(foundIndex, roflCallerIdIndex) + 1;
+            return fromNumber;
+        } catch (err) {
+            logger.error(`[ROFL_LOCAL] assign-from-number failed: ${err.message}`);
+            return null;
+        }
+    }
+
+    function getRoflLogicInfo() {
+        return {
+            rpc: ROFL_LOGIC_RPC || null,
+            chainId: ROFL_LOGIC_CHAIN_ID || null,
+            businessNumberDbAddress: normalizeContractAddress(ROFL_BUSINESS_NUMBER_DB_ADDRESS) || null,
+            callerIdPoolAddress: normalizeContractAddress(ROFL_CALLER_ID_POOL_ADDRESS) || null,
+            roflAddress: getRoflAddress() || null,
+        };
+    }
+
     return {
         ethers,
         getPolygonProvider,
@@ -302,6 +457,9 @@ function createBlockchainApi({
         verifyHttpSignalingSignature,
         resolveCallerServiceProviderContract,
         nftGetOwnedNumber,
+        roflFindBusinessNumber,
+        roflAssignFromNumber,
+        getRoflLogicInfo,
         getRpcForNetwork,
     };
 }

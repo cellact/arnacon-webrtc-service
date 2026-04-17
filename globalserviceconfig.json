@@ -1,6 +1,13 @@
 {
   "development": {
     "roflBaseUrl": "https://p8000.m1485.test-proxy-b.rofl.app",
+    "useLocalRoflLogic": true,
+    "roflLogic": {
+      "rpc": "https://testnet.sapphire.oasis.io",
+      "chainId": 23295,
+      "businessNumberDbAddress": "0x684F9797de793E603368A8Fe1Fe663aAeb327621",
+      "callerIdPoolAddress": "0xFB3DD146F1aFfbA661533Ec49298D01f20104CF6"
+    },
     "messageProcessorUrl": "https://europe-west3-asterisk-tts-test.cloudfunctions.net/client_msg_processor",
     "polygon": {
       "rpc": "https://polygon-bor-rpc.publicnode.com",
@@ -65,6 +72,13 @@
   },
   "production": {
     "roflBaseUrl": "https://p8000.m206.opf-mainnet-rofl-35.rofl.app",
+    "useLocalRoflLogic": true,
+    "roflLogic": {
+      "rpc": "https://sapphire.oasis.io",
+      "chainId": 23294,
+      "businessNumberDbAddress": "",
+      "callerIdPoolAddress": "0x903796dc34Bb9A5eD76A41bBA6C40CfebD1f4269"
+    },
     "messageProcessorUrl": "https://europe-west3-asterisk-tts-test.cloudfunctions.net/client_msg_processor",
     "polygon": {
       "rpc": "https://polygon-bor-rpc.publicnode.com",

@@ -237,6 +237,7 @@ const config = {
     polygon: pickRuntimeConfig("polygon", {}),
     sapphire: pickRuntimeConfig("sapphire", {}),
     sapphireTestnet: pickRuntimeConfig("sapphireTestnet", {}),
+    roflLogic: pickRuntimeConfig("roflLogic", {}),
 };
 const serviceRuntimes = loadedServices;
 const selectedServiceId = process.env.SERVICE_ID || null;
@@ -268,6 +269,8 @@ const INTERNAL_BIND_IP = config.bindIp || "127.0.0.1";
 
 // ROFL API config
 const ROFL_BASE_URL = config.roflBaseUrl;
+const USE_LOCAL_ROFL_LOGIC =
+    String(process.env.USE_LOCAL_ROFL_LOGIC || pickRuntimeConfig("useLocalRoflLogic", true)) === "true";
 const MESSAGE_PROCESSOR_URL =
     config.messageProcessorUrl ||
     "https://europe-west3-asterisk-tts-test.cloudfunctions.net/client_msg_processor";
@@ -313,7 +316,17 @@ const callRouterApi = createCallRouter({
     roflBaseUrl: ROFL_BASE_URL,
     fetchImpl: fetch,
     logger: console,
+    useLocalRoflLogic: USE_LOCAL_ROFL_LOGIC,
+    lookupBusinessNumberImpl: (...args) => blockchainApi.roflFindBusinessNumber(...args),
+    assignFromNumberImpl: (...args) => blockchainApi.roflAssignFromNumber(...args),
 });
+const roflLogicInfo = blockchainApi.getRoflLogicInfo();
+console.log(
+    `[ROFL] mode=${USE_LOCAL_ROFL_LOGIC ? "local_rofl_logic" : "remote_http"} ` +
+        `baseUrl=${ROFL_BASE_URL || "n/a"} rpc=${roflLogicInfo.rpc || "n/a"} ` +
+        `chainId=${roflLogicInfo.chainId || "n/a"} businessDb=${roflLogicInfo.businessNumberDbAddress || "n/a"} ` +
+        `callerIdPool=${roflLogicInfo.callerIdPoolAddress || "n/a"} roflAddress=${roflLogicInfo.roflAddress || "n/a"}`,
+);
 const notificationApi = createNotificationApi({
     blockchainApi,
     signalingPlanAbi: SIGNALING_PLAN_ABI,

@@ -6,6 +6,9 @@ function createCallRouter({
     roflBaseUrl,
     fetchImpl = fetch,
     logger = console,
+    useLocalRoflLogic = false,
+    lookupBusinessNumberImpl = null,
+    assignFromNumberImpl = null,
 }) {
     function isRawEmail(str) {
         return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(str) && !str.endsWith(".global");
@@ -34,6 +37,15 @@ function createCallRouter({
     }
 
     async function roflFindBusinessNumber(callee) {
+        if (useLocalRoflLogic && typeof lookupBusinessNumberImpl === "function") {
+            try {
+                return (await lookupBusinessNumberImpl(callee)) || null;
+            } catch (err) {
+                logger.error(`[ROFL_LOCAL] find-business-number failed for ${callee}: ${err.message}`);
+                return null;
+            }
+        }
+
         try {
             const resp = await fetchImpl(`${roflBaseUrl}/find-business-number`, {
                 method: "POST",
@@ -82,6 +94,15 @@ function createCallRouter({
     }
 
     async function roflAssignFromNumber() {
+        if (useLocalRoflLogic && typeof assignFromNumberImpl === "function") {
+            try {
+                return (await assignFromNumberImpl()) || null;
+            } catch (err) {
+                logger.error(`[ROFL_LOCAL] assign-from-number failed: ${err.message}`);
+                return null;
+            }
+        }
+
         try {
             const resp = await fetchImpl(`${roflBaseUrl}/assign-from-number`);
             if (!resp.ok) return null;
