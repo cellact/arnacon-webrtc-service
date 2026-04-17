@@ -31,6 +31,10 @@ async function resolveInboundTarget(ctx) {
         if (addr && addr !== helpers.zeroAddress) {
             return { route: "webrtc", wallet: addr, ensName, targetValue };
         }
+        const owner = await helpers.lookupEnsOwner(ensName);
+        if (owner && owner !== helpers.zeroAddress) {
+            return { route: "webrtc", wallet: owner, ensName, targetValue };
+        }
     }
     return { route: "reject", reason: `No WebRTC user for ${targetValue}` };
 }

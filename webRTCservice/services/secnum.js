@@ -35,6 +35,12 @@ async function resolveInboundTarget(ctx) {
         if (addr && addr !== helpers.zeroAddress) {
             return { route: "webrtc", wallet: addr, ensName, targetValue };
         }
+        // Some names may have no resolver addr record set, but still have a valid owner.
+        // For inbound ringing, owner is enough to map to the connected wallet session.
+        const owner = await helpers.lookupEnsOwner(ensName);
+        if (owner && owner !== helpers.zeroAddress) {
+            return { route: "webrtc", wallet: owner, ensName, targetValue };
+        }
     }
     return { route: "reject", reason: `No WebRTC user for ${targetValue}` };
 }
