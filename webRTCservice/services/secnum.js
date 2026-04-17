@@ -8,14 +8,19 @@ function getDomains(helpers) {
 }
 
 function resolveInboundValue(payload, helpers) {
-    return (
+    const raw =
         helpers.selectInboundLookupValue({
             payload,
             lookupField: "to",
         }) ||
         payload.to ||
-        ""
-    );
+        "";
+
+    const parsed = helpers.parseIdentity(raw);
+    if (parsed?.type === "ens") {
+        return parsed.value || "";
+    }
+    return raw;
 }
 
 async function resolveInboundTarget(ctx) {
