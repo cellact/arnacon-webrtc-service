@@ -22,10 +22,7 @@ function createInboundCallFlow({
     async function handleInboundCallRequest(data) {
         const { from, to, callId, diversion, toDomain, serviceId = null } = data;
         logger.log(`[Inbound] Received inbound call from=${from} to=${to} callId=${callId}${diversion ? ` diversion=${diversion}` : ""}${toDomain ? ` toDomain=${toDomain}` : ""}`);
-        const inboundDecision = await resolveInboundTarget({
-            payload: data,
-            serviceId,
-        });
+        const inboundDecision = await resolveInboundTarget(data, serviceId);
         if (!inboundDecision || inboundDecision.route !== "webrtc") {
             throw Object.assign(new Error(inboundDecision?.reason || `No WebRTC user for ${to}`), { statusCode: 404 });
         }
