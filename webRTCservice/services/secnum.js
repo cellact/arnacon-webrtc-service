@@ -8,6 +8,7 @@ function getDomains(helpers) {
 }
 
 function resolveInboundValue(payload, helpers) {
+    console.log("resolveInboundValue", payload);
     const raw =
         helpers.selectInboundLookupValue({
             payload,
@@ -15,17 +16,25 @@ function resolveInboundValue(payload, helpers) {
         }) ||
         payload.to ||
         "";
+    const rawStr = String(raw || "").trim();
+    if (!rawStr) return "";
 
-    const parsed = helpers.parseIdentity(raw);
-    if (parsed?.type === "ens") {
-        return parsed.value || "";
-    }
-    return raw;
+    // Handle either plain number ("972...") or ENS-like target
+    // ("972....cellactm.global") by always taking the first label.
+    const firstLabel = rawStr.includes(".") ? rawStr.split(".")[0] : rawStr;
+    return helpers.normalizePhone(firstLabel);
 }
 
 async function resolveInboundTarget(ctx) {
+    console.log("resolveInboundTarget", ctx);
     const { payload, helpers } = ctx;
     const targetValue = resolveInboundValue(payload, helpers);
+    if (!targetValue) {
+        return {
+            route: "reject",
+            reason: `No WebRTC user for (target empty, raw to='${String(payload?.to || "")}')`,
+        };
+    }
     const candidates = helpers.buildInboundCandidates({
         value: targetValue,
         domains: getDomains(helpers),
