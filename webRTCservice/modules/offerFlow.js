@@ -62,8 +62,8 @@ function createOfferFlow({
 
         if (type === "answer") {
             const session = sessions.get(sessionId);
-            if (typeof onVerifiedNotifyAnswer === "function") {
-                const result = await onVerifiedNotifyAnswer(sessionId, offer, session || null);
+            if (session && typeof onVerifiedNotifyAnswer === "function") {
+                const result = await onVerifiedNotifyAnswer(sessionId, offer, session);
                 if (result && result.handled) {
                     return result;
                 }
