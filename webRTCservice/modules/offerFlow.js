@@ -8,6 +8,7 @@ function createOfferFlow({
     destroySession,
     handleHandshake,
     handleInboundAnswer,
+    onVerifiedNotifyAnswer = null,
     parseAddress,
     addIceCandidates,
     normalizeIdentity = null,
@@ -61,6 +62,12 @@ function createOfferFlow({
 
         if (type === "answer") {
             const session = sessions.get(sessionId);
+            if (session && typeof onVerifiedNotifyAnswer === "function") {
+                const result = await onVerifiedNotifyAnswer(sessionId, offer, session);
+                if (result && result.handled) {
+                    return result;
+                }
+            }
             if (session && session.isGatewayCaller) {
                 if (session.inboundAnswerApplied) return;
                 session.inboundAnswerApplied = true;

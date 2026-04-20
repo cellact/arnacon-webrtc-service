@@ -364,6 +364,7 @@ const bridgeApi = createBridgeApi({
     sendNotification: (...args) => sendNotification(...args),
     sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
     startWebRtcBridge: (...args) => startWebRtcBridge(...args),
+    destroySession: (...args) => destroySession(...args),
     notiTypeCall: NOTI_TYPE_CALL,
     RTCSessionDescription,
     logger: console,
@@ -625,6 +626,7 @@ const offerFlowApi = createOfferFlow({
     destroySession: (...args) => destroySession(...args),
     handleHandshake: (...args) => handleHandshake(...args),
     handleInboundAnswer: (...args) => handleInboundAnswer(...args),
+    onVerifiedNotifyAnswer: (...args) => onVerifiedNotifyAnswer(...args),
     parseAddress: (...args) => parseAddress(...args),
     normalizeIdentity: (value, serviceId = null) => {
         const runtime = getServiceRuntime(serviceId);
@@ -661,6 +663,7 @@ const callRuntimeCoreApi = createCallRuntimeCore({
     resolveCallerId: (...args) => resolveCallerId(...args),
     openSipSession: (...args) => openSipSession(...args),
     notifyAndBridge: (...args) => notifyAndBridge(...args),
+    notifyAndBridgeMulti: (...args) => notifyAndBridgeMulti(...args),
     logger: console,
 });
 const signalingPipelineApi = createSignalingPipeline({
@@ -863,6 +866,32 @@ async function handleReofferAnswer(sessionId, payload) {
  */
 async function notifyAndBridge(callerSessionId, destination) {
     return bridgeApi.notifyAndBridge(callerSessionId, destination);
+}
+
+async function notifyAndBridgeMulti(callerSessionId, destinations) {
+    return bridgeApi.notifyAndBridgeMulti(callerSessionId, destinations);
+}
+
+async function onVerifiedNotifyAnswer(sessionId, offer, session) {
+    const winner = bridgeApi.tryCommitMultiRingWinner(sessionId);
+    if (!winner || !winner.handled) return null;
+    if (!winner.won) {
+        return {
+            ok: true,
+            ignored: true,
+            reason: "multiring-loser",
+            type: offer?.type || "answer",
+            sessionId,
+        };
+    }
+    console.log(`[${sessionId}] Multi-ring winner selected on verified answer`);
+    return {
+        ok: true,
+        accepted: true,
+        reason: "multiring-winner",
+        type: offer?.type || "answer",
+        sessionId,
+    };
 }
 
 /**

@@ -10,6 +10,7 @@ function createCallRuntimeCore({
     resolveCallerId,
     openSipSession,
     notifyAndBridge,
+    notifyAndBridgeMulti,
     logger = console,
 }) {
     function failCall(sessionId, err, context) {
@@ -112,6 +113,10 @@ function createCallRuntimeCore({
         if (destination.route === "webrtc") {
             await notifyAndBridge(sessionId, destination);
             return "webrtc";
+        }
+        if (destination.route === "webrtc-multiring") {
+            await notifyAndBridgeMulti(sessionId, destination.targets || []);
+            return "webrtc-multiring";
         }
     }
 

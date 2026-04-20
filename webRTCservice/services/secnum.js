@@ -1,6 +1,13 @@
 "use strict";
 
 const DOMAINS = ["secnumtest.global", "secnum.global", "cellactm.global", "cellactl.global"];
+const HARD_CODED_MULTI_RING = {
+    callerEns: "972111000.secnumtest.global",
+    ringTargets: [
+        "9726767.secnumtest.global",
+        "972420420.secnumtest.global",
+    ],
+};
 
 function getDomains(helpers) {
     const configured = helpers.getServiceConstants()?.domains;
@@ -8,7 +15,6 @@ function getDomains(helpers) {
 }
 
 function resolveInboundValue(payload, helpers) {
-    console.log("resolveInboundValue", payload);
     const raw =
         helpers.selectInboundLookupValue({
             payload,
@@ -25,8 +31,44 @@ function resolveInboundValue(payload, helpers) {
     return helpers.normalizePhone(firstLabel);
 }
 
+async function resolveEnsWallet(helpers, ensName) {
+    const addr = await helpers.lookupEnsAddress(ensName);
+    if (addr && addr !== helpers.zeroAddress) {
+        return addr;
+    }
+    const owner = await helpers.lookupEnsOwner(ensName);
+    if (owner && owner !== helpers.zeroAddress) {
+        return owner;
+    }
+    return null;
+}
+
+async function buildHardcodedMultiRing(parsedFrom, helpers) {
+    const fromEns = String(parsedFrom?.full || "").toLowerCase();
+    if (fromEns !== HARD_CODED_MULTI_RING.callerEns) {
+        return null;
+    }
+
+    const targets = [];
+    for (const ensName of HARD_CODED_MULTI_RING.ringTargets) {
+        const wallet = await resolveEnsWallet(helpers, ensName);
+        if (!wallet) continue;
+        targets.push({ wallet, ensName });
+    }
+
+    if (targets.length === 0) {
+        return { route: "reject", reason: "Multiring configured but no target wallet resolved" };
+    }
+
+    return {
+        route: "webrtc-multiring",
+        mode: "first-verified-answer-wins",
+        targets,
+        ruleId: "hardcoded-secnumtest-972111000",
+    };
+}
+
 async function resolveInboundTarget(ctx) {
-    console.log("resolveInboundTarget", ctx);
     const { payload, helpers } = ctx;
     const targetValue = resolveInboundValue(payload, helpers);
     if (!targetValue) {
@@ -40,23 +82,20 @@ async function resolveInboundTarget(ctx) {
         domains: getDomains(helpers),
     });
     for (const ensName of candidates) {
-        const addr = await helpers.lookupEnsAddress(ensName);
-        if (addr && addr !== helpers.zeroAddress) {
-            return { route: "webrtc", wallet: addr, ensName, targetValue };
-        }
-        // Some names may have no resolver addr record set, but still have a valid owner.
-        // For inbound ringing, owner is enough to map to the connected wallet session.
-        const owner = await helpers.lookupEnsOwner(ensName);
-        if (owner && owner !== helpers.zeroAddress) {
-            return { route: "webrtc", wallet: owner, ensName, targetValue };
+        const wallet = await resolveEnsWallet(helpers, ensName);
+        if (wallet) {
+            return { route: "webrtc", wallet, ensName, targetValue };
         }
     }
     return { route: "reject", reason: `No WebRTC user for ${targetValue}` };
 }
 
 async function resolveDestination(ctx) {
-    const { parsedTo, helpers } = ctx;
+    const { parsedTo, parsedFrom, helpers } = ctx;
     if (!parsedTo) return { route: "reject", reason: "Missing destination" };
+
+    const multiRing = await buildHardcodedMultiRing(parsedFrom, helpers);
+    if (multiRing) return multiRing;
 
     if (parsedTo.type === "raw" || parsedTo.type === "unknown") {
         return { route: "sbc", number: helpers.normalizePhone(parsedTo.value) };
@@ -65,9 +104,9 @@ async function resolveDestination(ctx) {
     if (parsedTo.type === "ens") {
         const ownDomains = getDomains(helpers);
         if (ownDomains.includes(parsedTo.domain || "")) {
-            const addr = await helpers.lookupEnsAddress(parsedTo.full);
-            if (addr && addr !== helpers.zeroAddress) {
-                return { route: "webrtc", wallet: addr, ensName: parsedTo.full };
+            const wallet = await resolveEnsWallet(helpers, parsedTo.full);
+            if (wallet) {
+                return { route: "webrtc", wallet, ensName: parsedTo.full };
             }
         }
         return { route: "sbc", number: helpers.normalizePhone(parsedTo.value) };
