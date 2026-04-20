@@ -356,10 +356,6 @@ function createBridgeApi({
                         timestamp: rtp.header.timestamp,
                     });
                 }
-                const targetSsrc = calleeSession.localAudioTrack?.ssrc;
-                if (targetSsrc && rtp?.header && rtp.header.ssrc !== targetSsrc) {
-                    rtp.header.ssrc = targetSsrc;
-                }
                 calleeSession.localAudioTrack.writeRtp(rtp);
             });
             c2wSub = sub || null;
@@ -377,10 +373,6 @@ function createBridgeApi({
                         sequenceNumber: rtp.header.sequenceNumber,
                         timestamp: rtp.header.timestamp,
                     });
-                }
-                const targetSsrc = callerSession.localAudioTrack?.ssrc;
-                if (targetSsrc && rtp?.header && rtp.header.ssrc !== targetSsrc) {
-                    rtp.header.ssrc = targetSsrc;
                 }
                 callerSession.localAudioTrack.writeRtp(rtp);
             });
