@@ -67,12 +67,24 @@ function createBridgeApi({
             }
             session._bridgeDisposers = [];
         }
+        const isWinnerLockedLoser = reason === "mr-loser-winner-locked";
         try {
+            if (isWinnerLockedLoser) {
+                // Losing leg should get a clear "someone else answered" semantic before hangup.
+                sendDataChannelMessage(sessionId, { msgType: "call", action: "reject", reason: "cancelled-answered-elsewhere" });
+            }
             sendDataChannelMessage(sessionId, { msgType: "call", action: "end", reason });
         } catch (_) {}
-        if (typeof destroySession === "function") {
+        const finalize = () => {
+            if (typeof destroySession !== "function") return;
             try { destroySession(sessionId, false); } catch (_) {}
+        };
+        if (isWinnerLockedLoser) {
+            // Give DC control messages a short chance to flush before tearing down.
+            setTimeout(finalize, 250);
+            return;
         }
+        finalize();
     }
 
     function getCallerNumberLabel(identity) {
