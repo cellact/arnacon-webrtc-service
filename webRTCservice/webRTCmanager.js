@@ -361,11 +361,19 @@ const bridgeApi = createBridgeApi({
     sessions,
     pendingBridges,
     pendingInboundCalls,
+    createSession: (...args) => createSession(...args),
+    createPeerConnection: (...args) => createPeerConnection(...args),
     sendNotification: (...args) => sendNotification(...args),
     sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
     startWebRtcBridge: (...args) => startWebRtcBridge(...args),
     destroySession: (...args) => destroySession(...args),
     notiTypeCall: NOTI_TYPE_CALL,
+    MediaStreamTrack,
+    waitForIceGathering: (...args) => waitForIceGathering(...args),
+    formatIceCandidates: (...args) => formatIceCandidates(...args),
+    getRelayCandidates: (...args) => getRelayCandidates(...args),
+    embedCandidatesInSdp: (...args) => embedCandidatesInSdp(...args),
+    applyInboundAnswer: (...args) => handleInboundAnswer(...args),
     RTCSessionDescription,
     logger: console,
 });
@@ -873,7 +881,7 @@ async function notifyAndBridgeMulti(callerSessionId, destinations) {
 }
 
 async function onVerifiedNotifyAnswer(sessionId, offer, session) {
-    const winner = bridgeApi.tryCommitMultiRingWinner(sessionId);
+    const winner = await bridgeApi.commitWinnerFromVerifiedAnswer(sessionId, offer);
     if (!winner || !winner.handled) return null;
     if (!winner.won) {
         return {

@@ -4,11 +4,19 @@ function createBridgeApi({
     sessions,
     pendingBridges,
     pendingInboundCalls,
+    createSession,
+    createPeerConnection,
     sendNotification,
     sendDataChannelMessage,
     startWebRtcBridge,
     destroySession,
     notiTypeCall,
+    MediaStreamTrack,
+    waitForIceGathering,
+    formatIceCandidates,
+    getRelayCandidates,
+    embedCandidatesInSdp,
+    applyInboundAnswer,
     RTCSessionDescription,
     logger = console,
 }) {
@@ -105,13 +113,88 @@ function createBridgeApi({
         startWebRtcBridge(callerSessionId, calleeSessionId);
     }
 
+    function dropRingGroupTracking(group) {
+        if (!group) return;
+        for (const sid of group.legsBySessionId.keys()) {
+            sessionToRingGroup.delete(sid);
+        }
+        ringGroups.delete(group.groupId);
+    }
+
+    function clearRingGroupTimeout(group) {
+        if (!group || !group.timeoutHandle) return;
+        clearTimeout(group.timeoutHandle);
+        group.timeoutHandle = null;
+    }
+
+    function closeLoserLegs(group, winnerSessionId) {
+        if (!group) return;
+        for (const [sid, leg] of group.legsBySessionId.entries()) {
+            if (sid === winnerSessionId) continue;
+            if (leg.state === "lost" || leg.state === "timed_out") continue;
+            leg.state = "lost";
+            closeSessionNow(sid, "multiring-loser");
+        }
+    }
+
+    async function createLegOffer(group, leg, callerEns, callerDisplayFrom) {
+        const legSession = createSession(
+            leg.sessionId,
+            `mr-leg-${group.groupId}`,
+            `mr-target-${leg.sessionId}`,
+        );
+        legSession.multiRingGroupId = group.groupId;
+        legSession.multiRingLeg = true;
+        legSession.multiRingRole = "callee-leg";
+        legSession.multiRingCallerEns = callerEns;
+        legSession.multiRingCallerDisplay = callerDisplayFrom || callerEns;
+        legSession.multiRingTargetEns = leg.ensName;
+
+        const pc = createPeerConnection(leg.sessionId);
+        if (typeof pc.createDataChannel === "function") {
+            try { pc.createDataChannel("chat"); } catch (_) {}
+        }
+        legSession.localAudioTrack = new MediaStreamTrack({ kind: "audio" });
+        pc.addTrack(legSession.localAudioTrack);
+        legSession.iceCandidates = [];
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await waitForIceGathering(pc);
+
+        const gatheredCandidates = formatIceCandidates(legSession).filter((c) => {
+            const cand = String(c?.candidate || "").toLowerCase();
+            return !cand.includes(" tcp ");
+        });
+        const srflxAndRelay = gatheredCandidates.filter((c) => {
+            const cand = String(c?.candidate || "");
+            return cand.includes("typ srflx") || cand.includes("typ relay");
+        });
+        const candidatesToEmbed = srflxAndRelay.length > 0 ? srflxAndRelay : gatheredCandidates;
+        const relayCandidates = getRelayCandidates(gatheredCandidates);
+        const offerSdp = embedCandidatesInSdp(offer.sdp, candidatesToEmbed);
+
+        const callPayload = JSON.stringify({
+            type: "offer",
+            from: callerDisplayFrom || callerEns,
+            to: leg.ensName,
+            sessionId: leg.sessionId,
+            sdp: offerSdp,
+            candidates: relayCandidates,
+            isCall: true,
+            multiRingGroupId: group.groupId,
+        });
+
+        leg.state = "invited";
+        await sendNotification(callerEns, leg.ensName, callPayload, notiTypeCall);
+        logger.log(
+            `[MR:${group.groupId}] leg invited sessionId=${leg.sessionId} to=${leg.ensName}`,
+        );
+    }
+
     async function notifyAndBridgeMulti(callerSessionId, destinations) {
         const callerSession = sessions.get(callerSessionId);
         if (!callerSession) throw new Error("Caller session not found");
-        const sourceOffer = callerSession.lastRingOfferPayload || null;
-        if (!sourceOffer || !sourceOffer.sdp) {
-            throw new Error("Multiring requires a valid source offer payload with SDP");
-        }
 
         const targets = Array.isArray(destinations) ? destinations : [];
         if (targets.length === 0) throw new Error("No multiring destinations provided");
@@ -119,16 +202,12 @@ function createBridgeApi({
         const groupId = newRingGroupId();
         const callerEns = callerSession.callerEns;
         const callerNumberLabel = getCallerNumberLabel(callerEns);
-        const timeoutMs = 60000;
         const group = {
             groupId,
             callerSessionId,
             winnerSessionId: null,
             closed: false,
-            pendingWallets: new Set(),
-            invitedSessionIds: new Set(),
-            candidateSessionsByWallet: new Map(),
-            candidateSessionsById: new Set(),
+            legsBySessionId: new Map(),
             timeoutHandle: null,
             resolve: null,
             reject: null,
@@ -142,127 +221,92 @@ function createBridgeApi({
         group.timeoutHandle = setTimeout(() => {
             if (group.closed) return;
             group.closed = true;
-            for (const walletKey of group.pendingWallets) {
-                removePendingEntries(walletKey, (entry) => entry.kind === "multi" && entry.groupId === groupId);
+            for (const leg of group.legsBySessionId.values()) {
+                leg.state = leg.state === "won" ? "won" : "timed_out";
+                closeSessionNow(leg.sessionId, "multiring-timeout");
             }
-            for (const sid of group.candidateSessionsById) {
-                closeSessionNow(sid, "multiring-timeout");
-                sessionToRingGroup.delete(sid);
-            }
-            for (const sid of group.invitedSessionIds) {
-                sessionToRingGroup.delete(sid);
-            }
-            ringGroups.delete(groupId);
+            dropRingGroupTracking(group);
+            logger.log(`[MR:${group.groupId}] timeout with no winner`);
             group.reject(new Error("No multiring callee answered within timeout"));
-        }, timeoutMs);
+        }, 60000);
 
         ringGroups.set(groupId, group);
+        logger.log(`[MR:${group.groupId}] created callerSessionId=${callerSessionId}`);
 
         let legIndex = 0;
         for (const destination of targets) {
             const calleeWallet = destination.wallet;
             const calleeEns = destination.ensName || calleeWallet;
-            if (!calleeWallet) continue;
+            if (!calleeWallet || !calleeEns) continue;
             legIndex += 1;
             const childSessionId = `${groupId}-leg${legIndex}`;
-            const walletKey = calleeWallet.toLowerCase();
-            group.pendingWallets.add(walletKey);
-            addPendingEntry(walletKey, {
-                kind: "multi",
-                groupId,
-                callerSessionId,
-                childSessionId,
-                walletKey,
-                ensName: calleeEns,
-            });
-            // Answers can arrive directly on the child leg session id before any
-            // websocket/data-channel session exists; pre-bind it to the ring group.
-            sessionToRingGroup.set(childSessionId, groupId);
-            group.invitedSessionIds.add(childSessionId);
-
-            const callPayload = JSON.stringify({
-                type: "offer",
-                from: callerNumberLabel || callerEns,
-                to: calleeEns,
+            const leg = {
                 sessionId: childSessionId,
-                sdp: sourceOffer.sdp,
-                candidates: Array.isArray(sourceOffer.candidates) ? sourceOffer.candidates : [],
-                callNonce: sourceOffer.callNonce || null,
-                isCall: true,
-                multiRingGroupId: groupId,
-            });
-            await sendNotification(callerEns, calleeEns, callPayload, notiTypeCall);
+                walletKey: String(calleeWallet).toLowerCase(),
+                ensName: calleeEns,
+                state: "new",
+            };
+            group.legsBySessionId.set(childSessionId, leg);
+            sessionToRingGroup.set(childSessionId, groupId);
+            await createLegOffer(group, leg, callerEns, callerNumberLabel);
+        }
+
+        if (group.legsBySessionId.size === 0) {
+            group.closed = true;
+            clearRingGroupTimeout(group);
+            dropRingGroupTracking(group);
+            throw new Error("Multiring configured but no valid legs were created");
         }
 
         const winnerSessionId = await winnerPromise;
         return winnerSessionId;
     }
 
-    function registerMultiRingCandidate(groupId, walletKey, sessionId) {
-        const group = ringGroups.get(groupId);
-        if (!group || group.closed) {
-            closeSessionNow(sessionId, "multiring-group-closed");
-            return false;
-        }
-        if (group.winnerSessionId) {
-            closeSessionNow(sessionId, "multiring-already-won");
-            return false;
-        }
-        group.candidateSessionsByWallet.set(walletKey, sessionId);
-        group.candidateSessionsById.add(sessionId);
-        sessionToRingGroup.set(sessionId, groupId);
-        const session = sessions.get(sessionId);
-        if (session) {
-            session.multiRingGroupId = groupId;
-            session.multiRingWalletKey = walletKey;
-        }
-        return true;
-    }
-
-    function tryCommitMultiRingWinner(sessionId) {
+    async function commitWinnerFromVerifiedAnswer(sessionId, answerPayload) {
         const groupId = sessionToRingGroup.get(sessionId);
         if (!groupId) return { handled: false };
-
         const group = ringGroups.get(groupId);
         if (!group) return { handled: false };
+        const leg = group.legsBySessionId.get(sessionId);
+        if (!leg) return { handled: false };
 
         if (group.winnerSessionId && group.winnerSessionId !== sessionId) {
+            leg.state = "lost";
             closeSessionNow(sessionId, "multiring-loser-answer");
-            sessionToRingGroup.delete(sessionId);
+            logger.log(`[MR:${group.groupId}] late loser answer sessionId=${sessionId}`);
             return { handled: true, won: false, winnerSessionId: group.winnerSessionId };
         }
-
         if (group.winnerSessionId === sessionId) {
             return { handled: true, won: true, winnerSessionId: sessionId };
         }
 
         group.winnerSessionId = sessionId;
         group.closed = true;
-        if (group.timeoutHandle) {
-            clearTimeout(group.timeoutHandle);
-            group.timeoutHandle = null;
-        }
+        leg.state = "answer_received";
+        clearRingGroupTimeout(group);
+        closeLoserLegs(group, sessionId);
+        logger.log(`[MR:${group.groupId}] winner locked sessionId=${sessionId}`);
 
-        for (const walletKey of group.pendingWallets) {
-            removePendingEntries(walletKey, (entry) => entry.kind === "multi" && entry.groupId === groupId);
+        try {
+            await applyInboundAnswer(sessionId, answerPayload?.sdp, answerPayload?.candidates || []);
+            leg.state = "answer_applied";
+            startWebRtcBridge(group.callerSessionId, sessionId);
+            leg.state = "won";
+            logger.log(`[MR:${group.groupId}] bridge started winnerSessionId=${sessionId}`);
+            group.resolve(sessionId);
+            dropRingGroupTracking(group);
+            return { handled: true, won: true, winnerSessionId: sessionId };
+        } catch (err) {
+            logger.error(`[MR:${group.groupId}] winner answer apply failed: ${err.message}`);
+            closeSessionNow(sessionId, "multiring-winner-answer-failed");
+            for (const loserLeg of group.legsBySessionId.values()) {
+                if (loserLeg.sessionId === sessionId) continue;
+                closeSessionNow(loserLeg.sessionId, "multiring-abort");
+            }
+            dropRingGroupTracking(group);
+            group.reject(err);
+            return { handled: true, won: false, reason: "winner-answer-apply-failed" };
         }
-
-        for (const sid of group.candidateSessionsById) {
-            if (sid === sessionId) continue;
-            closeSessionNow(sid, "multiring-loser");
-            sessionToRingGroup.delete(sid);
-        }
-        for (const sid of group.invitedSessionIds) {
-            if (sid === sessionId) continue;
-            sessionToRingGroup.delete(sid);
-        }
-        sessionToRingGroup.delete(sessionId);
-
-        startWebRtcBridge(group.callerSessionId, sessionId);
-        group.resolve(sessionId);
-        ringGroups.delete(groupId);
-
-        return { handled: true, won: true, winnerSessionId: sessionId };
     }
 
     function startBridgeRtp(callerSessionId, calleeSessionId) {
@@ -361,11 +405,7 @@ function createBridgeApi({
             }
 
             if (pending.kind === "multi") {
-                if (handled) {
-                    nextList.push(pending);
-                    continue;
-                }
-                handled = registerMultiRingCandidate(pending.groupId, key, sessionId) || handled;
+                // Multi-ring no longer uses wallet-join pending entries.
                 continue;
             }
 
@@ -423,9 +463,9 @@ function createBridgeApi({
     return {
         notifyAndBridge,
         notifyAndBridgeMulti,
+        commitWinnerFromVerifiedAnswer,
         startBridgeRtp,
         checkPendingBridge,
-        tryCommitMultiRingWinner,
         checkPendingInboundCall,
         handleIceRestart,
     };
