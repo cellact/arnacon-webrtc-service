@@ -126,6 +126,7 @@ function createBridgeApi({
             winnerSessionId: null,
             closed: false,
             pendingWallets: new Set(),
+            invitedSessionIds: new Set(),
             candidateSessionsByWallet: new Map(),
             candidateSessionsById: new Set(),
             timeoutHandle: null,
@@ -146,6 +147,9 @@ function createBridgeApi({
             }
             for (const sid of group.candidateSessionsById) {
                 closeSessionNow(sid, "multiring-timeout");
+                sessionToRingGroup.delete(sid);
+            }
+            for (const sid of group.invitedSessionIds) {
                 sessionToRingGroup.delete(sid);
             }
             ringGroups.delete(groupId);
@@ -171,6 +175,10 @@ function createBridgeApi({
                 walletKey,
                 ensName: calleeEns,
             });
+            // Answers can arrive directly on the child leg session id before any
+            // websocket/data-channel session exists; pre-bind it to the ring group.
+            sessionToRingGroup.set(childSessionId, groupId);
+            group.invitedSessionIds.add(childSessionId);
 
             const callPayload = JSON.stringify({
                 type: "offer",
@@ -242,6 +250,10 @@ function createBridgeApi({
         for (const sid of group.candidateSessionsById) {
             if (sid === sessionId) continue;
             closeSessionNow(sid, "multiring-loser");
+            sessionToRingGroup.delete(sid);
+        }
+        for (const sid of group.invitedSessionIds) {
+            if (sid === sessionId) continue;
             sessionToRingGroup.delete(sid);
         }
         sessionToRingGroup.delete(sessionId);
