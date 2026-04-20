@@ -379,6 +379,10 @@ function createBridgeApi({
                         timestamp: rtp.header.timestamp,
                     });
                 }
+                // Keep outbound stream SSRC aligned with destination sender track.
+                if (calleeSession.localAudioTrack?.ssrc) {
+                    rtp.header.ssrc = calleeSession.localAudioTrack.ssrc;
+                }
                 calleeSession.localAudioTrack.writeRtp(rtp);
             });
             c2wSub = sub || null;
@@ -400,6 +404,10 @@ function createBridgeApi({
                         sequenceNumber: rtp.header.sequenceNumber,
                         timestamp: rtp.header.timestamp,
                     });
+                }
+                // Keep outbound stream SSRC aligned with destination sender track.
+                if (callerSession.localAudioTrack?.ssrc) {
+                    rtp.header.ssrc = callerSession.localAudioTrack.ssrc;
                 }
                 callerSession.localAudioTrack.writeRtp(rtp);
             });
