@@ -59,6 +59,12 @@ function createBridgeApi({
     function closeSessionNow(sessionId, reason = "multiring-cleanup") {
         const session = sessions.get(sessionId);
         if (!session) return;
+        if (Array.isArray(session._bridgeDisposers)) {
+            for (const dispose of session._bridgeDisposers) {
+                try { dispose(); } catch (_) {}
+            }
+            session._bridgeDisposers = [];
+        }
         try {
             sendDataChannelMessage(sessionId, { msgType: "call", action: "end", reason });
         } catch (_) {}
@@ -127,13 +133,25 @@ function createBridgeApi({
         group.timeoutHandle = null;
     }
 
+    async function waitForConnectedOrTimeout(sessionId, timeoutMs = 4000) {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+            const session = sessions.get(sessionId);
+            const state = session?.connectionState;
+            if (state === "connected") return true;
+            if (state === "failed" || state === "closed") return false;
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        return false;
+    }
+
     function closeLoserLegs(group, winnerSessionId) {
         if (!group) return;
         for (const [sid, leg] of group.legsBySessionId.entries()) {
             if (sid === winnerSessionId) continue;
             if (leg.state === "lost" || leg.state === "timed_out") continue;
             leg.state = "lost";
-            closeSessionNow(sid, "multiring-loser");
+            closeSessionNow(sid, "mr-loser-winner-locked");
         }
     }
 
@@ -272,7 +290,7 @@ function createBridgeApi({
 
         if (group.winnerSessionId && group.winnerSessionId !== sessionId) {
             leg.state = "lost";
-            closeSessionNow(sessionId, "multiring-loser-answer");
+            closeSessionNow(sessionId, "mr-loser-late-answer");
             logger.log(`[MR:${group.groupId}] late loser answer sessionId=${sessionId}`);
             return { handled: true, won: false, winnerSessionId: group.winnerSessionId };
         }
@@ -290,6 +308,10 @@ function createBridgeApi({
         try {
             await applyInboundAnswer(sessionId, answerPayload?.sdp, answerPayload?.candidates || []);
             leg.state = "answer_applied";
+            const ready = await waitForConnectedOrTimeout(sessionId, 5000);
+            if (!ready) {
+                throw new Error("winner-leg-not-connected-before-bridge");
+            }
             startWebRtcBridge(group.callerSessionId, sessionId);
             leg.state = "won";
             logger.log(`[MR:${group.groupId}] bridge started winnerSessionId=${sessionId}`);
@@ -298,10 +320,10 @@ function createBridgeApi({
             return { handled: true, won: true, winnerSessionId: sessionId };
         } catch (err) {
             logger.error(`[MR:${group.groupId}] winner answer apply failed: ${err.message}`);
-            closeSessionNow(sessionId, "multiring-winner-answer-failed");
+            closeSessionNow(sessionId, "mr-winner-answer-apply-failed");
             for (const loserLeg of group.legsBySessionId.values()) {
                 if (loserLeg.sessionId === sessionId) continue;
-                closeSessionNow(loserLeg.sessionId, "multiring-abort");
+                closeSessionNow(loserLeg.sessionId, "mr-abort-winner-failed");
             }
             dropRingGroupTracking(group);
             group.reject(err);
@@ -318,69 +340,129 @@ function createBridgeApi({
         calleeSession.bridgedWith = callerSessionId;
         callerSession.mediaRelayActive = true;
         calleeSession.mediaRelayActive = true;
-
-        let callerPipeActive = false;
-        let calleePipeActive = false;
         let callerSourceNotified = false;
         let calleeSourceNotified = false;
+        const isMultiRingBridge = !!callerSession.multiRingLeg || !!calleeSession.multiRingLeg;
+        let c2wPackets = 0;
+        let w2cPackets = 0;
+        let c2wFirstPacketLogged = false;
+        let w2cFirstPacketLogged = false;
+        let c2wSub = null;
+        let w2cSub = null;
+        let cTrackSub = null;
+        let wTrackSub = null;
+        let statsTimer = null;
 
-        function wireCallerToCallee() {
-            if (callerPipeActive) return;
-            const track = callerSession.remoteTracks.find(t => t.kind === "audio");
-            if (!track || !calleeSession.localAudioTrack) return;
-            callerPipeActive = true;
-            track.onReceiveRtp.subscribe((rtp) => {
-                if (callerSession.mediaRelayActive) {
-                    if (!calleeSourceNotified) {
-                        calleeSourceNotified = true;
-                        calleeSession.localAudioTrack.onSourceChanged.execute({
-                            sequenceNumber: rtp.header.sequenceNumber,
-                            timestamp: rtp.header.timestamp,
-                        });
-                    }
-                    calleeSession.localAudioTrack.writeRtp(rtp);
-                }
-            });
+        function unsubscribe(sub) {
+            if (!sub) return null;
+            const fn = typeof sub.unSubscribe === "function" ? sub.unSubscribe : null;
+            if (fn) {
+                try { fn(); } catch (_) {}
+            }
+            return null;
         }
 
-        function wireCalleeToCaller() {
-            if (calleePipeActive) return;
-            const track = calleeSession.remoteTracks.find(t => t.kind === "audio");
-            if (!track || !callerSession.localAudioTrack) return;
-            calleePipeActive = true;
-            track.onReceiveRtp.subscribe((rtp) => {
-                if (callerSession.mediaRelayActive) {
-                    if (!callerSourceNotified) {
-                        callerSourceNotified = true;
-                        callerSession.localAudioTrack.onSourceChanged.execute({
-                            sequenceNumber: rtp.header.sequenceNumber,
-                            timestamp: rtp.header.timestamp,
-                        });
-                    }
-                    callerSession.localAudioTrack.writeRtp(rtp);
+        function rebindCallerToCallee(track) {
+            if (!track || track.kind !== "audio" || !calleeSession.localAudioTrack) return;
+            c2wSub = unsubscribe(c2wSub);
+            const sub = track.onReceiveRtp.subscribe((rtp) => {
+                if (!callerSession.mediaRelayActive || !calleeSession.mediaRelayActive) return;
+                c2wPackets += 1;
+                if (isMultiRingBridge && !c2wFirstPacketLogged) {
+                    c2wFirstPacketLogged = true;
+                    logger.log(`[Bridge][MR] first packet caller->winner bridge=${callerSessionId}<->${calleeSessionId}`);
                 }
+                if (!calleeSourceNotified) {
+                    calleeSourceNotified = true;
+                    calleeSession.localAudioTrack.onSourceChanged.execute({
+                        sequenceNumber: rtp.header.sequenceNumber,
+                        timestamp: rtp.header.timestamp,
+                    });
+                }
+                calleeSession.localAudioTrack.writeRtp(rtp);
             });
+            c2wSub = sub || null;
         }
 
-        wireCallerToCallee();
-        wireCalleeToCaller();
+        function rebindCalleeToCaller(track) {
+            if (!track || track.kind !== "audio" || !callerSession.localAudioTrack) return;
+            w2cSub = unsubscribe(w2cSub);
+            const sub = track.onReceiveRtp.subscribe((rtp) => {
+                if (!callerSession.mediaRelayActive || !calleeSession.mediaRelayActive) return;
+                w2cPackets += 1;
+                if (isMultiRingBridge && !w2cFirstPacketLogged) {
+                    w2cFirstPacketLogged = true;
+                    logger.log(`[Bridge][MR] first packet winner->caller bridge=${callerSessionId}<->${calleeSessionId}`);
+                }
+                if (!callerSourceNotified) {
+                    callerSourceNotified = true;
+                    callerSession.localAudioTrack.onSourceChanged.execute({
+                        sequenceNumber: rtp.header.sequenceNumber,
+                        timestamp: rtp.header.timestamp,
+                    });
+                }
+                callerSession.localAudioTrack.writeRtp(rtp);
+            });
+            w2cSub = sub || null;
+        }
+
+        const callerTrack = callerSession.remoteTracks.find((t) => t.kind === "audio");
+        if (callerTrack) rebindCallerToCallee(callerTrack);
+        const calleeTrack = calleeSession.remoteTracks.find((t) => t.kind === "audio");
+        if (calleeTrack) rebindCalleeToCaller(calleeTrack);
 
         if (callerSession.peerConnection) {
-            callerSession.peerConnection.onTrack.subscribe((track) => {
-                if (track.kind === "audio") {
-                    callerSession.remoteTracks.push(track);
-                    wireCallerToCallee();
-                }
+            const sub = callerSession.peerConnection.onTrack.subscribe((track) => {
+                if (track.kind !== "audio") return;
+                if (!callerSession.remoteTracks.includes(track)) callerSession.remoteTracks.push(track);
+                rebindCallerToCallee(track);
             });
+            cTrackSub = sub || null;
         }
         if (calleeSession.peerConnection) {
-            calleeSession.peerConnection.onTrack.subscribe((track) => {
-                if (track.kind === "audio") {
-                    calleeSession.remoteTracks.push(track);
-                    wireCalleeToCaller();
-                }
+            const sub = calleeSession.peerConnection.onTrack.subscribe((track) => {
+                if (track.kind !== "audio") return;
+                if (!calleeSession.remoteTracks.includes(track)) calleeSession.remoteTracks.push(track);
+                rebindCalleeToCaller(track);
             });
+            wTrackSub = sub || null;
         }
+
+        if (isMultiRingBridge) {
+            const startedAt = Date.now();
+            statsTimer = setInterval(() => {
+                if (!callerSession.mediaRelayActive || !calleeSession.mediaRelayActive) {
+                    clearInterval(statsTimer);
+                    statsTimer = null;
+                    return;
+                }
+                logger.log(
+                    `[Bridge][MR] rtp bridge=${callerSessionId}<->${calleeSessionId} caller_to_winner=${c2wPackets} winner_to_caller=${w2cPackets}`,
+                );
+                if (Date.now() - startedAt > 20000) {
+                    clearInterval(statsTimer);
+                    statsTimer = null;
+                }
+            }, 3000);
+        }
+
+        const callerDisposers = callerSession._bridgeDisposers || [];
+        const calleeDisposers = calleeSession._bridgeDisposers || [];
+        callerDisposers.push(() => { c2wSub = unsubscribe(c2wSub); });
+        callerDisposers.push(() => { cTrackSub = unsubscribe(cTrackSub); });
+        calleeDisposers.push(() => { w2cSub = unsubscribe(w2cSub); });
+        calleeDisposers.push(() => { wTrackSub = unsubscribe(wTrackSub); });
+        if (statsTimer) {
+            const stopStats = () => {
+                if (!statsTimer) return;
+                clearInterval(statsTimer);
+                statsTimer = null;
+            };
+            callerDisposers.push(stopStats);
+            calleeDisposers.push(stopStats);
+        }
+        callerSession._bridgeDisposers = callerDisposers;
+        calleeSession._bridgeDisposers = calleeDisposers;
         logger.log(`[Bridge] WebRTC bridge initiated between ${callerSessionId} and ${calleeSessionId}`);
     }
 
