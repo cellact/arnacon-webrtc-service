@@ -411,6 +411,7 @@ const signalingHandlersApi = createSignalingHandlers({
     handleEndCallRenegotiation: (...args) => handleEndCallRenegotiation(...args),
     handleReofferAnswer: (...args) => handleReofferAnswer(...args),
     handleInboundCalleeAnswer: (...args) => handleInboundCalleeAnswer(...args),
+    handleMultiRingLegAnswer: (...args) => handleMultiRingLegAnswer(...args),
     handleIceRestart: (...args) => handleIceRestart(...args),
     handleRing: (...args) => handleRing(...args),
     handleCallEnd: (...args) => handleCallEnd(...args),
@@ -836,6 +837,13 @@ async function handleInboundCalleeAnswer(sessionId, payload) {
     return callFlowApi.handleInboundCalleeAnswer(sessionId, payload);
 }
 
+async function handleMultiRingLegAnswer(sessionId, payload) {
+    const session = sessions.get(sessionId);
+    if (!session || !session.multiRingLeg) return null;
+    const winner = bridgeApi.commitWinnerFromDataChannelAnswer(sessionId);
+    return winner || null;
+}
+
 /**
  * Enqueues an async task on the session's signaling queue so SDP operations
  * (end-call renegotiation, RING offers, answers, ICE restarts) never overlap.
@@ -890,14 +898,13 @@ async function notifyAndBridgeMulti(callerSessionId, destinations) {
 
 async function onVerifiedNotifyAnswer(sessionId, offer, session) {
     if (!session || !session.multiRingLeg) return null;
-    const winner = bridgeApi.commitWinnerFromAnswer(sessionId);
-    if (!winner || !winner.handled) return null;
+    const observed = bridgeApi.commitWinnerFromAnswer(sessionId);
+    if (!observed || !observed.handled) return null;
     return {
         ok: true,
         handled: true,
         sessionId,
-        winnerSessionId: winner.winnerSessionId,
-        won: winner.won === true,
+        won: false,
     };
 }
 

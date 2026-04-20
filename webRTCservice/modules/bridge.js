@@ -278,86 +278,16 @@ function createBridgeApi({
         if (!groupId) return { handled: false };
         const group = ringGroups.get(groupId);
         if (!group || group.closed) return { handled: false };
-        if (group.winnerSessionId) {
-            return {
-                handled: true,
-                won: group.winnerSessionId === sessionId,
-                winnerSessionId: group.winnerSessionId,
-            };
-        }
-
-        if (group.mediaWatchers.has(sessionId)) {
-            return { handled: true, won: false, pending: true };
-        }
-
-        const session = sessions.get(sessionId);
-        if (!session || !session.peerConnection) return { handled: true, won: false, pending: true };
-
-        const watcher = { subs: [], timer: null, done: false };
-        group.mediaWatchers.set(sessionId, watcher);
-
-        const cleanup = () => {
-            if (watcher.timer) {
-                clearTimeout(watcher.timer);
-                watcher.timer = null;
-            }
-            for (const sub of watcher.subs) {
-                const fn = typeof sub?.unSubscribe === "function" ? sub.unSubscribe : null;
-                if (fn) {
-                    try { fn(); } catch (_) {}
-                }
-            }
-            watcher.subs = [];
-            group.mediaWatchers.delete(sessionId);
-        };
-
-        const commitFrom = (source) => {
-            if (watcher.done) return;
-            watcher.done = true;
-            cleanup();
-            commitWinner(group, sessionId, source);
-        };
-
-        const armTrack = (track) => {
-            if (!track || track.kind !== "audio" || watcher.done || group.closed || group.winnerSessionId) return;
-            const sub = track.onReceiveRtp.subscribe(() => {
-                if (group.closed || group.winnerSessionId) return;
-                commitFrom("answer-rtp");
-            });
-            watcher.subs.push(sub || null);
-        };
-
-        const seen = new Set();
-        const armIfNew = (track) => {
-            if (!track || track.kind !== "audio" || seen.has(track)) return;
-            seen.add(track);
-            armTrack(track);
-        };
-
-        for (const track of session.remoteTracks || []) armIfNew(track);
-        if (session.peerConnection.getReceivers) {
-            for (const recv of session.peerConnection.getReceivers()) armIfNew(recv?.track);
-        }
-        if (session.peerConnection.getTransceivers) {
-            for (const tr of session.peerConnection.getTransceivers()) {
-                if (tr?.kind !== "audio" || !tr.receiver?.tracks) continue;
-                for (const track of tr.receiver.tracks) armIfNew(track);
-            }
-        }
-        const onTrackSub = session.peerConnection.onTrack.subscribe((track) => armIfNew(track));
-        watcher.subs.push(onTrackSub || null);
-
-        watcher.timer = setTimeout(() => {
-            if (group.closed || group.winnerSessionId) {
-                cleanup();
-                return;
-            }
-            // Fallback to answer-only lock if media packets are delayed.
-            commitFrom("answer-timeout");
-        }, 4000);
-
-        logger.log(`[MR:${group.groupId}] answer received sessionId=${sessionId}, waiting media before winner lock`);
+        logger.log(`[MR:${group.groupId}] HTTP answer observed sessionId=${sessionId} (no winner lock)`);
         return { handled: true, won: false, pending: true };
+    }
+
+    function commitWinnerFromDataChannelAnswer(sessionId) {
+        const groupId = sessionToRingGroup.get(sessionId);
+        if (!groupId) return { handled: false };
+        const group = ringGroups.get(groupId);
+        if (!group || group.closed) return { handled: false };
+        return commitWinner(group, sessionId, "dc-answer");
     }
 
     async function notifyAndBridgeMulti(callerSessionId, destinations) {
@@ -691,6 +621,7 @@ function createBridgeApi({
         startBridgeRtp,
         startPendingMultiBridge,
         commitWinnerFromAnswer,
+        commitWinnerFromDataChannelAnswer,
         checkPendingBridge,
         checkPendingInboundCall,
         handleIceRestart,
