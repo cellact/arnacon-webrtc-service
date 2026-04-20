@@ -335,6 +335,8 @@ function createBridgeApi({
         let wTrackSub = null;
         let c2wPackets = 0;
         let w2cPackets = 0;
+        let currentCallerTrack = null;
+        let currentCalleeTrack = null;
         let statsTimer = null;
 
         function unsubscribe(sub) {
@@ -348,6 +350,7 @@ function createBridgeApi({
 
         function rebindCallerToCallee(track) {
             if (!track || track.kind !== "audio" || !calleeSession.localAudioTrack) return;
+            currentCallerTrack = track;
             c2wSub = unsubscribe(c2wSub);
             const sub = track.onReceiveRtp.subscribe((rtp) => {
                 if (!callerSession.mediaRelayActive || !calleeSession.mediaRelayActive) return;
@@ -366,6 +369,7 @@ function createBridgeApi({
 
         function rebindCalleeToCaller(track) {
             if (!track || track.kind !== "audio" || !callerSession.localAudioTrack) return;
+            currentCalleeTrack = track;
             w2cSub = unsubscribe(w2cSub);
             const sub = track.onReceiveRtp.subscribe((rtp) => {
                 if (!callerSession.mediaRelayActive || !calleeSession.mediaRelayActive) return;
@@ -385,6 +389,23 @@ function createBridgeApi({
         function getReceiverAudioTracks(session) {
             const out = [];
             const seen = new Set();
+            // Prefer tracks that already fired onTrack and were stored on the session.
+            // In multiring, winner onTrack can happen before bridge start.
+            for (const t of session?.remoteTracks || []) {
+                if (!t || t.kind !== "audio") continue;
+                if (seen.has(t)) continue;
+                seen.add(t);
+                out.push(t);
+            }
+            if (session?.peerConnection?.getReceivers) {
+                for (const recv of session.peerConnection.getReceivers()) {
+                    const t = recv?.track;
+                    if (!t || t.kind !== "audio") continue;
+                    if (seen.has(t)) continue;
+                    seen.add(t);
+                    out.push(t);
+                }
+            }
             if (session?.peerConnection?.getTransceivers) {
                 for (const tr of session.peerConnection.getTransceivers()) {
                     if (tr?.kind !== "audio" || !tr.receiver?.tracks) continue;
@@ -395,12 +416,6 @@ function createBridgeApi({
                         out.push(t);
                     }
                 }
-            }
-            for (const t of session?.remoteTracks || []) {
-                if (!t || t.kind !== "audio") continue;
-                if (seen.has(t)) continue;
-                seen.add(t);
-                out.push(t);
             }
             return out;
         }
@@ -443,6 +458,22 @@ function createBridgeApi({
         calleeSession._bridgeDisposers = calleeDisposers;
         statsTimer = setInterval(() => {
             if (!callerSession.mediaRelayActive || !calleeSession.mediaRelayActive) return;
+            // If we latched onto a non-emitting track during bridge start,
+            // force a one-step fallback rebind to another known audio track.
+            if (w2cPackets === 0) {
+                const altCalleeTrack = getReceiverAudioTracks(calleeSession).find((t) => t !== currentCalleeTrack);
+                if (altCalleeTrack) {
+                    logger.log(`[Bridge][${callerSessionId}<->${calleeSessionId}] fallback rebind callee->caller`);
+                    rebindCalleeToCaller(altCalleeTrack);
+                }
+            }
+            if (c2wPackets === 0) {
+                const altCallerTrack = getReceiverAudioTracks(callerSession).find((t) => t !== currentCallerTrack);
+                if (altCallerTrack) {
+                    logger.log(`[Bridge][${callerSessionId}<->${calleeSessionId}] fallback rebind caller->callee`);
+                    rebindCallerToCallee(altCallerTrack);
+                }
+            }
             logger.log(`[Bridge][${callerSessionId}<->${calleeSessionId}] rtp c2w=${c2wPackets} w2c=${w2cPackets}`);
         }, 2000);
         logger.log(`[Bridge] WebRTC bridge initiated between ${callerSessionId} and ${calleeSessionId}`);
