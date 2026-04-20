@@ -324,6 +324,8 @@ function createBridgeApi({
         calleeSession.bridgedWith = callerSessionId;
         callerSession.mediaRelayActive = true;
         calleeSession.mediaRelayActive = true;
+        let callerSourceNotified = false;
+        let calleeSourceNotified = false;
         let c2wSub = null;
         let w2cSub = null;
         let cTrackSub = null;
@@ -331,8 +333,6 @@ function createBridgeApi({
         let c2wPackets = 0;
         let w2cPackets = 0;
         let statsTimer = null;
-        let c2wRtpMap = null;
-        let w2cRtpMap = null;
 
         function unsubscribe(sub) {
             if (!sub) return null;
@@ -343,38 +343,14 @@ function createBridgeApi({
             return null;
         }
 
-        function normalizeRtpHeader(rtp, mapRef) {
-            if (!rtp?.header) return mapRef;
-            const inSeq = rtp.header.sequenceNumber >>> 0;
-            const inTs = rtp.header.timestamp >>> 0;
-            if (!mapRef) {
-                rtp.header.sequenceNumber = inSeq & 0xffff;
-                rtp.header.timestamp = inTs >>> 0;
-                return {
-                    inSeq,
-                    inTs,
-                    outSeq: inSeq & 0xffff,
-                    outTs: inTs >>> 0,
-                };
-            }
-            const seqDelta = (inSeq - mapRef.inSeq + 0x10000) & 0xffff;
-            const tsDelta = (inTs - mapRef.inTs) >>> 0;
-            mapRef.inSeq = inSeq;
-            mapRef.inTs = inTs;
-            mapRef.outSeq = (mapRef.outSeq + seqDelta) & 0xffff;
-            mapRef.outTs = (mapRef.outTs + tsDelta) >>> 0;
-            rtp.header.sequenceNumber = mapRef.outSeq;
-            rtp.header.timestamp = mapRef.outTs;
-            return mapRef;
-        }
-
         function rebindCallerToCallee(track) {
             if (!track || track.kind !== "audio" || !calleeSession.localAudioTrack) return;
             c2wSub = unsubscribe(c2wSub);
             const sub = track.onReceiveRtp.subscribe((rtp) => {
                 if (!callerSession.mediaRelayActive || !calleeSession.mediaRelayActive) return;
                 c2wPackets += 1;
-                if (calleeSession.localAudioTrack && rtp?.header) {
+                if (!calleeSourceNotified && calleeSession.localAudioTrack && rtp?.header) {
+                    calleeSourceNotified = true;
                     calleeSession.localAudioTrack.onSourceChanged.execute({
                         sequenceNumber: rtp.header.sequenceNumber,
                         timestamp: rtp.header.timestamp,
@@ -384,7 +360,6 @@ function createBridgeApi({
                 if (targetSsrc && rtp?.header && rtp.header.ssrc !== targetSsrc) {
                     rtp.header.ssrc = targetSsrc;
                 }
-                c2wRtpMap = normalizeRtpHeader(rtp, c2wRtpMap);
                 calleeSession.localAudioTrack.writeRtp(rtp);
             });
             c2wSub = sub || null;
@@ -396,7 +371,8 @@ function createBridgeApi({
             const sub = track.onReceiveRtp.subscribe((rtp) => {
                 if (!callerSession.mediaRelayActive || !calleeSession.mediaRelayActive) return;
                 w2cPackets += 1;
-                if (callerSession.localAudioTrack && rtp?.header) {
+                if (!callerSourceNotified && callerSession.localAudioTrack && rtp?.header) {
+                    callerSourceNotified = true;
                     callerSession.localAudioTrack.onSourceChanged.execute({
                         sequenceNumber: rtp.header.sequenceNumber,
                         timestamp: rtp.header.timestamp,
@@ -406,7 +382,6 @@ function createBridgeApi({
                 if (targetSsrc && rtp?.header && rtp.header.ssrc !== targetSsrc) {
                     rtp.header.ssrc = targetSsrc;
                 }
-                w2cRtpMap = normalizeRtpHeader(rtp, w2cRtpMap);
                 callerSession.localAudioTrack.writeRtp(rtp);
             });
             w2cSub = sub || null;
