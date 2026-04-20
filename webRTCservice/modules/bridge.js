@@ -97,6 +97,10 @@ function createBridgeApi({
     async function notifyAndBridgeMulti(callerSessionId, destinations) {
         const callerSession = sessions.get(callerSessionId);
         if (!callerSession) throw new Error("Caller session not found");
+        const sourceOffer = callerSession.lastRingOfferPayload || null;
+        if (!sourceOffer || !sourceOffer.sdp) {
+            throw new Error("Multiring requires a valid source offer payload with SDP");
+        }
 
         const targets = Array.isArray(destinations) ? destinations : [];
         if (targets.length === 0) throw new Error("No multiring destinations provided");
@@ -153,10 +157,14 @@ function createBridgeApi({
             });
 
             const callPayload = JSON.stringify({
-                type: "call-invite",
+                type: "offer",
                 from: callerEns,
                 to: calleeEns,
                 sessionId: callerSessionId,
+                sdp: sourceOffer.sdp,
+                candidates: Array.isArray(sourceOffer.candidates) ? sourceOffer.candidates : [],
+                callNonce: sourceOffer.callNonce || null,
+                isCall: true,
                 multiRingGroupId: groupId,
             });
             await sendNotification(callerEns, calleeEns, callPayload, notiTypeCall);

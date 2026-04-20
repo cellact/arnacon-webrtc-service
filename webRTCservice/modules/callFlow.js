@@ -112,6 +112,8 @@ function createCallFlowApi({
     async function handleRing(sessionId, payload) {
         const session = sessions.get(sessionId);
         if (!session || !session.peerConnection) throw new Error("Session or PeerConnection not found");
+        // Keep latest caller ring-offer so multi-ring can fan out with client-compatible offer payload.
+        session.lastRingOfferPayload = payload;
         const pc = session.peerConnection;
         const isInbound = !!session.inboundCall;
         const rawDir = payload.sdp.match(/m=audio[\s\S]*?a=(sendrecv|recvonly|sendonly|inactive)/m)?.[1] || "no-audio-dir";
