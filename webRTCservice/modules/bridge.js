@@ -330,6 +330,9 @@ function createBridgeApi({
         let w2cSub = null;
         let cTrackSub = null;
         let wTrackSub = null;
+        let c2wPackets = 0;
+        let w2cPackets = 0;
+        let statsTimer = null;
 
         function unsubscribe(sub) {
             if (!sub) return null;
@@ -345,6 +348,7 @@ function createBridgeApi({
             c2wSub = unsubscribe(c2wSub);
             const sub = track.onReceiveRtp.subscribe((rtp) => {
                 if (!callerSession.mediaRelayActive || !calleeSession.mediaRelayActive) return;
+                c2wPackets += 1;
                 if (!calleeSourceNotified) {
                     calleeSourceNotified = true;
                     calleeSession.localAudioTrack.onSourceChanged.execute({
@@ -366,6 +370,7 @@ function createBridgeApi({
             w2cSub = unsubscribe(w2cSub);
             const sub = track.onReceiveRtp.subscribe((rtp) => {
                 if (!callerSession.mediaRelayActive || !calleeSession.mediaRelayActive) return;
+                w2cPackets += 1;
                 if (!callerSourceNotified) {
                     callerSourceNotified = true;
                     callerSession.localAudioTrack.onSourceChanged.execute({
@@ -382,9 +387,32 @@ function createBridgeApi({
             w2cSub = sub || null;
         }
 
-        const callerTrack = callerSession.remoteTracks.find((t) => t.kind === "audio");
+        function getReceiverAudioTracks(session) {
+            const out = [];
+            const seen = new Set();
+            if (session?.peerConnection?.getTransceivers) {
+                for (const tr of session.peerConnection.getTransceivers()) {
+                    if (tr?.kind !== "audio" || !tr.receiver?.tracks) continue;
+                    for (const t of tr.receiver.tracks) {
+                        if (!t || t.kind !== "audio") continue;
+                        if (seen.has(t)) continue;
+                        seen.add(t);
+                        out.push(t);
+                    }
+                }
+            }
+            for (const t of session?.remoteTracks || []) {
+                if (!t || t.kind !== "audio") continue;
+                if (seen.has(t)) continue;
+                seen.add(t);
+                out.push(t);
+            }
+            return out;
+        }
+
+        const callerTrack = getReceiverAudioTracks(callerSession)[0];
         if (callerTrack) rebindCallerToCallee(callerTrack);
-        const calleeTrack = calleeSession.remoteTracks.find((t) => t.kind === "audio");
+        const calleeTrack = getReceiverAudioTracks(calleeSession)[0];
         if (calleeTrack) rebindCalleeToCaller(calleeTrack);
 
         if (callerSession.peerConnection) {
@@ -408,10 +436,20 @@ function createBridgeApi({
         const calleeDisposers = calleeSession._bridgeDisposers || [];
         callerDisposers.push(() => { c2wSub = unsubscribe(c2wSub); });
         callerDisposers.push(() => { cTrackSub = unsubscribe(cTrackSub); });
+        callerDisposers.push(() => {
+            if (statsTimer) {
+                clearInterval(statsTimer);
+                statsTimer = null;
+            }
+        });
         calleeDisposers.push(() => { w2cSub = unsubscribe(w2cSub); });
         calleeDisposers.push(() => { wTrackSub = unsubscribe(wTrackSub); });
         callerSession._bridgeDisposers = callerDisposers;
         calleeSession._bridgeDisposers = calleeDisposers;
+        statsTimer = setInterval(() => {
+            if (!callerSession.mediaRelayActive || !calleeSession.mediaRelayActive) return;
+            logger.log(`[Bridge][${callerSessionId}<->${calleeSessionId}] rtp c2w=${c2wPackets} w2c=${w2cPackets}`);
+        }, 2000);
         logger.log(`[Bridge] WebRTC bridge initiated between ${callerSessionId} and ${calleeSessionId}`);
     }
 
