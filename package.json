@@ -1,6 +1,6 @@
 {
   "name": "arnacon-webrtc-service",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "Arnacon WebRTC core runtime and service modules",
   "main": "./webRTCservice/core.js",
   "type": "commonjs",
