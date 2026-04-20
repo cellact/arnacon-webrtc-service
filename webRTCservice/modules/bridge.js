@@ -244,7 +244,12 @@ function createBridgeApi({
             closeSessionNow(sid, "mr-loser-winner-locked");
         }
 
-        startWebRtcBridge(group.callerSessionId, winnerSessionId);
+        // Important ordering for multiring:
+        // callFlow sends caller ACK/ANSWER immediately after routeCall() returns.
+        // Defer bridge start one tick so caller applies the answer first, then media starts.
+        setTimeout(() => {
+            startWebRtcBridge(group.callerSessionId, winnerSessionId);
+        }, 0);
         logger.log(`[MR:${group.groupId}] winner locked from ready-session sessionId=${winnerSessionId}`);
         group.resolve(winnerSessionId);
         dropRingGroupTracking(group);
