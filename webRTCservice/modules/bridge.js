@@ -21,6 +21,7 @@ function createBridgeApi({
 }) {
     const ringGroups = new Map();
     const sessionToRingGroup = new Map();
+    const pendingMultiBridgeStarts = new Map();
     let nextRingGroupId = 1;
 
     function newRingGroupId() {
@@ -244,12 +245,9 @@ function createBridgeApi({
             closeSessionNow(sid, "mr-loser-winner-locked");
         }
 
-        // Important ordering for multiring:
-        // callFlow sends caller ACK/ANSWER immediately after routeCall() returns.
-        // Defer bridge start one tick so caller applies the answer first, then media starts.
-        setTimeout(() => {
-            startWebRtcBridge(group.callerSessionId, winnerSessionId);
-        }, 0);
+        // Do not start media bridge here for multiring.
+        // callFlow will start it explicitly after sending the caller's ANSWER.
+        pendingMultiBridgeStarts.set(group.callerSessionId, winnerSessionId);
         logger.log(`[MR:${group.groupId}] winner locked from ready-session sessionId=${winnerSessionId}`);
         group.resolve(winnerSessionId);
         dropRingGroupTracking(group);
@@ -541,10 +539,21 @@ function createBridgeApi({
         });
     }
 
+    function startPendingMultiBridge(callerSessionId) {
+        if (!callerSessionId) return false;
+        const winnerSessionId = pendingMultiBridgeStarts.get(callerSessionId);
+        if (!winnerSessionId) return false;
+        pendingMultiBridgeStarts.delete(callerSessionId);
+        startWebRtcBridge(callerSessionId, winnerSessionId);
+        logger.log(`[MR] bridge started after answer callerSessionId=${callerSessionId} winnerSessionId=${winnerSessionId}`);
+        return true;
+    }
+
     return {
         notifyAndBridge,
         notifyAndBridgeMulti,
         startBridgeRtp,
+        startPendingMultiBridge,
         checkPendingBridge,
         checkPendingInboundCall,
         handleIceRestart,

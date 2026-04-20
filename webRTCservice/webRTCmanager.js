@@ -403,6 +403,7 @@ const callFlowApi = createCallFlowApi({
     MediaStreamTrack,
     RTCSessionDescription,
     enqueueSignaling: (...args) => enqueueSignaling(...args),
+    startPendingMultiBridge: (...args) => bridgeApi.startPendingMultiBridge(...args),
     logger: console,
 });
 const signalingHandlersApi = createSignalingHandlers({

@@ -27,6 +27,7 @@ function createCallFlowApi({
     MediaStreamTrack,
     RTCSessionDescription,
     enqueueSignaling,
+    startPendingMultiBridge = null,
     logger = console,
 }) {
     function onDataChannelOpen(sessionId, deps = {}) {
@@ -160,6 +161,9 @@ function createCallFlowApi({
 
         if (isInbound) sendAckAndAnswer(sessionId, answerSdp);
         else sendAnswer(sessionId, answerSdp);
+        if (!isInbound && destination.route === "webrtc-multiring" && typeof startPendingMultiBridge === "function") {
+            startPendingMultiBridge(sessionId);
+        }
 
         if (!isInbound && destination.route === "sbc") startMediaRelay(sessionId);
         if (isInactive) {
