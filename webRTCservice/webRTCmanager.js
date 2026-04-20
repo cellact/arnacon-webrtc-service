@@ -421,6 +421,7 @@ const peerConnectionApi = createPeerConnectionFactory({
     RTCPeerConnection,
     iceServers: ICE_SERVERS,
     onDataChannelOpen: (sessionId) => onDataChannelOpen(sessionId),
+    onPeerConnected: (sessionId) => onPeerConnected(sessionId),
     onDataChannelMessage: (sessionId, raw) => signalingHandlersApi.onDataChannelMessage(sessionId, raw),
     destroySession: (sessionId, notify) => destroySession(sessionId, notify),
     logger: console,
@@ -809,6 +810,13 @@ function onDataChannelOpen(sessionId) {
         sendInboundRing: (...args) => sendInboundRing(...args),
         destroySession: (...args) => destroySession(...args),
     });
+}
+
+function onPeerConnected(sessionId) {
+    const session = sessions.get(sessionId);
+    if (!session || !session.walletAddress) return;
+    checkPendingBridge(sessionId, session.walletAddress);
+    checkPendingInboundCall(sessionId, session.walletAddress);
 }
 
 /**

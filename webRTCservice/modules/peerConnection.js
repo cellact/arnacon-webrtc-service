@@ -67,6 +67,7 @@ function createPeerConnectionFactory({
     RTCPeerConnection,
     iceServers,
     onDataChannelOpen,
+    onPeerConnected = null,
     onDataChannelMessage,
     destroySession,
     logger = console,
@@ -111,6 +112,9 @@ function createPeerConnectionFactory({
                 if (s.disconnectTimer) {
                     clearTimeout(s.disconnectTimer);
                     s.disconnectTimer = null;
+                }
+                if (typeof onPeerConnected === "function") {
+                    onPeerConnected(sessionId);
                 }
             }
         });
