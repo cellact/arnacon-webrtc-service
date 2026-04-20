@@ -877,6 +877,7 @@ async function onVerifiedNotifyAnswer(sessionId, offer, session) {
     if (!winner || !winner.handled) return null;
     if (!winner.won) {
         return {
+            handled: true,
             ok: true,
             ignored: true,
             reason: "multiring-loser",
@@ -886,6 +887,7 @@ async function onVerifiedNotifyAnswer(sessionId, offer, session) {
     }
     console.log(`[${sessionId}] Multi-ring winner selected on verified answer`);
     return {
+        handled: true,
         ok: true,
         accepted: true,
         reason: "multiring-winner",
