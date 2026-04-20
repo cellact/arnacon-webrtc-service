@@ -59,6 +59,17 @@ function createBridgeApi({
         }
     }
 
+    function getCallerNumberLabel(identity) {
+        if (!identity || typeof identity !== "string") return "";
+        const trimmed = identity.trim();
+        if (!trimmed) return "";
+        const atPos = trimmed.indexOf("@");
+        if (atPos > 0) return trimmed.slice(0, atPos);
+        const dotPos = trimmed.indexOf(".");
+        if (dotPos > 0) return trimmed.slice(0, dotPos);
+        return trimmed;
+    }
+
     async function notifyAndBridge(callerSessionId, destination) {
         const callerSession = sessions.get(callerSessionId);
         if (!callerSession) throw new Error("Caller session not found");
@@ -107,6 +118,7 @@ function createBridgeApi({
 
         const groupId = newRingGroupId();
         const callerEns = callerSession.callerEns;
+        const callerNumberLabel = getCallerNumberLabel(callerEns);
         const timeoutMs = 60000;
         const group = {
             groupId,
@@ -142,25 +154,29 @@ function createBridgeApi({
 
         ringGroups.set(groupId, group);
 
+        let legIndex = 0;
         for (const destination of targets) {
             const calleeWallet = destination.wallet;
             const calleeEns = destination.ensName || calleeWallet;
             if (!calleeWallet) continue;
+            legIndex += 1;
+            const childSessionId = `${groupId}-leg${legIndex}`;
             const walletKey = calleeWallet.toLowerCase();
             group.pendingWallets.add(walletKey);
             addPendingEntry(walletKey, {
                 kind: "multi",
                 groupId,
                 callerSessionId,
+                childSessionId,
                 walletKey,
                 ensName: calleeEns,
             });
 
             const callPayload = JSON.stringify({
                 type: "offer",
-                from: callerEns,
+                from: callerNumberLabel || callerEns,
                 to: calleeEns,
-                sessionId: callerSessionId,
+                sessionId: childSessionId,
                 sdp: sourceOffer.sdp,
                 candidates: Array.isArray(sourceOffer.candidates) ? sourceOffer.candidates : [],
                 callNonce: sourceOffer.callNonce || null,
