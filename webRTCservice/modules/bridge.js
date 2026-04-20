@@ -17,6 +17,8 @@ function createBridgeApi({
     getRelayCandidates,
     embedCandidatesInSdp,
     RTCSessionDescription,
+    onDataChannelOpen = null,
+    onDataChannelMessage = null,
     logger = console,
 }) {
     const ringGroups = new Map();
@@ -181,7 +183,23 @@ function createBridgeApi({
 
             const pc = createPeerConnection(legSessionId);
             if (typeof pc.createDataChannel === "function") {
-                try { pc.createDataChannel("chat"); } catch (_) {}
+                try {
+                    const dc = pc.createDataChannel("chat");
+                    if (dc) {
+                        legSession.dataChannel = dc;
+                        dc.onopen = () => {
+                            if (typeof onDataChannelOpen === "function") {
+                                onDataChannelOpen(legSessionId);
+                            }
+                        };
+                        dc.onMessage.subscribe((msg) => {
+                            if (typeof onDataChannelMessage !== "function") return;
+                            const raw = typeof msg === "string" ? msg : Buffer.from(msg).toString("utf-8");
+                            onDataChannelMessage(legSessionId, raw);
+                        });
+                        dc.onclose = () => logger.log(`[${legSessionId}] Data channel closed`);
+                    }
+                } catch (_) {}
             }
             legSession.localAudioTrack = new MediaStreamTrack({ kind: "audio" });
             pc.addTrack(legSession.localAudioTrack);

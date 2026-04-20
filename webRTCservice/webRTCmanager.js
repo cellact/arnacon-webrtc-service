@@ -374,6 +374,8 @@ const bridgeApi = createBridgeApi({
     getRelayCandidates: (...args) => getRelayCandidates(...args),
     embedCandidatesInSdp: (...args) => embedCandidatesInSdp(...args),
     RTCSessionDescription,
+    onDataChannelOpen: (...args) => onDataChannelOpen(...args),
+    onDataChannelMessage: (...args) => onDataChannelMessage(...args),
     logger: console,
 });
 const callFlowApi = createCallFlowApi({
