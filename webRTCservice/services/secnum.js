@@ -2,10 +2,10 @@
 
 const DOMAINS = ["secnumtest.global", "secnum.global", "cellactm.global", "cellactl.global"];
 const HARD_CODED_MULTI_RING = {
-    callerEns: "972111000.secnumtest.global",
+    callerEns: "972557012401.secnumtest.global",
     ringTargets: [
-        "9726767.secnumtest.global",
-        "972420420.secnumtest.global",
+        "972557012402.secnumtest.global",
+        "972557012403.secnumtest.global",
     ],
 };
 
