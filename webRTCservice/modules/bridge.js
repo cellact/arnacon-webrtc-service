@@ -364,15 +364,16 @@ function createBridgeApi({
         ringGroups.set(groupId, group);
         logger.log(`[MR:${group.groupId}] created callerSessionId=${callerSessionId}`);
 
-        let legIndex = 0;
-        for (const destination of targets) {
-            legIndex += 1;
-            try {
-                await createMultiringLegOffer(group, callerSession, callerNumberLabel, destination, legIndex);
-            } catch (err) {
-                logger.error(`[MR:${group.groupId}] failed leg invite #${legIndex}: ${err.message}`);
+        const inviteJobs = targets.map((destination, idx) =>
+            createMultiringLegOffer(group, callerSession, callerNumberLabel, destination, idx + 1)
+        );
+        const inviteResults = await Promise.allSettled(inviteJobs);
+        inviteResults.forEach((result, idx) => {
+            if (result.status === "rejected") {
+                const legIndex = idx + 1;
+                logger.error(`[MR:${group.groupId}] failed leg invite #${legIndex}: ${result.reason?.message || result.reason}`);
             }
-        }
+        });
 
         if (group.pendingWallets.size === 0) {
             group.closed = true;
