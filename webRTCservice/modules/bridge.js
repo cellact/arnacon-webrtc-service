@@ -324,8 +324,6 @@ function createBridgeApi({
         calleeSession.bridgedWith = callerSessionId;
         callerSession.mediaRelayActive = true;
         calleeSession.mediaRelayActive = true;
-        let callerSourceNotified = false;
-        let calleeSourceNotified = false;
         let c2wSub = null;
         let w2cSub = null;
         let cTrackSub = null;
@@ -349,8 +347,7 @@ function createBridgeApi({
             const sub = track.onReceiveRtp.subscribe((rtp) => {
                 if (!callerSession.mediaRelayActive || !calleeSession.mediaRelayActive) return;
                 c2wPackets += 1;
-                if (!calleeSourceNotified) {
-                    calleeSourceNotified = true;
+                if (calleeSession.localAudioTrack && rtp?.header) {
                     calleeSession.localAudioTrack.onSourceChanged.execute({
                         sequenceNumber: rtp.header.sequenceNumber,
                         timestamp: rtp.header.timestamp,
@@ -371,8 +368,7 @@ function createBridgeApi({
             const sub = track.onReceiveRtp.subscribe((rtp) => {
                 if (!callerSession.mediaRelayActive || !calleeSession.mediaRelayActive) return;
                 w2cPackets += 1;
-                if (!callerSourceNotified) {
-                    callerSourceNotified = true;
+                if (callerSession.localAudioTrack && rtp?.header) {
                     callerSession.localAudioTrack.onSourceChanged.execute({
                         sequenceNumber: rtp.header.sequenceNumber,
                         timestamp: rtp.header.timestamp,
