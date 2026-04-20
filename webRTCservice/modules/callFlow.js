@@ -99,9 +99,7 @@ function createCallFlowApi({
         if (!session || !session.peerConnection) throw new Error("Session or PeerConnection not found");
         const pc = session.peerConnection;
         session.callEndInProgress = false;
-        // Outbound ring must stay in "ringing" until a route winner is ready and
-        // we actually send the final ANSWER to the caller.
-        session.phase = isInbound ? "in-call" : "ringing";
+        session.phase = "in-call";
         await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp, "answer"));
         sendDataChannelMessage(sessionId, { msgType: "call", action: "ack", ackFor: "answer" });
         try {
@@ -138,7 +136,9 @@ function createCallFlowApi({
         }
 
         session.callEndInProgress = false;
-        session.phase = "in-call";
+        // Keep outbound calls in ringing state until a route winner exists and
+        // we send the final answer to the caller.
+        session.phase = isInbound ? "in-call" : "ringing";
         if (!(isInbound && isInactive)) {
             const existingAudioT = pc.getTransceivers().find((t) => t.kind === "audio");
             if (existingAudioT) existingAudioT.setDirection("sendrecv");
