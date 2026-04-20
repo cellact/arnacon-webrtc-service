@@ -3,6 +3,7 @@
 const DOMAINS = ["secnumtest.global", "secnum.global", "cellactm.global", "cellactl.global"];
 const HARD_CODED_MULTI_RING = {
     callerEns: "972557012401.secnumtest.global",
+    callerSbcNumber: "972557258108",
     ringTargets: [
         "972557012402.secnumtest.global",
         "972557012403.secnumtest.global",
@@ -45,7 +46,10 @@ async function resolveEnsWallet(helpers, ensName) {
 
 async function buildHardcodedMultiRing(parsedFrom, helpers) {
     const fromEns = String(parsedFrom?.full || "").toLowerCase();
-    if (fromEns !== HARD_CODED_MULTI_RING.callerEns) {
+    const fromNumber = helpers.normalizePhone(parsedFrom?.value || parsedFrom?.full || "");
+    const matchedEns = fromEns === HARD_CODED_MULTI_RING.callerEns;
+    const matchedSbcNumber = fromNumber === HARD_CODED_MULTI_RING.callerSbcNumber;
+    if (!matchedEns && !matchedSbcNumber) {
         return null;
     }
 
@@ -64,7 +68,7 @@ async function buildHardcodedMultiRing(parsedFrom, helpers) {
         route: "webrtc-multiring",
         mode: "first-verified-answer-wins",
         targets,
-        ruleId: "hardcoded-secnumtest-972111000",
+        ruleId: "hardcoded-secnumtest-multiring",
     };
 }
 

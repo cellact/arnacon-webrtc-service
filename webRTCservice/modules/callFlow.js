@@ -46,9 +46,34 @@ function createCallFlowApi({
             });
             return;
         }
+        if (session.isGatewayCaller && session.multiRingLeg) {
+            triggerMultiRingLegRing(sessionId, destroySession).catch((err) => {
+                logger.error(`[${sessionId}] Failed to send multiring leg RING on DC open: ${err.message}`);
+            });
+        }
         if (session.walletAddress) {
             checkPendingBridge(sessionId, session.walletAddress);
             checkPendingInboundCall(sessionId, session.walletAddress);
+        }
+    }
+
+    async function triggerMultiRingLegRing(sessionId, destroySession = null) {
+        const session = sessions.get(sessionId);
+        if (!session || !session.multiRingLeg) return false;
+        if (!session.multiRingHttpAnswered) return false;
+        if (session.multiRingLegRingSent) return true;
+        if (!session.dataChannel) return false;
+        session.multiRingLegRingSent = true;
+        try {
+            await sendInboundRing(sessionId);
+            logger.log(`[${sessionId}] MR stage1->stage2: RING offer sent over data channel`);
+            return true;
+        } catch (err) {
+            session.multiRingLegRingSent = false;
+            if (typeof destroySession === "function") {
+                try { destroySession(sessionId, false); } catch (_) {}
+            }
+            throw err;
         }
     }
 
@@ -108,6 +133,17 @@ function createCallFlowApi({
             sendDataChannelMessage(sessionId, { msgType: "call", action: "end" });
             session.phase = "post-call";
         }
+    }
+
+    async function handleMultiRingLegAnswer(sessionId, payload) {
+        const session = sessions.get(sessionId);
+        if (!session || !session.peerConnection) throw new Error("Session or PeerConnection not found");
+        const pc = session.peerConnection;
+        session.callEndInProgress = false;
+        session.phase = "in-call";
+        await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp, "answer"));
+        sendDataChannelMessage(sessionId, { msgType: "call", action: "ack", ackFor: "answer" });
+        logger.log(`[${sessionId}] MR stage2: pickup answer received over data channel`);
     }
 
     async function handleRing(sessionId, payload) {
@@ -258,7 +294,9 @@ function createCallFlowApi({
     return {
         onDataChannelOpen,
         sendInboundRing,
+        triggerMultiRingLegRing,
         handleInboundCalleeAnswer,
+        handleMultiRingLegAnswer,
         handleRing,
         handleReofferAnswer,
         handleCallEnd,

@@ -278,7 +278,7 @@ function createBridgeApi({
         if (!groupId) return { handled: false };
         const group = ringGroups.get(groupId);
         if (!group || group.closed) return { handled: false };
-        logger.log(`[MR:${group.groupId}] HTTP answer observed sessionId=${sessionId} (no winner lock)`);
+        logger.log(`[MR:${group.groupId}] stage1 HTTP answer observed sessionId=${sessionId} (no winner lock)`);
         return { handled: true, won: false, pending: true };
     }
 

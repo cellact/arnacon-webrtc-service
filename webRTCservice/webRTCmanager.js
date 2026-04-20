@@ -840,6 +840,8 @@ async function handleInboundCalleeAnswer(sessionId, payload) {
 async function handleMultiRingLegAnswer(sessionId, payload) {
     const session = sessions.get(sessionId);
     if (!session || !session.multiRingLeg) return null;
+    await callFlowApi.handleMultiRingLegAnswer(sessionId, payload);
+    console.log(`[MR:${session.multiRingGroupId || "unknown"}] stage2 DC answer observed sessionId=${sessionId}`);
     const winner = bridgeApi.commitWinnerFromDataChannelAnswer(sessionId);
     return winner || null;
 }
@@ -898,8 +900,15 @@ async function notifyAndBridgeMulti(callerSessionId, destinations) {
 
 async function onVerifiedNotifyAnswer(sessionId, offer, session) {
     if (!session || !session.multiRingLeg) return null;
+    session.multiRingHttpAnswered = true;
+    console.log(`[MR:${session.multiRingGroupId || "unknown"}] stage1 HTTP answer observed sessionId=${sessionId}`);
     const observed = bridgeApi.commitWinnerFromAnswer(sessionId);
     if (!observed || !observed.handled) return null;
+    try {
+        await callFlowApi.triggerMultiRingLegRing(sessionId);
+    } catch (err) {
+        console.error(`[${sessionId}] Failed stage1->stage2 ring trigger: ${err.message}`);
+    }
     return {
         ok: true,
         handled: true,
