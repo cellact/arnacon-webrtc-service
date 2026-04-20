@@ -62,12 +62,6 @@ function createOfferFlow({
 
         if (type === "answer") {
             const session = sessions.get(sessionId);
-            if (session && typeof onVerifiedNotifyAnswer === "function") {
-                const result = await onVerifiedNotifyAnswer(sessionId, offer, session);
-                if (result && result.handled) {
-                    return result;
-                }
-            }
             if (session && session.isGatewayCaller) {
                 if (session.inboundAnswerApplied) return;
                 session.inboundAnswerApplied = true;
@@ -78,7 +72,17 @@ function createOfferFlow({
                     session.inboundAnswerApplied = false;
                     destroySession(sessionId, false);
                 }
-                return;
+                if (typeof onVerifiedNotifyAnswer === "function") {
+                    const result = await onVerifiedNotifyAnswer(sessionId, offer, session);
+                    if (result && result.handled) return result;
+                }
+                return { ok: true, sessionId };
+            }
+            if (session && typeof onVerifiedNotifyAnswer === "function") {
+                const result = await onVerifiedNotifyAnswer(sessionId, offer, session);
+                if (result && result.handled) {
+                    return result;
+                }
             }
             return;
         }

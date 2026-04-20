@@ -889,7 +889,16 @@ async function notifyAndBridgeMulti(callerSessionId, destinations) {
 }
 
 async function onVerifiedNotifyAnswer(sessionId, offer, session) {
-    return null;
+    if (!session || !session.multiRingLeg) return null;
+    const winner = bridgeApi.commitWinnerFromAnswer(sessionId);
+    if (!winner || !winner.handled) return null;
+    return {
+        ok: true,
+        handled: true,
+        sessionId,
+        winnerSessionId: winner.winnerSessionId,
+        won: winner.won === true,
+    };
 }
 
 /**

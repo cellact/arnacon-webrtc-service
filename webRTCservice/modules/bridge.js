@@ -225,7 +225,7 @@ function createBridgeApi({
         }
     }
 
-    function commitReadyWinner(group, winnerSessionId) {
+    function commitWinner(group, winnerSessionId, source = "ready-session") {
         if (!group) return { handled: false };
         if (group.winnerSessionId && group.winnerSessionId !== winnerSessionId) {
             closeSessionNow(winnerSessionId, "mr-loser-late-ready");
@@ -248,10 +248,18 @@ function createBridgeApi({
         // Do not start media bridge here for multiring.
         // callFlow will start it explicitly after sending the caller's ANSWER.
         pendingMultiBridgeStarts.set(group.callerSessionId, winnerSessionId);
-        logger.log(`[MR:${group.groupId}] winner locked from ready-session sessionId=${winnerSessionId}`);
+        logger.log(`[MR:${group.groupId}] winner locked from ${source} sessionId=${winnerSessionId}`);
         group.resolve(winnerSessionId);
         dropRingGroupTracking(group);
         return { handled: true, won: true, winnerSessionId };
+    }
+
+    function commitWinnerFromAnswer(sessionId) {
+        const groupId = sessionToRingGroup.get(sessionId);
+        if (!groupId) return { handled: false };
+        const group = ringGroups.get(groupId);
+        if (!group || group.closed) return { handled: false };
+        return commitWinner(group, sessionId, "answer");
     }
 
     async function notifyAndBridgeMulti(callerSessionId, destinations) {
@@ -514,8 +522,6 @@ function createBridgeApi({
                     continue;
                 }
                 markConnectedSession(group, sessionId);
-                const winner = commitReadyWinner(group, sessionId);
-                handled = winner.handled || handled;
                 continue;
             }
 
@@ -585,6 +591,7 @@ function createBridgeApi({
         notifyAndBridgeMulti,
         startBridgeRtp,
         startPendingMultiBridge,
+        commitWinnerFromAnswer,
         checkPendingBridge,
         checkPendingInboundCall,
         handleIceRestart,

@@ -99,7 +99,9 @@ function createCallFlowApi({
         if (!session || !session.peerConnection) throw new Error("Session or PeerConnection not found");
         const pc = session.peerConnection;
         session.callEndInProgress = false;
-        session.phase = "in-call";
+        // Outbound ring must stay in "ringing" until a route winner is ready and
+        // we actually send the final ANSWER to the caller.
+        session.phase = isInbound ? "in-call" : "ringing";
         await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp, "answer"));
         sendDataChannelMessage(sessionId, { msgType: "call", action: "ack", ackFor: "answer" });
         try {
@@ -159,6 +161,7 @@ function createCallFlowApi({
             return;
         }
 
+        session.phase = "in-call";
         if (isInbound) sendAckAndAnswer(sessionId, answerSdp);
         else sendAnswer(sessionId, answerSdp);
         if (!isInbound && destination.route === "webrtc-multiring" && typeof startPendingMultiBridge === "function") {
