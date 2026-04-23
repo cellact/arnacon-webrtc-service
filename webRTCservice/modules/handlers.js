@@ -12,6 +12,7 @@ function createHandlers({
     async function handleNotify(req, res) {
         try {
             const body = await readBody(req);
+            logger.log(`[Notify] Raw body: ${body}`);
             const rawData = JSON.parse(body);
             const data = serviceRuntime?.hooks?.normalizeIncomingPayload
                 ? serviceRuntime.hooks.normalizeIncomingPayload(rawData)
