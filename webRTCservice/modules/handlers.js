@@ -14,6 +14,14 @@ function createHandlers({
             const body = await readBody(req);
             logger.log(`[Notify] Raw body: ${body}`);
             const rawData = JSON.parse(body);
+            const headerXSign = req.headers["x-sign"] || req.headers.xsign;
+            const headerXData = req.headers["x-data"] || req.headers.xdata;
+            if (headerXSign && !rawData.xsign && !rawData["x-sign"]) {
+                rawData.xsign = headerXSign;
+            }
+            if (headerXData && !rawData.xdata && !rawData["x-data"]) {
+                rawData.xdata = headerXData;
+            }
             const data = serviceRuntime?.hooks?.normalizeIncomingPayload
                 ? serviceRuntime.hooks.normalizeIncomingPayload(rawData)
                 : rawData;
