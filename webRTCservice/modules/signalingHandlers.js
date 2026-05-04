@@ -9,6 +9,7 @@ function createSignalingHandlers({
     handleIceRestart,
     handleRing,
     handleCallEnd,
+    handleCallDtmf = null,
     handleDataMessage,
     logger = console,
 }) {
@@ -96,6 +97,12 @@ function createSignalingHandlers({
             if (action === "unhold") {
                 const s = sessions.get(sessionId);
                 if (s?.sipLocalAudioTrack) s.sipLocalAudioTrack.enabled = true;
+                return;
+            }
+            if (action === "dtmf") {
+                if (typeof handleCallDtmf === "function") {
+                    enqueueSignaling(sessionId, "call-dtmf", () => handleCallDtmf(sessionId, msg));
+                }
                 return;
             }
             return;
