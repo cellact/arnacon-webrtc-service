@@ -1051,8 +1051,13 @@ async function handleCallDtmf(sessionId, msg) {
 
             try {
                 await sipSession.info({
-                    requestOptions: { extraHeaders: ["Content-Type: application/dtmf-relay"] },
-                    body: { contentType: "application/dtmf-relay", content: infoBody },
+                    requestOptions: {
+                        extraHeaders: ["Content-Type: application/dtmf-relay"],
+                        body: {
+                            contentType: "application/dtmf-relay",
+                            content: infoBody,
+                        },
+                    },
                 });
                 infoSent = true;
             } catch (_) {}
@@ -1060,8 +1065,10 @@ async function handleCallDtmf(sessionId, msg) {
             if (!infoSent) {
                 try {
                     await sipSession.info({
-                        requestOptions: { extraHeaders: ["Content-Type: application/dtmf-relay"] },
-                        body: infoBody,
+                        requestOptions: {
+                            extraHeaders: ["Content-Type: application/dtmf-relay"],
+                            body: infoBody,
+                        },
                     });
                     infoSent = true;
                 } catch (_) {}
