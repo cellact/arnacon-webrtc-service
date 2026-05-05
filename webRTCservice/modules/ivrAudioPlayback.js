@@ -244,6 +244,11 @@ function createIvrAudioPlayback({
 
         const timeline = getOrCreateTimeline(sessionId);
         logNegotiatedIdentity(sessionId, timeline);
+        try {
+            if (session.localAudioTrack) {
+                session.localAudioTrack.ssrc = timeline.ssrc;
+            }
+        } catch (_) {}
         const state = buildPlaybackState(timeline);
         playbackBySession.set(sessionId, state);
         const { raw, tempFiles } = await textToPcmaFrames(sessionId, text);

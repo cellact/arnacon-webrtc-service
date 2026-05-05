@@ -206,6 +206,11 @@ function createCallFlowApi({
             const parsedSsrc = Number(ssrcMatch[1]);
             if (Number.isFinite(parsedSsrc) && parsedSsrc > 0) {
                 session.ivrNegotiatedSsrc = parsedSsrc >>> 0;
+                if (session.localAudioTrack) {
+                    try {
+                        session.localAudioTrack.ssrc = session.ivrNegotiatedSsrc;
+                    } catch (_) {}
+                }
                 logger.log(`[${sessionId}] IVR negotiated audio SSRC=${session.ivrNegotiatedSsrc}`);
             }
         }
