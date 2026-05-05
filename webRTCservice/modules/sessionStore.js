@@ -118,6 +118,13 @@ class SessionStore {
             try { pc.close(); } catch (_) {}
         }
 
+        if (Array.isArray(session._pcInboundRtpDisposers)) {
+            for (const dispose of session._pcInboundRtpDisposers) {
+                try { dispose(); } catch (_) {}
+            }
+            session._pcInboundRtpDisposers = [];
+        }
+
         if (session.sipConnection && closeSipSession) {
             try { closeSipSession(sessionId); } catch (_) {}
         }

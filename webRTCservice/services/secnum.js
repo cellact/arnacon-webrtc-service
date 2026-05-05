@@ -101,6 +101,11 @@ async function resolveDestination(ctx) {
     const multiRing = await buildHardcodedMultiRing(parsedFrom, helpers);
     if (multiRing) return multiRing;
 
+    const normalizedTarget = helpers.normalizePhone(parsedTo.value || parsedTo.full || "");
+    if (normalizedTarget === "2006") {
+        return { route: "ivr", providerId: "secnum", target: "2006" };
+    }
+
     if (parsedTo.type === "raw" || parsedTo.type === "unknown") {
         return { route: "sbc", number: helpers.normalizePhone(parsedTo.value) };
     }

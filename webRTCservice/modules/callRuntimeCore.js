@@ -11,6 +11,7 @@ function createCallRuntimeCore({
     openSipSession,
     notifyAndBridge,
     notifyAndBridgeMulti,
+    startIvrSession,
     logger = console,
 }) {
     function failCall(sessionId, err, context) {
@@ -117,6 +118,13 @@ function createCallRuntimeCore({
         if (destination.route === "webrtc-multiring") {
             await notifyAndBridgeMulti(sessionId, destination.targets || []);
             return "webrtc-multiring";
+        }
+        if (destination.route === "ivr") {
+            if (typeof startIvrSession !== "function") {
+                throw new Error("IVR route requested but startIvrSession is unavailable");
+            }
+            await startIvrSession(sessionId, destination);
+            return "ivr";
         }
     }
 

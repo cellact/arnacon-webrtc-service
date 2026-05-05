@@ -69,6 +69,7 @@ function createPeerConnectionFactory({
     onDataChannelOpen,
     onPeerConnected = null,
     onDataChannelMessage,
+    onInboundRtp = null,
     destroySession,
     logger = console,
 }) {
@@ -121,6 +122,17 @@ function createPeerConnectionFactory({
         pc.onTrack.subscribe((track) => {
             logger.log(`[${sessionId}] PC1 remote track received: ${track.kind}`);
             session.remoteTracks.push(track);
+            if (track.kind === "audio" && typeof onInboundRtp === "function" && track.onReceiveRtp?.subscribe) {
+                const sub = track.onReceiveRtp.subscribe((rtp) => {
+                    try {
+                        onInboundRtp(sessionId, rtp);
+                    } catch (_) {}
+                });
+                if (sub?.unSubscribe) {
+                    if (!session._pcInboundRtpDisposers) session._pcInboundRtpDisposers = [];
+                    session._pcInboundRtpDisposers.push(sub.unSubscribe);
+                }
+            }
         });
         patchRouterForDynamicSsrc(pc, logger);
         session.peerConnection = pc;

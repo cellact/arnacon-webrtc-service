@@ -28,6 +28,8 @@ function createCallFlowApi({
     RTCSessionDescription,
     enqueueSignaling,
     startPendingMultiBridge = null,
+    shouldStartIvrForSession = null,
+    startIvrForSession = null,
     logger = console,
 }) {
     function onDataChannelOpen(sessionId, deps = {}) {
@@ -127,8 +129,19 @@ function createCallFlowApi({
         session.phase = "in-call";
         await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp, "answer"));
         sendDataChannelMessage(sessionId, { msgType: "call", action: "ack", ackFor: "answer" });
+        const shouldStartIvr =
+            typeof shouldStartIvrForSession === "function" &&
+            shouldStartIvrForSession(session, session?.inboundCall?.toNumber) &&
+            typeof startIvrForSession === "function";
         try {
             await openInboundSipSession(sessionId, session.inboundCall.toNumber);
+            if (shouldStartIvr) {
+                await startIvrForSession(sessionId, {
+                    route: "ivr",
+                    source: "inbound-answer",
+                    target: session?.inboundCall?.toNumber || "",
+                });
+            }
         } catch (err) {
             sendDataChannelMessage(sessionId, { msgType: "call", action: "end" });
             session.phase = "post-call";

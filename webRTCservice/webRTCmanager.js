@@ -136,6 +136,8 @@ const { createDataChannelApi } = require("./modules/dataChannel");
 const { createSipRuntime } = require("./modules/sipRuntime");
 const { createCallRuntimeCore } = require("./modules/callRuntimeCore");
 const { createSignalingPipeline } = require("./modules/signalingPipeline");
+const { createIvrRuntime } = require("./modules/ivrRuntime");
+const { createIvrAudioPlayback } = require("./modules/ivrAudioPlayback");
 const {
     MediaStreamTrack,
 } = werift;
@@ -335,6 +337,17 @@ const notificationApi = createNotificationApi({
     logger: console,
     fetchImpl: fetch,
 });
+const ivrAudioPlaybackApi = createIvrAudioPlayback({
+    sessions,
+    logger: console,
+});
+const ivrRuntimeApi = createIvrRuntime({
+    sessions,
+    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
+    playAudioForSession: (...args) => ivrAudioPlaybackApi.playText(...args),
+    stopAudioForSession: (...args) => ivrAudioPlaybackApi.stopSessionPlayback(...args),
+    logger: console,
+});
 const sipRuntimeApi = createSipRuntime({
     sessions,
     stopMediaRelay: (...args) => stopMediaRelay(...args),
@@ -406,6 +419,8 @@ const callFlowApi = createCallFlowApi({
     RTCSessionDescription,
     enqueueSignaling: (...args) => enqueueSignaling(...args),
     startPendingMultiBridge: (...args) => bridgeApi.startPendingMultiBridge(...args),
+    shouldStartIvrForSession: (...args) => ivrRuntimeApi.shouldStartForSession(...args),
+    startIvrForSession: (...args) => ivrRuntimeApi.startIvr(...args),
     logger: console,
 });
 const signalingHandlersApi = createSignalingHandlers({
@@ -428,9 +443,11 @@ const peerConnectionApi = createPeerConnectionFactory({
     onDataChannelOpen: (sessionId) => onDataChannelOpen(sessionId),
     onPeerConnected: (sessionId) => onPeerConnected(sessionId),
     onDataChannelMessage: (sessionId, raw) => signalingHandlersApi.onDataChannelMessage(sessionId, raw),
+    onInboundRtp: (sessionId, rtp) => ivrAudioPlaybackApi.onInboundRtp(sessionId, rtp),
     destroySession: (sessionId, notify) => destroySession(sessionId, notify),
     logger: console,
 });
+ivrAudioPlaybackApi.validateDependencies();
 
 // Module-backed APIs used by manager orchestration.
 function parseAddress(addr, serviceId = null) {
@@ -677,6 +694,12 @@ const callRuntimeCoreApi = createCallRuntimeCore({
     openSipSession: (...args) => openSipSession(...args),
     notifyAndBridge: (...args) => notifyAndBridge(...args),
     notifyAndBridgeMulti: (...args) => notifyAndBridgeMulti(...args),
+    startIvrSession: (sessionId, destination) =>
+        ivrRuntimeApi.startIvr(sessionId, {
+            route: destination?.route || "ivr",
+            source: "outbound-route",
+            target: destination?.target || "",
+        }),
     logger: console,
 });
 // TEMPORARY:
@@ -1010,10 +1033,16 @@ function stopMediaRelay(sessionId) {
  * the client will send a renegotiation offer to drop audio from PC1.
  */
 async function handleCallEnd(sessionId, reason = "client-initiated", propagate = true) {
+    ivrRuntimeApi.stopIvr(sessionId, reason);
+    await ivrAudioPlaybackApi.stopSessionPlayback(sessionId, reason);
     return callFlowApi.handleCallEnd(sessionId, reason, propagate);
 }
 
 async function handleCallDtmf(sessionId, msg) {
+    if (await ivrRuntimeApi.handleDtmf(sessionId, msg)) {
+        return;
+    }
+
     const session = sessions.get(sessionId);
     if (!session) {
         console.warn(`[${sessionId}] DTMF ignored: session not found`);
@@ -1138,6 +1167,8 @@ function createSession(sessionId, callerEns, toIdentity) {
 }
 
 function destroySession(sessionId, notify = false) {
+    ivrRuntimeApi.stopIvr(sessionId, "session-destroyed");
+    ivrAudioPlaybackApi.stopSessionPlayback(sessionId, "session-destroyed").catch(() => {});
     return sessionStore.destroySession(sessionId, {
         notify,
         sendDataChannelMessage,
