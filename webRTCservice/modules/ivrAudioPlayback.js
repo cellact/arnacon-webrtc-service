@@ -7,9 +7,17 @@ const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
 
-const FRAME_SIZE_BYTES_PCMA_20MS = 160;
-const RTP_TS_STEP_PCMA_20MS = 160;
+const FRAME_SIZE_BYTES_G711_20MS = 160;
+const RTP_TS_STEP_G711_20MS = 160;
+const RTP_PT_PCMU = 0;
 const RTP_PT_PCMA = 8;
+
+function payloadToCodec(payloadType) {
+    if (Number(payloadType) === RTP_PT_PCMU) {
+        return { payloadType: RTP_PT_PCMU, ffmpegCodec: "pcm_mulaw", ffmpegFormat: "mulaw", silenceByte: 0xff, label: "PCMU" };
+    }
+    return { payloadType: RTP_PT_PCMA, ffmpegCodec: "pcm_alaw", ffmpegFormat: "alaw", silenceByte: 0xd5, label: "PCMA" };
+}
 
 function createIvrAudioPlayback({
     sessions,
@@ -126,9 +134,32 @@ function createIvrAudioPlayback({
         return Math.floor(Math.random() * 0xffffffff);
     }
 
+    function deriveNegotiatedPayloadType(session) {
+        const forced = Number(process.env.IVR_FORCE_PT || "");
+        if (Number.isFinite(forced) && (forced === RTP_PT_PCMA || forced === RTP_PT_PCMU)) {
+            return forced;
+        }
+        const sdp = String(session?.ivrLastAnswerSdp || session?.peerConnection?.localDescription?.sdp || "");
+        if (!sdp) return RTP_PT_PCMA;
+        const audioSection = sdp.match(/m=audio[^\r\n]*[\s\S]*?(?=\r?\nm=|$)/m)?.[0] || "";
+        if (!audioSection) return RTP_PT_PCMA;
+        const mLine = audioSection.match(/^m=audio[^\r\n]*/m)?.[0] || "";
+        const payloads = mLine
+            .split(/\s+/)
+            .slice(3)
+            .map((v) => Number(v))
+            .filter((v) => Number.isFinite(v));
+        const first = payloads[0];
+        if (first === RTP_PT_PCMU || first === RTP_PT_PCMA) return first;
+        if (payloads.includes(RTP_PT_PCMU)) return RTP_PT_PCMU;
+        if (payloads.includes(RTP_PT_PCMA)) return RTP_PT_PCMA;
+        return RTP_PT_PCMA;
+    }
+
     function getOrCreateTimeline(sessionId) {
         const session = sessions.get(sessionId);
         const negotiatedSsrc = deriveNegotiatedSsrc(session);
+        const negotiatedPt = deriveNegotiatedPayloadType(session);
         const existing = timelineBySession.get(sessionId);
         if (existing) {
             if (Number.isFinite(negotiatedSsrc) && negotiatedSsrc > 0 && existing.ssrc !== negotiatedSsrc) {
@@ -136,14 +167,17 @@ function createIvrAudioPlayback({
                 existing.ssrc = negotiatedSsrc >>> 0;
                 existing.identityLogged = false;
             }
+            if (Number.isFinite(negotiatedPt) && existing.payloadType !== negotiatedPt) {
+                logger.log(`[${sessionId}] IVR RTP timeline PT update ${existing.payloadType} -> ${negotiatedPt}`);
+                existing.payloadType = negotiatedPt;
+                existing.identityLogged = false;
+            }
             return existing;
         }
 
         const initialSeq = Math.floor(Math.random() * 65535);
         const initialTs = Math.floor(Math.random() * 0xffffffff);
-        // Injected IVR audio is encoded as PCMA (A-law), so force PT=8.
-        // Do not inherit inbound caller PT (often Opus/111), which causes silent playback.
-        const initialPt = RTP_PT_PCMA;
+        const initialPt = negotiatedPt;
 
         const timeline = {
             sequenceNumber: initialSeq,
@@ -173,8 +207,9 @@ function createIvrAudioPlayback({
         const senderTrackSsrc = Number(session?.localAudioTrack?.ssrc);
         const sdpSsrc = parseAudioSsrcFromLocalDescription(session);
         const answerSdpSsrc = parseAudioSsrcFromSdp(session?.ivrLastAnswerSdp);
+        const codecInfo = payloadToCodec(timeline.payloadType);
         logger.log(
-            `[${sessionId}] IVR RTP identity pt=${timeline.payloadType} ssrc=${timeline.ssrc} ` +
+            `[${sessionId}] IVR RTP identity codec=${codecInfo.label} pt=${timeline.payloadType} ssrc=${timeline.ssrc} ` +
             `trackSsrc=${Number.isFinite(senderTrackSsrc) ? senderTrackSsrc : "n/a"} ` +
             `sdpSsrc=${Number.isFinite(sdpSsrc) ? sdpSsrc : "n/a"} ` +
             `answerSdpSsrc=${Number.isFinite(answerSdpSsrc) ? answerSdpSsrc : "n/a"}`
@@ -211,10 +246,11 @@ function createIvrAudioPlayback({
         logger.log(`[${sessionId}] IVR audio stopped reason=${reason}`);
     }
 
-    async function textToPcmaFrames(sessionId, text) {
+    async function textToG711Frames(sessionId, text, payloadType) {
         const nonce = crypto.randomUUID();
         const wavFile = path.join(os.tmpdir(), `ivr-${sessionId}-${nonce}.wav`);
-        const alawFile = path.join(os.tmpdir(), `ivr-${sessionId}-${nonce}.alaw`);
+        const codec = payloadToCodec(payloadType);
+        const outFile = path.join(os.tmpdir(), `ivr-${sessionId}-${nonce}.${codec.ffmpegFormat}`);
 
         await runProcess(
             ttsBinary,
@@ -223,28 +259,29 @@ function createIvrAudioPlayback({
         );
         await runProcess(
             ffmpegBinary,
-            ["-y", "-i", wavFile, "-ar", "8000", "-ac", "1", "-c:a", "pcm_alaw", "-f", "alaw", alawFile],
+            ["-y", "-i", wavFile, "-ar", "8000", "-ac", "1", "-c:a", codec.ffmpegCodec, "-f", codec.ffmpegFormat, outFile],
             "Audio transcode",
         );
-        const raw = await fs.readFile(alawFile);
+        const raw = await fs.readFile(outFile);
         return {
             raw,
-            tempFiles: [wavFile, alawFile],
+            tempFiles: [wavFile, outFile],
         };
     }
 
-    async function mediaFileToPcmaFrames(sessionId, inputFilePath) {
+    async function mediaFileToG711Frames(sessionId, inputFilePath, payloadType) {
         const nonce = crypto.randomUUID();
-        const alawFile = path.join(os.tmpdir(), `ivr-${sessionId}-${nonce}.alaw`);
+        const codec = payloadToCodec(payloadType);
+        const outFile = path.join(os.tmpdir(), `ivr-${sessionId}-${nonce}.${codec.ffmpegFormat}`);
         await runProcess(
             ffmpegBinary,
-            ["-y", "-i", String(inputFilePath), "-ar", "8000", "-ac", "1", "-c:a", "pcm_alaw", "-f", "alaw", alawFile],
+            ["-y", "-i", String(inputFilePath), "-ar", "8000", "-ac", "1", "-c:a", codec.ffmpegCodec, "-f", codec.ffmpegFormat, outFile],
             "Audio file transcode",
         );
-        const raw = await fs.readFile(alawFile);
+        const raw = await fs.readFile(outFile);
         return {
             raw,
-            tempFiles: [alawFile],
+            tempFiles: [outFile],
         };
     }
 
@@ -333,12 +370,13 @@ function createIvrAudioPlayback({
         };
     }
 
-    function splitFrames(raw) {
+    function splitFrames(raw, payloadType) {
+        const codec = payloadToCodec(payloadType);
         const out = [];
-        for (let i = 0; i < raw.length; i += FRAME_SIZE_BYTES_PCMA_20MS) {
-            const chunk = raw.subarray(i, i + FRAME_SIZE_BYTES_PCMA_20MS);
-            if (chunk.length < FRAME_SIZE_BYTES_PCMA_20MS) {
-                const padded = Buffer.alloc(FRAME_SIZE_BYTES_PCMA_20MS, 0xd5);
+        for (let i = 0; i < raw.length; i += FRAME_SIZE_BYTES_G711_20MS) {
+            const chunk = raw.subarray(i, i + FRAME_SIZE_BYTES_G711_20MS);
+            if (chunk.length < FRAME_SIZE_BYTES_G711_20MS) {
+                const padded = Buffer.alloc(FRAME_SIZE_BYTES_G711_20MS, codec.silenceByte);
                 chunk.copy(padded);
                 out.push(padded);
             } else {
@@ -369,9 +407,9 @@ function createIvrAudioPlayback({
         } catch (_) {}
         const state = buildPlaybackState(timeline);
         playbackBySession.set(sessionId, state);
-        const { raw, tempFiles } = await textToPcmaFrames(sessionId, text);
+        const { raw, tempFiles } = await textToG711Frames(sessionId, text, timeline.payloadType);
         state.tempFiles = tempFiles;
-        const frames = splitFrames(raw);
+        const frames = splitFrames(raw, timeline.payloadType);
         if (!frames.length) {
             await cleanupTempFiles(tempFiles);
             return false;
@@ -412,7 +450,7 @@ function createIvrAudioPlayback({
                 }
                 session.localAudioTrack.writeRtp(packet);
                 timeline.sequenceNumber = (timeline.sequenceNumber + 1) & 0xffff;
-                timeline.timestamp = (timeline.timestamp + RTP_TS_STEP_PCMA_20MS) >>> 0;
+                timeline.timestamp = (timeline.timestamp + RTP_TS_STEP_G711_20MS) >>> 0;
             } catch (err) {
                 logger.error(
                     `[${sessionId}] IVR audio write failed: ${err.message} ` +
@@ -458,7 +496,7 @@ function createIvrAudioPlayback({
 
         let rawAndFiles;
         try {
-            rawAndFiles = await mediaFileToPcmaFrames(sessionId, resolvedPath);
+            rawAndFiles = await mediaFileToG711Frames(sessionId, resolvedPath, timeline.payloadType);
         } catch (err) {
             playbackBySession.delete(sessionId);
             logger.error(`[${sessionId}] IVR audio file transcode failed path=${resolvedPath} err=${err.message}`);
@@ -467,7 +505,7 @@ function createIvrAudioPlayback({
 
         const { raw, tempFiles } = rawAndFiles;
         state.tempFiles = tempFiles;
-        const frames = splitFrames(raw);
+        const frames = splitFrames(raw, timeline.payloadType);
         if (!frames.length) {
             await cleanupTempFiles(tempFiles);
             return false;
@@ -508,7 +546,7 @@ function createIvrAudioPlayback({
                 }
                 session.localAudioTrack.writeRtp(packet);
                 timeline.sequenceNumber = (timeline.sequenceNumber + 1) & 0xffff;
-                timeline.timestamp = (timeline.timestamp + RTP_TS_STEP_PCMA_20MS) >>> 0;
+                timeline.timestamp = (timeline.timestamp + RTP_TS_STEP_G711_20MS) >>> 0;
             } catch (err) {
                 logger.error(
                     `[${sessionId}] IVR audio file write failed: ${err.message} ` +

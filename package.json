@@ -17,7 +17,8 @@
   "files": [
     "webRTCservice/**/*",
     "services/**/*",
-    "globalserviceconfig.json"
+    "globalserviceconfig.json",
+    "demoAudio/**/*"
   ],
   "scripts": {
     "build": "node webRTCservice/build.js",

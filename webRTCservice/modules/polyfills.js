@@ -36,13 +36,23 @@ function applyPolyfills({ fixSdpForWerift = null, logger = console } = {}) {
         channels: 1,
         payloadType: 8,
     });
+    const PCMU_CODEC = new werift.RTCRtpCodecParameters({
+        mimeType: "audio/PCMU",
+        clockRate: 8000,
+        channels: 1,
+        payloadType: 0,
+    });
+    const codecPref = String(process.env.WEBRTC_AUDIO_CODEC_PREF || "pcmu").toLowerCase();
+    const preferredCodecs = codecPref === "pcma" ? [PCMA_CODEC, PCMU_CODEC] : [PCMU_CODEC, PCMA_CODEC];
     const WrappedRTCPeerConnection = function (config = {}) {
         if (!config.codecs) config.codecs = {};
         if (!config.codecs.audio) {
-            config.codecs.audio = [PCMA_CODEC];
+            config.codecs.audio = preferredCodecs;
         } else {
             const hasPCMA = config.codecs.audio.some((c) => c.mimeType?.toLowerCase() === "audio/pcma");
+            const hasPCMU = config.codecs.audio.some((c) => c.mimeType?.toLowerCase() === "audio/pcmu");
             if (!hasPCMA) config.codecs.audio.push(PCMA_CODEC);
+            if (!hasPCMU) config.codecs.audio.push(PCMU_CODEC);
         }
         return new OrigRTCPeerConnection(config);
     };
