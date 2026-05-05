@@ -79,7 +79,7 @@ function createIvrAudioPlayback({
     function parseAudioSsrcFromLocalDescription(session) {
         const sdp = String(session?.peerConnection?.localDescription?.sdp || "");
         if (!sdp) return null;
-        const audioMatch = sdp.match(/m=audio[\s\S]*?(?=\nm=|$)/m);
+        const audioMatch = sdp.match(/m=audio[\s\S]*?(?=\r?\nm=|$)/m);
         if (!audioMatch) return null;
         const ssrcMatch = audioMatch[0].match(/a=ssrc:(\d+)/);
         if (!ssrcMatch) return null;
@@ -89,6 +89,8 @@ function createIvrAudioPlayback({
     }
 
     function deriveNegotiatedSsrc(session) {
+        const fromSession = Number(session?.ivrNegotiatedSsrc);
+        if (Number.isFinite(fromSession) && fromSession > 0) return fromSession >>> 0;
         const senderSsrc = Number(session?.localAudioTrack?.ssrc);
         if (Number.isFinite(senderSsrc) && senderSsrc > 0) return senderSsrc >>> 0;
         const fromSdp = parseAudioSsrcFromLocalDescription(session);
