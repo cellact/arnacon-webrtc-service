@@ -160,6 +160,11 @@ const CONFIG_PATH = CONFIG_OVERRIDE
     : path.join(PACKAGE_ROOT, "config.json");
 const CONFIG_BASE_DIR = path.dirname(CONFIG_PATH);
 const fullConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+const IVR_DEMO_AUDIO_DIR_RAW = process.env.IVR_DEMO_AUDIO_DIR || "demoAudio";
+const IVR_DEMO_AUDIO_DIR = path.isAbsolute(IVR_DEMO_AUDIO_DIR_RAW)
+    ? IVR_DEMO_AUDIO_DIR_RAW
+    : path.resolve(PACKAGE_ROOT, IVR_DEMO_AUDIO_DIR_RAW);
+console.log(`[IVR-AUDIO] Demo audio directory: ${IVR_DEMO_AUDIO_DIR}`);
 const _deployEnvEarly = process.env.DEPLOY_ENV || "development";
 const _commonEarly = (fullConfig[_deployEnvEarly] || {}).common || {};
 const GLOBAL_CONFIG_OVERRIDE = process.env.WEBRTC_GLOBAL_CONFIG_PATH || process.env.ARNACON_WEBRTC_GLOBAL_CONFIG_PATH || "";
@@ -340,6 +345,7 @@ const notificationApi = createNotificationApi({
 const ivrAudioPlaybackApi = createIvrAudioPlayback({
     sessions,
     logger: console,
+    demoAudioDir: IVR_DEMO_AUDIO_DIR,
 });
 const ivrRuntimeApi = createIvrRuntime({
     sessions,

@@ -1,6 +1,7 @@
 "use strict";
 
 const { spawn, spawnSync } = require("child_process");
+const fsSync = require("fs");
 const fs = require("fs/promises");
 const path = require("path");
 const os = require("os");
@@ -19,6 +20,7 @@ function createIvrAudioPlayback({
 }) {
     const playbackBySession = new Map();
     const timelineBySession = new Map();
+    const inboundTemplateBySession = new Map();
     let dependencyCheckDone = false;
 
     function runProcess(bin, args, label) {
@@ -34,7 +36,8 @@ function createIvrAudioPlayback({
                     resolve();
                     return;
                 }
-                reject(new Error(`${label} failed with code ${code}: ${stderr.slice(0, 400)}`));
+                const stderrTail = String(stderr || "").slice(-2000);
+                reject(new Error(`${label} failed with code ${code}: ${stderrTail}`));
             });
         });
     }
@@ -58,16 +61,28 @@ function createIvrAudioPlayback({
         }
     }
 
-    function buildPacketFromState(state, payload) {
+    function cloneHeaderForTemplate(header = {}) {
+        return {
+            ...header,
+            csrc: Array.isArray(header.csrc) ? [...header.csrc] : [],
+            extensions: Array.isArray(header.extensions) ? header.extensions.map((item) => ({ ...item })) : [],
+        };
+    }
+
+    function buildPacketFromState(state, payload, templateHeader = null) {
+        const baseHeader = templateHeader ? cloneHeaderForTemplate(templateHeader) : {};
+        const extensions = Array.isArray(baseHeader.extensions) ? baseHeader.extensions : [];
+        const csrc = Array.isArray(baseHeader.csrc) ? baseHeader.csrc : [];
         return {
             header: {
-                version: 2,
+                ...baseHeader,
+                version: Number.isFinite(baseHeader.version) ? baseHeader.version : 2,
                 marker: false,
                 padding: false,
-                extension: false,
-                csrcLength: 0,
-                csrc: [],
-                extensions: [],
+                extension: extensions.length > 0,
+                csrcLength: csrc.length,
+                csrc,
+                extensions,
                 payloadType: state.payloadType,
                 sequenceNumber: state.sequenceNumber,
                 timestamp: state.timestamp,
@@ -147,6 +162,7 @@ function createIvrAudioPlayback({
             stopped: false,
             tempFiles: [],
             debugPacketsLogged: 0,
+            playbackStateLogged: false,
             timeline,
         };
     }
@@ -190,6 +206,7 @@ function createIvrAudioPlayback({
             String(reason || "").startsWith("ivr-stop:");
         if (shouldClearTimeline) {
             timelineBySession.delete(sessionId);
+            inboundTemplateBySession.delete(sessionId);
         }
         logger.log(`[${sessionId}] IVR audio stopped reason=${reason}`);
     }
@@ -233,9 +250,87 @@ function createIvrAudioPlayback({
 
     function resolveAudioFilePath(fileNameOrPath) {
         const raw = String(fileNameOrPath || "").trim();
-        if (!raw) return "";
-        if (path.isAbsolute(raw)) return raw;
-        return path.join(demoAudioDir, raw);
+        if (!raw) {
+            return {
+                resolvedPath: "",
+                candidatePaths: [],
+            };
+        }
+
+        const candidatePaths = [];
+        if (path.isAbsolute(raw)) {
+            candidatePaths.push(raw);
+        } else {
+            if (demoAudioDir) candidatePaths.push(path.join(demoAudioDir, raw));
+            candidatePaths.push(path.resolve(__dirname, "../../demoAudio", raw));
+            candidatePaths.push(path.resolve(process.cwd(), "demoAudio", raw));
+            candidatePaths.push(path.resolve(process.cwd(), raw));
+        }
+
+        for (const candidate of candidatePaths) {
+            if (fsSync.existsSync(candidate)) {
+                return {
+                    resolvedPath: candidate,
+                    candidatePaths,
+                };
+            }
+        }
+
+        return {
+            resolvedPath: candidatePaths[0] || "",
+            candidatePaths,
+        };
+    }
+
+    async function assertReadableAudioFile(sessionId, resolvedPath, candidatePaths) {
+        if (!resolvedPath) {
+            logger.error(`[${sessionId}] IVR audio file path resolution failed candidates=${candidatePaths.join(", ")}`);
+            return false;
+        }
+        try {
+            await fs.access(resolvedPath);
+            return true;
+        } catch (err) {
+            logger.error(
+                `[${sessionId}] IVR audio file not accessible path=${resolvedPath} err=${err.code || err.message} ` +
+                `candidates=${candidatePaths.join(", ")}`
+            );
+            return false;
+        }
+    }
+
+    function getPlaybackDiagnostics(session) {
+        const audioT = session?.peerConnection?.getTransceivers?.().find((t) => t.kind === "audio");
+        const direction = audioT?.direction || "n/a";
+        const currentDirection = audioT?.currentDirection || "n/a";
+        return {
+            direction,
+            currentDirection,
+        };
+    }
+
+    function ensurePlaybackReady(sessionId, session, stateLabel, state) {
+        const { direction, currentDirection } = getPlaybackDiagnostics(session);
+        const template = inboundTemplateBySession.get(sessionId)?.header || null;
+        const templateState = template ? "active" : "none";
+        if (!state.playbackStateLogged) {
+            state.playbackStateLogged = true;
+            logger.log(
+                `[${sessionId}] IVR playback state source=${stateLabel} phase=${session?.phase || "n/a"} ` +
+                `audioDir=${direction} currentAudioDir=${currentDirection} inboundTemplate=${templateState}`
+            );
+        }
+        if (session?.phase !== "in-call") {
+            logger.warn(`[${sessionId}] IVR playback blocked source=${stateLabel} phase=${session?.phase || "n/a"}`);
+            return {
+                ready: false,
+                template: null,
+            };
+        }
+        return {
+            ready: true,
+            template,
+        };
     }
 
     function splitFrames(raw) {
@@ -289,6 +384,8 @@ function createIvrAudioPlayback({
         });
         state.timer = setInterval(() => {
             if (state.stopped || (!session.mediaRelayActive && !session.ivr?.active)) return;
+            const playbackReady = ensurePlaybackReady(sessionId, session, "tts", state);
+            if (!playbackReady.ready) return;
             if (idx >= frames.length) {
                 stopSessionPlayback(sessionId, "completed").catch(() => {});
                 return;
@@ -302,7 +399,7 @@ function createIvrAudioPlayback({
                     session.localAudioTrack.ssrc = timeline.ssrc;
                 }
                 const payload = frames[idx++];
-                const packet = buildPacketFromState(timeline, payload);
+                const packet = buildPacketFromState(timeline, payload, playbackReady.template);
                 packet.header.marker = idx === 1;
                 if (state.debugPacketsLogged < 5) {
                     state.debugPacketsLogged += 1;
@@ -336,11 +433,13 @@ function createIvrAudioPlayback({
             return false;
         }
 
-        const inputPath = resolveAudioFilePath(fileNameOrPath);
-        if (!inputPath) {
+        const { resolvedPath, candidatePaths } = resolveAudioFilePath(fileNameOrPath);
+        if (!resolvedPath) {
             logger.warn(`[${sessionId}] IVR audio file skipped: missing path`);
             return false;
         }
+        const canReadFile = await assertReadableAudioFile(sessionId, resolvedPath, candidatePaths);
+        if (!canReadFile) return false;
 
         if (interrupt) {
             await stopSessionPlayback(sessionId, "interrupt");
@@ -359,10 +458,10 @@ function createIvrAudioPlayback({
 
         let rawAndFiles;
         try {
-            rawAndFiles = await mediaFileToPcmaFrames(sessionId, inputPath);
+            rawAndFiles = await mediaFileToPcmaFrames(sessionId, resolvedPath);
         } catch (err) {
             playbackBySession.delete(sessionId);
-            logger.error(`[${sessionId}] IVR audio file transcode failed path=${inputPath} err=${err.message}`);
+            logger.error(`[${sessionId}] IVR audio file transcode failed path=${resolvedPath} err=${err.message}`);
             return false;
         }
 
@@ -381,6 +480,8 @@ function createIvrAudioPlayback({
         });
         state.timer = setInterval(() => {
             if (state.stopped || (!session.mediaRelayActive && !session.ivr?.active)) return;
+            const playbackReady = ensurePlaybackReady(sessionId, session, "file", state);
+            if (!playbackReady.ready) return;
             if (idx >= frames.length) {
                 stopSessionPlayback(sessionId, "completed").catch(() => {});
                 return;
@@ -394,7 +495,7 @@ function createIvrAudioPlayback({
                     session.localAudioTrack.ssrc = timeline.ssrc;
                 }
                 const payload = frames[idx++];
-                const packet = buildPacketFromState(timeline, payload);
+                const packet = buildPacketFromState(timeline, payload, playbackReady.template);
                 packet.header.marker = idx === 1;
                 if (state.debugPacketsLogged < 5) {
                     state.debugPacketsLogged += 1;
@@ -416,11 +517,17 @@ function createIvrAudioPlayback({
                 stopSessionPlayback(sessionId, "write-failed").catch(() => {});
             }
         }, 20);
-        logger.log(`[${sessionId}] IVR audio file playback started file=${inputPath} frames=${frames.length}`);
+        logger.log(`[${sessionId}] IVR audio file playback started file=${resolvedPath} frames=${frames.length}`);
         return true;
     }
 
-    function onInboundRtp() {}
+    function onInboundRtp(sessionId, rtp) {
+        if (!sessionId || !rtp?.header) return;
+        inboundTemplateBySession.set(sessionId, {
+            header: cloneHeaderForTemplate(rtp.header),
+            updatedAt: Date.now(),
+        });
+    }
 
     async function stopAll() {
         const ids = Array.from(playbackBySession.keys());

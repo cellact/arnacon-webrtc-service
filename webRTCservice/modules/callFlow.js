@@ -233,6 +233,10 @@ function createCallFlowApi({
             routeResult === "ivr" &&
             typeof startIvrForSession === "function"
         ) {
+            if (session.phase !== "in-call") {
+                logger.warn(`[${sessionId}] IVR start delayed: phase=${session.phase} expected=in-call`);
+                session.phase = "in-call";
+            }
             const started = await startIvrForSession(sessionId, {
                 route: "ivr",
                 source: "outbound-route",
