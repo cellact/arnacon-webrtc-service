@@ -84,7 +84,9 @@ function createIvrAudioPlayback({
         const initialSeq = Number(seed?.header?.sequenceNumber ?? Math.floor(Math.random() * 65535));
         const initialTs = Number(seed?.header?.timestamp ?? Math.floor(Math.random() * 0xffffffff));
         const initialSsrc = Number(seed?.header?.ssrc ?? Math.floor(Math.random() * 0xffffffff));
-        const initialPt = Number(seed?.header?.payloadType ?? RTP_PT_PCMA);
+        // Injected IVR audio is encoded as PCMA (A-law), so force PT=8.
+        // Do not inherit inbound caller PT (often Opus/111), which causes silent playback.
+        const initialPt = RTP_PT_PCMA;
 
         const created = {
             timer: null,
