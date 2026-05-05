@@ -17,7 +17,6 @@ function createIvrAudioPlayback({
     ffmpegBinary = process.env.IVR_FFMPEG_BIN || "ffmpeg",
 }) {
     const playbackBySession = new Map();
-    const seedBySession = new Map();
     let dependencyCheckDone = false;
 
     function runProcess(bin, args, label) {
@@ -80,10 +79,13 @@ function createIvrAudioPlayback({
         const existing = playbackBySession.get(sessionId);
         if (existing) return existing;
 
-        const seed = seedBySession.get(sessionId) || null;
-        const initialSeq = Number(seed?.header?.sequenceNumber ?? Math.floor(Math.random() * 65535));
-        const initialTs = Number(seed?.header?.timestamp ?? Math.floor(Math.random() * 0xffffffff));
-        const initialSsrc = Number(seed?.header?.ssrc ?? Math.floor(Math.random() * 0xffffffff));
+        const session = sessions.get(sessionId);
+        const trackSsrc = Number(session?.localAudioTrack?.ssrc);
+        const initialSeq = Math.floor(Math.random() * 65535);
+        const initialTs = Math.floor(Math.random() * 0xffffffff);
+        const initialSsrc = Number.isFinite(trackSsrc) && trackSsrc > 0
+            ? trackSsrc >>> 0
+            : Math.floor(Math.random() * 0xffffffff);
         // Injected IVR audio is encoded as PCMA (A-law), so force PT=8.
         // Do not inherit inbound caller PT (often Opus/111), which causes silent playback.
         const initialPt = RTP_PT_PCMA;
@@ -192,6 +194,7 @@ function createIvrAudioPlayback({
             try {
                 const payload = frames[idx++];
                 const packet = buildPacketFromState(state, payload);
+                packet.header.marker = idx === 1;
                 session.localAudioTrack.writeRtp(packet);
                 state.sequenceNumber = (state.sequenceNumber + 1) & 0xffff;
                 state.timestamp = (state.timestamp + RTP_TS_STEP_PCMA_20MS) >>> 0;
@@ -204,10 +207,7 @@ function createIvrAudioPlayback({
         return true;
     }
 
-    function onInboundRtp(sessionId, rtp) {
-        if (!rtp || !rtp.header) return;
-        seedBySession.set(sessionId, rtp);
-    }
+    function onInboundRtp() {}
 
     async function stopAll() {
         const ids = Array.from(playbackBySession.keys());
