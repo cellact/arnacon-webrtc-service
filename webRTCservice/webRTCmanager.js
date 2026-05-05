@@ -353,6 +353,7 @@ const ivrRuntimeApi = createIvrRuntime({
     playAudioForSession: (...args) => ivrAudioPlaybackApi.playText(...args),
     playAudioFileForSession: (...args) => ivrAudioPlaybackApi.playFile(...args),
     stopAudioForSession: (...args) => ivrAudioPlaybackApi.stopSessionPlayback(...args),
+    redirectCallForSession: (...args) => redirectIvrSessionToWebrtc(...args),
     logger: console,
 });
 const sipRuntimeApi = createSipRuntime({
@@ -938,6 +939,33 @@ async function notifyAndBridge(callerSessionId, destination) {
 
 async function notifyAndBridgeMulti(callerSessionId, destinations) {
     return bridgeApi.notifyAndBridgeMulti(callerSessionId, destinations);
+}
+
+async function redirectIvrSessionToWebrtc(sessionId, targetEns, { reason = "ivr-redirect" } = {}) {
+    const session = sessions.get(sessionId);
+    if (!session) {
+        console.warn(`[${sessionId}] IVR redirect skipped: session missing target=${targetEns}`);
+        return false;
+    }
+
+    const serviceId = session.serviceId || "secnum";
+    const parsedTo = parseAddress(targetEns, serviceId);
+    const parsedFrom = parseAddress(session.callerEns, serviceId);
+    const destination = await resolveDestination(parsedTo, parsedFrom, serviceId);
+    if (destination?.route !== "webrtc") {
+        console.warn(
+            `[${sessionId}] IVR redirect rejected target=${targetEns} ` +
+            `route=${destination?.route || "n/a"} reason=${destination?.reason || "not-webrtc"}`
+        );
+        return false;
+    }
+
+    console.log(`[${sessionId}] IVR redirect target=${targetEns} wallet=${destination.wallet} reason=${reason}`);
+    ivrRuntimeApi.stopIvr(sessionId, `redirect:${reason}`);
+    await ivrAudioPlaybackApi.stopSessionPlayback(sessionId, `redirect:${reason}`);
+    session.toIdentity = destination.ensName || targetEns;
+    await notifyAndBridge(sessionId, destination);
+    return true;
 }
 
 async function onVerifiedNotifyAnswer(sessionId, offer, session) {

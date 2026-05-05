@@ -15,9 +15,21 @@ const RTP_PT_PCMA = 8;
 
 function payloadToCodec(payloadType) {
     if (Number(payloadType) === RTP_PT_PCMU) {
-        return { payloadType: RTP_PT_PCMU, ffmpegCodec: "pcm_mulaw", ffmpegFormat: "mulaw", silenceByte: 0xff, label: "PCMU" };
+        return {
+            payloadType: RTP_PT_PCMU,
+            ffmpegCodec: "pcm_mulaw",
+            ffmpegFormat: "mulaw",
+            silenceByte: 0xff,
+            label: "PCMU",
+        };
     }
-    return { payloadType: RTP_PT_PCMA, ffmpegCodec: "pcm_alaw", ffmpegFormat: "alaw", silenceByte: 0xd5, label: "PCMA" };
+    return {
+        payloadType: RTP_PT_PCMA,
+        ffmpegCodec: "pcm_alaw",
+        ffmpegFormat: "alaw",
+        silenceByte: 0xd5,
+        label: "PCMA",
+    };
 }
 
 function createIvrAudioPlayback({
@@ -207,6 +219,7 @@ function createIvrAudioPlayback({
             tempFiles: [],
             debugPacketsLogged: 0,
             playbackStateLogged: false,
+            completionResolver: null,
             timeline,
         };
     }
@@ -242,6 +255,10 @@ function createIvrAudioPlayback({
                 state.timer = null;
             }
             playbackBySession.delete(sessionId);
+            if (typeof state.completionResolver === "function") {
+                state.completionResolver({ completed: false, reason });
+                state.completionResolver = null;
+            }
             await cleanupTempFiles(state.tempFiles || []);
         }
         const shouldClearTimeline =
@@ -256,7 +273,7 @@ function createIvrAudioPlayback({
         logger.log(`[${sessionId}] IVR audio stopped reason=${reason}`);
     }
 
-    async function textToG711Frames(sessionId, text, payloadType) {
+    async function transcodeTextSourceToG711Frames(sessionId, text, payloadType) {
         const nonce = crypto.randomUUID();
         const wavFile = path.join(os.tmpdir(), `ivr-${sessionId}-${nonce}.wav`);
         const codec = payloadToCodec(payloadType);
@@ -279,7 +296,7 @@ function createIvrAudioPlayback({
         };
     }
 
-    async function mediaFileToG711Frames(sessionId, inputFilePath, payloadType) {
+    async function transcodeFileSourceToG711Frames(sessionId, inputFilePath, payloadType) {
         const nonce = crypto.randomUUID();
         const codec = payloadToCodec(payloadType);
         const outFile = path.join(os.tmpdir(), `ivr-${sessionId}-${nonce}.${codec.ffmpegFormat}`);
@@ -396,7 +413,13 @@ function createIvrAudioPlayback({
         return out;
     }
 
-    async function playText(sessionId, text, { interrupt = true } = {}) {
+    function waitForPlaybackCompletion(state) {
+        return new Promise((resolve) => {
+            state.completionResolver = resolve;
+        });
+    }
+
+    async function playText(sessionId, text, { interrupt = true, waitForCompletion = false } = {}) {
         validateDependencies();
         const session = sessions.get(sessionId);
         if (!session?.localAudioTrack) {
@@ -417,11 +440,17 @@ function createIvrAudioPlayback({
         } catch (_) {}
         const state = buildPlaybackState(timeline);
         playbackBySession.set(sessionId, state);
-        const { raw, tempFiles } = await textToG711Frames(sessionId, text, timeline.payloadType);
+        const completionPromise = waitForCompletion ? waitForPlaybackCompletion(state) : null;
+        const codecInfo = payloadToCodec(timeline.payloadType);
+        const { raw, tempFiles } = await transcodeTextSourceToG711Frames(sessionId, text, timeline.payloadType);
         state.tempFiles = tempFiles;
         const frames = splitFrames(raw, timeline.payloadType);
         if (!frames.length) {
             await cleanupTempFiles(tempFiles);
+            if (state.completionResolver) {
+                state.completionResolver({ completed: false, reason: "empty-source" });
+                state.completionResolver = null;
+            }
             return false;
         }
 
@@ -435,6 +464,10 @@ function createIvrAudioPlayback({
             const playbackReady = ensurePlaybackReady(sessionId, session, "tts", state);
             if (!playbackReady.ready) return;
             if (idx >= frames.length) {
+                if (typeof state.completionResolver === "function") {
+                    state.completionResolver({ completed: true, reason: "completed" });
+                    state.completionResolver = null;
+                }
                 stopSessionPlayback(sessionId, "completed").catch(() => {});
                 return;
             }
@@ -453,6 +486,7 @@ function createIvrAudioPlayback({
                     state.debugPacketsLogged += 1;
                     logger.log(
                         `[${sessionId}] IVR RTP packet#${state.debugPacketsLogged} ` +
+                        `source=tts codec=${codecInfo.label} ` +
                         `pt=${packet.header.payloadType} ssrc=${packet.header.ssrc} ` +
                         `seq=${packet.header.sequenceNumber} ts=${packet.header.timestamp} ` +
                         `trackSsrc=${session.localAudioTrack?.ssrc ?? "n/a"} payloadLen=${payload.length}`
@@ -469,11 +503,18 @@ function createIvrAudioPlayback({
                 stopSessionPlayback(sessionId, "write-failed").catch(() => {});
             }
         }, 20);
-        logger.log(`[${sessionId}] IVR audio playback started chars=${String(text || "").length} frames=${frames.length}`);
+        logger.log(
+            `[${sessionId}] IVR audio playback started source=tts codec=${codecInfo.label} ` +
+            `chars=${String(text || "").length} frames=${frames.length}`
+        );
+        if (completionPromise) {
+            const result = await completionPromise;
+            return Boolean(result?.completed);
+        }
         return true;
     }
 
-    async function playFile(sessionId, fileNameOrPath, { interrupt = true } = {}) {
+    async function playFile(sessionId, fileNameOrPath, { interrupt = true, waitForCompletion = false } = {}) {
         validateDependencies();
         const session = sessions.get(sessionId);
         if (!session?.localAudioTrack) {
@@ -503,12 +544,18 @@ function createIvrAudioPlayback({
 
         const state = buildPlaybackState(timeline);
         playbackBySession.set(sessionId, state);
+        const completionPromise = waitForCompletion ? waitForPlaybackCompletion(state) : null;
+        const codecInfo = payloadToCodec(timeline.payloadType);
 
         let rawAndFiles;
         try {
-            rawAndFiles = await mediaFileToG711Frames(sessionId, resolvedPath, timeline.payloadType);
+            rawAndFiles = await transcodeFileSourceToG711Frames(sessionId, resolvedPath, timeline.payloadType);
         } catch (err) {
             playbackBySession.delete(sessionId);
+            if (state.completionResolver) {
+                state.completionResolver({ completed: false, reason: "transcode-failed" });
+                state.completionResolver = null;
+            }
             logger.error(`[${sessionId}] IVR audio file transcode failed path=${resolvedPath} err=${err.message}`);
             return false;
         }
@@ -518,6 +565,10 @@ function createIvrAudioPlayback({
         const frames = splitFrames(raw, timeline.payloadType);
         if (!frames.length) {
             await cleanupTempFiles(tempFiles);
+            if (state.completionResolver) {
+                state.completionResolver({ completed: false, reason: "empty-source" });
+                state.completionResolver = null;
+            }
             return false;
         }
 
@@ -531,6 +582,10 @@ function createIvrAudioPlayback({
             const playbackReady = ensurePlaybackReady(sessionId, session, "file", state);
             if (!playbackReady.ready) return;
             if (idx >= frames.length) {
+                if (typeof state.completionResolver === "function") {
+                    state.completionResolver({ completed: true, reason: "completed" });
+                    state.completionResolver = null;
+                }
                 stopSessionPlayback(sessionId, "completed").catch(() => {});
                 return;
             }
@@ -549,6 +604,7 @@ function createIvrAudioPlayback({
                     state.debugPacketsLogged += 1;
                     logger.log(
                         `[${sessionId}] IVR FILE RTP packet#${state.debugPacketsLogged} ` +
+                        `source=file codec=${codecInfo.label} ` +
                         `pt=${packet.header.payloadType} ssrc=${packet.header.ssrc} ` +
                         `seq=${packet.header.sequenceNumber} ts=${packet.header.timestamp} ` +
                         `trackSsrc=${session.localAudioTrack?.ssrc ?? "n/a"} payloadLen=${payload.length}`
@@ -565,7 +621,14 @@ function createIvrAudioPlayback({
                 stopSessionPlayback(sessionId, "write-failed").catch(() => {});
             }
         }, 20);
-        logger.log(`[${sessionId}] IVR audio file playback started file=${resolvedPath} frames=${frames.length}`);
+        logger.log(
+            `[${sessionId}] IVR audio file playback started source=file codec=${codecInfo.label} ` +
+            `file=${resolvedPath} frames=${frames.length}`
+        );
+        if (completionPromise) {
+            const result = await completionPromise;
+            return Boolean(result?.completed);
+        }
         return true;
     }
 

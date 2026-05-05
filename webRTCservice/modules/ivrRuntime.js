@@ -8,6 +8,7 @@ function createIvrRuntime({
     playAudioForSession = null,
     playAudioFileForSession = null,
     stopAudioForSession = null,
+    redirectCallForSession = null,
     handlers = {},
     logger = console,
 }) {
@@ -45,6 +46,7 @@ function createIvrRuntime({
                 interrupt: true,
                 reason,
                 meta: extra,
+                waitForCompletion: Boolean(extra?.waitForCompletion),
             });
             if (played) return true;
         }
@@ -58,11 +60,20 @@ function createIvrRuntime({
                 interrupt: true,
                 reason,
                 meta: extra,
+                waitForCompletion: Boolean(extra?.waitForCompletion),
             });
             if (played) return true;
         }
         logger.warn(`[${sessionId}] IVR audio file was not played for reason=${reason}`);
         return false;
+    }
+
+    async function redirectTo(sessionId, targetEns, options = {}) {
+        if (typeof redirectCallForSession !== "function") {
+            logger.warn(`[${sessionId}] IVR redirect unavailable target=${targetEns}`);
+            return false;
+        }
+        return redirectCallForSession(sessionId, targetEns, options);
     }
 
     function buildHandlerContext(sessionId, msg = null, meta = {}) {
@@ -74,6 +85,7 @@ function createIvrRuntime({
             meta,
             say: (text, reason = "ivr-custom", extra = {}) => say(sessionId, text, reason, extra),
             sayFile: (fileNameOrPath, reason = "ivr-file", extra = {}) => sayFile(sessionId, fileNameOrPath, reason, extra),
+            redirectTo: (targetEns, options = {}) => redirectTo(sessionId, targetEns, options),
             send: (payload) => sendDataChannelMessage(sessionId, payload),
         };
     }
@@ -228,7 +240,14 @@ async function onDigit2(ctx) {
 }
 
 async function onDigit3(ctx) {
-    await ctx.say("You pressed 3.", "ivr-digit-3", buildDigitExtra(ctx, "3"));
+    const extra = {
+        ...buildDigitExtra(ctx, "3"),
+        waitForCompletion: true,
+    };
+    await ctx.say("redirecting to 972557012416", "ivr-digit-3-redirect", extra);
+    await ctx.redirectTo("972557012416.secnumtest.global", {
+        reason: "ivr-digit-3",
+    });
 }
 
 async function onDigit4(ctx) {
