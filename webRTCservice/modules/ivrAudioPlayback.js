@@ -6,6 +6,7 @@ const fs = require("fs/promises");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
+const { RtpHeader, RtpPacket } = require("werift");
 
 const FRAME_SIZE_BYTES_G711_20MS = 160;
 const RTP_TS_STEP_G711_20MS = 160;
@@ -73,7 +74,12 @@ function createIvrAudioPlayback({
         return {
             ...header,
             csrc: Array.isArray(header.csrc) ? [...header.csrc] : [],
-            extensions: Array.isArray(header.extensions) ? header.extensions.map((item) => ({ ...item })) : [],
+            extensions: Array.isArray(header.extensions)
+                ? header.extensions.map((item) => ({
+                    id: item.id,
+                    payload: Buffer.isBuffer(item.payload) ? Buffer.from(item.payload) : Buffer.from(item.payload || []),
+                }))
+                : [],
         };
     }
 
@@ -81,21 +87,25 @@ function createIvrAudioPlayback({
         const baseHeader = templateHeader ? cloneHeaderForTemplate(templateHeader) : {};
         const extensions = Array.isArray(baseHeader.extensions) ? baseHeader.extensions : [];
         const csrc = Array.isArray(baseHeader.csrc) ? baseHeader.csrc : [];
+        const headerProps = {
+            ...baseHeader,
+            version: Number.isFinite(baseHeader.version) ? baseHeader.version : 2,
+            marker: false,
+            padding: false,
+            extension: extensions.length > 0,
+            csrcLength: csrc.length,
+            csrc,
+            extensions,
+            payloadType: state.payloadType,
+            sequenceNumber: state.sequenceNumber,
+            timestamp: state.timestamp,
+            ssrc: state.ssrc,
+        };
+        if (typeof RtpHeader === "function" && typeof RtpPacket === "function") {
+            return new RtpPacket(new RtpHeader(headerProps), payload);
+        }
         return {
-            header: {
-                ...baseHeader,
-                version: Number.isFinite(baseHeader.version) ? baseHeader.version : 2,
-                marker: false,
-                padding: false,
-                extension: extensions.length > 0,
-                csrcLength: csrc.length,
-                csrc,
-                extensions,
-                payloadType: state.payloadType,
-                sequenceNumber: state.sequenceNumber,
-                timestamp: state.timestamp,
-                ssrc: state.ssrc,
-            },
+            header: headerProps,
             payload,
         };
     }
