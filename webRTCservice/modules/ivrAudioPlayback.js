@@ -57,31 +57,7 @@ function createIvrAudioPlayback({
         }
     }
 
-    function cloneSeedPacket(seed, payload, headerOverrides = {}) {
-        const baseHeader = seed?.header || {};
-        const header = {
-            ...baseHeader,
-            ...headerOverrides,
-            extensions: Array.isArray(baseHeader.extensions) ? baseHeader.extensions : [],
-            csrc: Array.isArray(baseHeader.csrc) ? baseHeader.csrc : [],
-        };
-        return {
-            ...seed,
-            header,
-            payload,
-        };
-    }
-
     function buildPacketFromState(state, payload) {
-        if (state.seedPacket && state.seedPacket.header) {
-            return cloneSeedPacket(state.seedPacket, payload, {
-                sequenceNumber: state.sequenceNumber,
-                timestamp: state.timestamp,
-                ssrc: state.ssrc,
-                payloadType: state.payloadType,
-                marker: false,
-            });
-        }
         return {
             header: {
                 version: 2,
@@ -118,7 +94,6 @@ function createIvrAudioPlayback({
             timestamp: initialTs,
             ssrc: initialSsrc,
             payloadType: initialPt,
-            seedPacket: seed,
         };
         playbackBySession.set(sessionId, created);
         return created;
