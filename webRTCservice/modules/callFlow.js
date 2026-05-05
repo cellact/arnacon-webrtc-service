@@ -200,8 +200,8 @@ function createCallFlowApi({
         ensureLocalAudioTrack(session, pc, sessionId);
         const answerLabel = isInactive ? "PHASE 1 ANSWER SDP" : "ANSWER SDP";
         const answerSdp = await createAnswerSdp(pc, sessionId, answerLabel);
-        const audioBlock = answerSdp.match(/m=audio[\s\S]*?(?=\r?\nm=|$)/m);
-        const ssrcMatch = audioBlock?.[0]?.match(/a=ssrc:(\d+)/);
+        session.ivrLastAnswerSdp = answerSdp;
+        const ssrcMatch = answerSdp.match(/a=ssrc:(\d+)/);
         if (ssrcMatch) {
             const parsedSsrc = Number(ssrcMatch[1]);
             if (Number.isFinite(parsedSsrc) && parsedSsrc > 0) {

@@ -88,9 +88,21 @@ function createIvrAudioPlayback({
         return parsed >>> 0;
     }
 
+    function parseAudioSsrcFromSdp(sdpText) {
+        const sdp = String(sdpText || "");
+        if (!sdp) return null;
+        const ssrcMatch = sdp.match(/a=ssrc:(\d+)/);
+        if (!ssrcMatch) return null;
+        const parsed = Number(ssrcMatch[1]);
+        if (!Number.isFinite(parsed) || parsed <= 0) return null;
+        return parsed >>> 0;
+    }
+
     function deriveNegotiatedSsrc(session) {
         const fromSession = Number(session?.ivrNegotiatedSsrc);
         if (Number.isFinite(fromSession) && fromSession > 0) return fromSession >>> 0;
+        const fromLastAnswerSdp = parseAudioSsrcFromSdp(session?.ivrLastAnswerSdp);
+        if (Number.isFinite(fromLastAnswerSdp) && fromLastAnswerSdp > 0) return fromLastAnswerSdp >>> 0;
         const senderSsrc = Number(session?.localAudioTrack?.ssrc);
         if (Number.isFinite(senderSsrc) && senderSsrc > 0) return senderSsrc >>> 0;
         const fromSdp = parseAudioSsrcFromLocalDescription(session);
@@ -99,11 +111,18 @@ function createIvrAudioPlayback({
     }
 
     function getOrCreateTimeline(sessionId) {
-        const existing = timelineBySession.get(sessionId);
-        if (existing) return existing;
-
         const session = sessions.get(sessionId);
         const negotiatedSsrc = deriveNegotiatedSsrc(session);
+        const existing = timelineBySession.get(sessionId);
+        if (existing) {
+            if (Number.isFinite(negotiatedSsrc) && negotiatedSsrc > 0 && existing.ssrc !== negotiatedSsrc) {
+                logger.log(`[${sessionId}] IVR RTP timeline SSRC update ${existing.ssrc} -> ${negotiatedSsrc}`);
+                existing.ssrc = negotiatedSsrc >>> 0;
+                existing.identityLogged = false;
+            }
+            return existing;
+        }
+
         const initialSeq = Math.floor(Math.random() * 65535);
         const initialTs = Math.floor(Math.random() * 0xffffffff);
         // Injected IVR audio is encoded as PCMA (A-law), so force PT=8.
@@ -136,10 +155,12 @@ function createIvrAudioPlayback({
         const session = sessions.get(sessionId);
         const senderTrackSsrc = Number(session?.localAudioTrack?.ssrc);
         const sdpSsrc = parseAudioSsrcFromLocalDescription(session);
+        const answerSdpSsrc = parseAudioSsrcFromSdp(session?.ivrLastAnswerSdp);
         logger.log(
             `[${sessionId}] IVR RTP identity pt=${timeline.payloadType} ssrc=${timeline.ssrc} ` +
             `trackSsrc=${Number.isFinite(senderTrackSsrc) ? senderTrackSsrc : "n/a"} ` +
-            `sdpSsrc=${Number.isFinite(sdpSsrc) ? sdpSsrc : "n/a"}`
+            `sdpSsrc=${Number.isFinite(sdpSsrc) ? sdpSsrc : "n/a"} ` +
+            `answerSdpSsrc=${Number.isFinite(answerSdpSsrc) ? answerSdpSsrc : "n/a"}`
         );
         timeline.identityLogged = true;
     }
