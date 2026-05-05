@@ -58,7 +58,13 @@ function createIvrAudioPlayback({
     }
 
     function cloneSeedPacket(seed, payload, headerOverrides = {}) {
-        const header = { ...(seed?.header || {}), ...headerOverrides };
+        const baseHeader = seed?.header || {};
+        const header = {
+            ...baseHeader,
+            ...headerOverrides,
+            extensions: Array.isArray(baseHeader.extensions) ? baseHeader.extensions : [],
+            csrc: Array.isArray(baseHeader.csrc) ? baseHeader.csrc : [],
+        };
         return {
             ...seed,
             header,
@@ -83,6 +89,8 @@ function createIvrAudioPlayback({
                 padding: false,
                 extension: false,
                 csrcLength: 0,
+                csrc: [],
+                extensions: [],
                 payloadType: state.payloadType,
                 sequenceNumber: state.sequenceNumber,
                 timestamp: state.timestamp,
@@ -204,11 +212,16 @@ function createIvrAudioPlayback({
                 stopSessionPlayback(sessionId, "completed").catch(() => {});
                 return;
             }
-            const payload = frames[idx++];
-            const packet = buildPacketFromState(state, payload);
-            session.localAudioTrack.writeRtp(packet);
-            state.sequenceNumber = (state.sequenceNumber + 1) & 0xffff;
-            state.timestamp = (state.timestamp + RTP_TS_STEP_PCMA_20MS) >>> 0;
+            try {
+                const payload = frames[idx++];
+                const packet = buildPacketFromState(state, payload);
+                session.localAudioTrack.writeRtp(packet);
+                state.sequenceNumber = (state.sequenceNumber + 1) & 0xffff;
+                state.timestamp = (state.timestamp + RTP_TS_STEP_PCMA_20MS) >>> 0;
+            } catch (err) {
+                logger.error(`[${sessionId}] IVR audio write failed: ${err.message}`);
+                stopSessionPlayback(sessionId, "write-failed").catch(() => {});
+            }
         }, 20);
         logger.log(`[${sessionId}] IVR audio playback started chars=${String(text || "").length} frames=${frames.length}`);
         return true;
