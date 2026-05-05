@@ -105,17 +105,67 @@ function createBridgeApi({
         const calleeWallet = destination.wallet;
         const calleeEns = destination.ensName || calleeWallet;
         const callerEns = callerSession.callerEns;
+        const walletKey = String(calleeWallet || "").toLowerCase();
+        const legSessionId = `${callerSessionId}-webrtc-${Date.now()}`;
+        if (!calleeWallet || !calleeEns) {
+            throw new Error("WebRTC destination missing callee wallet/ENS");
+        }
+
+        const legSession = createSession(legSessionId, callerEns, calleeEns);
+        legSession.isGatewayCaller = true;
+        legSession.walletAddress = walletKey;
+        legSession.serviceId = callerSession.serviceId || null;
+
+        const pc = createPeerConnection(legSessionId);
+        if (typeof pc.createDataChannel === "function") {
+            const dc = pc.createDataChannel("chat");
+            if (dc) {
+                legSession.dataChannel = dc;
+                dc.onopen = () => {
+                    if (typeof onDataChannelOpen === "function") {
+                        onDataChannelOpen(legSessionId);
+                    }
+                };
+                dc.onMessage.subscribe((msg) => {
+                    if (typeof onDataChannelMessage !== "function") return;
+                    const raw = typeof msg === "string" ? msg : Buffer.from(msg).toString("utf-8");
+                    onDataChannelMessage(legSessionId, raw);
+                });
+                dc.onclose = () => logger.log(`[${legSessionId}] Data channel closed`);
+            }
+        }
+        legSession.localAudioTrack = new MediaStreamTrack({ kind: "audio" });
+        pc.addTrack(legSession.localAudioTrack);
+        legSession.iceCandidates = [];
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await waitForIceGathering(pc);
+        const gatheredCandidates = formatIceCandidates(legSession).filter((c) => {
+            const cand = String(c?.candidate || "").toLowerCase();
+            return !cand.includes(" tcp ");
+        });
+        const srflxAndRelay = gatheredCandidates.filter((c) => {
+            const cand = String(c?.candidate || "");
+            return cand.includes("typ srflx") || cand.includes("typ relay");
+        });
+        const candidatesToEmbed = srflxAndRelay.length > 0 ? srflxAndRelay : gatheredCandidates;
+        const relayCandidates = getRelayCandidates(gatheredCandidates);
+        const offerSdp = embedCandidatesInSdp(offer.sdp, candidatesToEmbed);
+        const sourceOffer = callerSession.lastRingOfferPayload || null;
 
         const BRIDGE_TIMEOUT = 60000;
         const bridgePromise = new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
-                removePendingEntries(calleeWallet.toLowerCase(), (entry) => entry.kind === "single" && entry.callerSessionId === callerSessionId);
+                removePendingEntries(walletKey, (entry) => entry.kind === "single" && entry.callerSessionId === callerSessionId);
+                closeSessionNow(legSessionId, "webrtc-single-timeout");
                 reject(new Error("Callee did not connect within timeout"));
             }, BRIDGE_TIMEOUT);
 
-            addPendingEntry(calleeWallet.toLowerCase(), {
+            addPendingEntry(walletKey, {
                 kind: "single",
                 callerSessionId,
+                legSessionId,
                 resolve,
                 reject,
                 timer,
@@ -123,14 +173,19 @@ function createBridgeApi({
         });
 
         const callPayload = JSON.stringify({
-            type: "call-invite",
+            type: "offer",
             from: callerEns,
             to: calleeEns,
-            sessionId: callerSessionId,
+            sessionId: legSessionId,
+            sdp: offerSdp,
+            candidates: relayCandidates,
+            callNonce: sourceOffer?.callNonce || null,
+            isCall: true,
         });
         await sendNotification(callerEns, calleeEns, callPayload, notiTypeCall);
         const calleeSessionId = await bridgePromise;
         startWebRtcBridge(callerSessionId, calleeSessionId);
+        logger.log(`[Bridge] WebRTC callee connected callerSessionId=${callerSessionId} calleeSessionId=${calleeSessionId}`);
     }
 
     function clearRingGroupTimeout(group) {
