@@ -6,6 +6,7 @@ function createIvrRuntime({
     sessions,
     sendDataChannelMessage,
     playAudioForSession = null,
+    playAudioFileForSession = null,
     stopAudioForSession = null,
     handlers = {},
     logger = console,
@@ -51,6 +52,19 @@ function createIvrRuntime({
         return false;
     }
 
+    async function sayFile(sessionId, fileNameOrPath, reason = "ivr-file", extra = {}) {
+        if (typeof playAudioFileForSession === "function") {
+            const played = await playAudioFileForSession(sessionId, fileNameOrPath, {
+                interrupt: true,
+                reason,
+                meta: extra,
+            });
+            if (played) return true;
+        }
+        logger.warn(`[${sessionId}] IVR audio file was not played for reason=${reason}`);
+        return false;
+    }
+
     function buildHandlerContext(sessionId, msg = null, meta = {}) {
         const session = sessions.get(sessionId);
         return {
@@ -59,6 +73,7 @@ function createIvrRuntime({
             msg,
             meta,
             say: (text, reason = "ivr-custom", extra = {}) => say(sessionId, text, reason, extra),
+            sayFile: (fileNameOrPath, reason = "ivr-file", extra = {}) => sayFile(sessionId, fileNameOrPath, reason, extra),
             send: (payload) => sendDataChannelMessage(sessionId, payload),
         };
     }
@@ -66,10 +81,13 @@ function createIvrRuntime({
     function createDefaultHandlers() {
         return {
             async onCallStart(ctx) {
-                await ctx.say(
-                    "Welcome to the secnum IVR. Press any digit from zero to nine.",
-                    "ivr-start",
-                );
+                const played = await ctx.sayFile("Hello.m4a", "ivr-start-file");
+                if (!played) {
+                    await ctx.say(
+                        "Welcome to the secnum IVR. Press any digit from zero to nine.",
+                        "ivr-start",
+                    );
+                }
             },
             async onInvalidDigit(ctx) {
                 const rawDigit = String(ctx?.msg?.digit ?? "").trim();
@@ -196,11 +214,17 @@ async function onDigit0(ctx) {
 }
 
 async function onDigit1(ctx) {
-    await ctx.say("You pressed 1.", "ivr-digit-1", buildDigitExtra(ctx, "1"));
+    const played = await ctx.sayFile("One.m4a", "ivr-digit-1-file", buildDigitExtra(ctx, "1"));
+    if (!played) {
+        await ctx.say("You pressed 1.", "ivr-digit-1", buildDigitExtra(ctx, "1"));
+    }
 }
 
 async function onDigit2(ctx) {
-    await ctx.say("You pressed 2.", "ivr-digit-2", buildDigitExtra(ctx, "2"));
+    const played = await ctx.sayFile("Two.m4a", "ivr-digit-2-file", buildDigitExtra(ctx, "2"));
+    if (!played) {
+        await ctx.say("You pressed 2.", "ivr-digit-2", buildDigitExtra(ctx, "2"));
+    }
 }
 
 async function onDigit3(ctx) {

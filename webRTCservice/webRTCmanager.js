@@ -345,6 +345,7 @@ const ivrRuntimeApi = createIvrRuntime({
     sessions,
     sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
     playAudioForSession: (...args) => ivrAudioPlaybackApi.playText(...args),
+    playAudioFileForSession: (...args) => ivrAudioPlaybackApi.playFile(...args),
     stopAudioForSession: (...args) => ivrAudioPlaybackApi.stopSessionPlayback(...args),
     logger: console,
 });

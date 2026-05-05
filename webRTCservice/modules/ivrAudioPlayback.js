@@ -15,6 +15,7 @@ function createIvrAudioPlayback({
     logger = console,
     ttsBinary = process.env.IVR_TTS_BIN || "espeak-ng",
     ffmpegBinary = process.env.IVR_FFMPEG_BIN || "ffmpeg",
+    demoAudioDir = process.env.IVR_DEMO_AUDIO_DIR || path.resolve(__dirname, "../../demoAudio"),
 }) {
     const playbackBySession = new Map();
     const timelineBySession = new Map();
@@ -215,6 +216,28 @@ function createIvrAudioPlayback({
         };
     }
 
+    async function mediaFileToPcmaFrames(sessionId, inputFilePath) {
+        const nonce = crypto.randomUUID();
+        const alawFile = path.join(os.tmpdir(), `ivr-${sessionId}-${nonce}.alaw`);
+        await runProcess(
+            ffmpegBinary,
+            ["-y", "-i", String(inputFilePath), "-ar", "8000", "-ac", "1", "-c:a", "pcm_alaw", "-f", "alaw", alawFile],
+            "Audio file transcode",
+        );
+        const raw = await fs.readFile(alawFile);
+        return {
+            raw,
+            tempFiles: [alawFile],
+        };
+    }
+
+    function resolveAudioFilePath(fileNameOrPath) {
+        const raw = String(fileNameOrPath || "").trim();
+        if (!raw) return "";
+        if (path.isAbsolute(raw)) return raw;
+        return path.join(demoAudioDir, raw);
+    }
+
     function splitFrames(raw) {
         const out = [];
         for (let i = 0; i < raw.length; i += FRAME_SIZE_BYTES_PCMA_20MS) {
@@ -305,6 +328,98 @@ function createIvrAudioPlayback({
         return true;
     }
 
+    async function playFile(sessionId, fileNameOrPath, { interrupt = true } = {}) {
+        validateDependencies();
+        const session = sessions.get(sessionId);
+        if (!session?.localAudioTrack) {
+            logger.warn(`[${sessionId}] IVR audio file skipped: localAudioTrack missing`);
+            return false;
+        }
+
+        const inputPath = resolveAudioFilePath(fileNameOrPath);
+        if (!inputPath) {
+            logger.warn(`[${sessionId}] IVR audio file skipped: missing path`);
+            return false;
+        }
+
+        if (interrupt) {
+            await stopSessionPlayback(sessionId, "interrupt");
+        }
+
+        const timeline = getOrCreateTimeline(sessionId);
+        logNegotiatedIdentity(sessionId, timeline);
+        try {
+            if (session.localAudioTrack) {
+                session.localAudioTrack.ssrc = timeline.ssrc;
+            }
+        } catch (_) {}
+
+        const state = buildPlaybackState(timeline);
+        playbackBySession.set(sessionId, state);
+
+        let rawAndFiles;
+        try {
+            rawAndFiles = await mediaFileToPcmaFrames(sessionId, inputPath);
+        } catch (err) {
+            playbackBySession.delete(sessionId);
+            logger.error(`[${sessionId}] IVR audio file transcode failed path=${inputPath} err=${err.message}`);
+            return false;
+        }
+
+        const { raw, tempFiles } = rawAndFiles;
+        state.tempFiles = tempFiles;
+        const frames = splitFrames(raw);
+        if (!frames.length) {
+            await cleanupTempFiles(tempFiles);
+            return false;
+        }
+
+        let idx = 0;
+        session.localAudioTrack.onSourceChanged.execute({
+            sequenceNumber: timeline.sequenceNumber,
+            timestamp: timeline.timestamp,
+        });
+        state.timer = setInterval(() => {
+            if (state.stopped || (!session.mediaRelayActive && !session.ivr?.active)) return;
+            if (idx >= frames.length) {
+                stopSessionPlayback(sessionId, "completed").catch(() => {});
+                return;
+            }
+            try {
+                if (session.localAudioTrack && session.localAudioTrack.ssrc !== timeline.ssrc) {
+                    logger.warn(
+                        `[${sessionId}] IVR localAudioTrack SSRC drift detected ` +
+                        `${session.localAudioTrack.ssrc} -> ${timeline.ssrc}`
+                    );
+                    session.localAudioTrack.ssrc = timeline.ssrc;
+                }
+                const payload = frames[idx++];
+                const packet = buildPacketFromState(timeline, payload);
+                packet.header.marker = idx === 1;
+                if (state.debugPacketsLogged < 5) {
+                    state.debugPacketsLogged += 1;
+                    logger.log(
+                        `[${sessionId}] IVR FILE RTP packet#${state.debugPacketsLogged} ` +
+                        `pt=${packet.header.payloadType} ssrc=${packet.header.ssrc} ` +
+                        `seq=${packet.header.sequenceNumber} ts=${packet.header.timestamp} ` +
+                        `trackSsrc=${session.localAudioTrack?.ssrc ?? "n/a"} payloadLen=${payload.length}`
+                    );
+                }
+                session.localAudioTrack.writeRtp(packet);
+                timeline.sequenceNumber = (timeline.sequenceNumber + 1) & 0xffff;
+                timeline.timestamp = (timeline.timestamp + RTP_TS_STEP_PCMA_20MS) >>> 0;
+            } catch (err) {
+                logger.error(
+                    `[${sessionId}] IVR audio file write failed: ${err.message} ` +
+                    `pt=${timeline.payloadType} ssrc=${timeline.ssrc} seq=${timeline.sequenceNumber} ts=${timeline.timestamp}`
+                );
+                stopSessionPlayback(sessionId, "write-failed").catch(() => {});
+            }
+        }, 20);
+        logger.log(`[${sessionId}] IVR audio file playback started file=${inputPath} frames=${frames.length}`);
+        return true;
+    }
+
     function onInboundRtp() {}
 
     async function stopAll() {
@@ -316,6 +431,7 @@ function createIvrAudioPlayback({
 
     return {
         playText,
+        playFile,
         stopSessionPlayback,
         onInboundRtp,
         stopAll,
