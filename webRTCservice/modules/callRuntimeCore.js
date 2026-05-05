@@ -123,7 +123,10 @@ function createCallRuntimeCore({
             if (typeof startIvrSession !== "function") {
                 throw new Error("IVR route requested but startIvrSession is unavailable");
             }
-            await startIvrSession(sessionId, destination);
+            const started = await startIvrSession(sessionId, destination);
+            if (!started) {
+                throw new Error("IVR route requested but session did not enter IVR mode");
+            }
             return "ivr";
         }
     }

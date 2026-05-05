@@ -109,7 +109,7 @@ function createIvrRuntime({
     async function startIvr(sessionId, meta = {}) {
         const session = sessions.get(sessionId);
         if (!session) return false;
-        if (session.serviceId !== "secnum") return false;
+        if (session.serviceId && session.serviceId !== "secnum") return false;
 
         session.ivr = {
             active: true,
