@@ -120,12 +120,10 @@ function createCallRuntimeCore({
             return "webrtc-multiring";
         }
         if (destination.route === "ivr") {
+            // Start IVR only after final answer is sent to the caller.
+            // Starting it here can play RTP before the caller applies remote answer.
             if (typeof startIvrSession !== "function") {
                 throw new Error("IVR route requested but startIvrSession is unavailable");
-            }
-            const started = await startIvrSession(sessionId, destination);
-            if (!started) {
-                throw new Error("IVR route requested but session did not enter IVR mode");
             }
             return "ivr";
         }

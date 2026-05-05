@@ -271,6 +271,13 @@ function createIvrAudioPlayback({
                 return;
             }
             try {
+                if (session.localAudioTrack && session.localAudioTrack.ssrc !== timeline.ssrc) {
+                    logger.warn(
+                        `[${sessionId}] IVR localAudioTrack SSRC drift detected ` +
+                        `${session.localAudioTrack.ssrc} -> ${timeline.ssrc}`
+                    );
+                    session.localAudioTrack.ssrc = timeline.ssrc;
+                }
                 const payload = frames[idx++];
                 const packet = buildPacketFromState(timeline, payload);
                 packet.header.marker = idx === 1;
@@ -279,7 +286,8 @@ function createIvrAudioPlayback({
                     logger.log(
                         `[${sessionId}] IVR RTP packet#${state.debugPacketsLogged} ` +
                         `pt=${packet.header.payloadType} ssrc=${packet.header.ssrc} ` +
-                        `seq=${packet.header.sequenceNumber} ts=${packet.header.timestamp} payloadLen=${payload.length}`
+                        `seq=${packet.header.sequenceNumber} ts=${packet.header.timestamp} ` +
+                        `trackSsrc=${session.localAudioTrack?.ssrc ?? "n/a"} payloadLen=${payload.length}`
                     );
                 }
                 session.localAudioTrack.writeRtp(packet);

@@ -24,6 +24,14 @@ function patchRouterForDynamicSsrc(pc, logger = console) {
                 // Keep using the already-created track object so existing RTP subscriptions survive.
                 const existingTrack = tracks[0];
                 const oldSsrc = existingTrack.ssrc;
+                const oldNum = Number(oldSsrc);
+                const canLateBind =
+                    !Number.isFinite(oldNum) ||
+                    oldNum <= 0 ||
+                    oldNum === 1;
+                if (!canLateBind) {
+                    continue;
+                }
                 if (oldSsrc !== incomingSsrc) {
                     if (router.ssrcTable) {
                         delete router.ssrcTable[oldSsrc];

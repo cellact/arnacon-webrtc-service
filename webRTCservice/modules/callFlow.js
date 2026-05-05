@@ -216,9 +216,10 @@ function createCallFlowApi({
         }
 
         if (!isInbound) sendAck(sessionId);
+        let routeResult = null;
         try {
             if (isInbound) await openInboundSipSession(sessionId, session.inboundCall.toNumber);
-            else await routeCall(sessionId, session, destination, parsedFrom);
+            else routeResult = await routeCall(sessionId, session, destination, parsedFrom);
         } catch (err) {
             failCall(sessionId, err, isInbound ? "Inbound SIP session failed" : "Call routing failed");
             return;
@@ -227,6 +228,21 @@ function createCallFlowApi({
         session.phase = "in-call";
         if (isInbound) sendAckAndAnswer(sessionId, answerSdp);
         else sendAnswer(sessionId, answerSdp);
+        if (
+            !isInbound &&
+            routeResult === "ivr" &&
+            typeof startIvrForSession === "function"
+        ) {
+            const started = await startIvrForSession(sessionId, {
+                route: "ivr",
+                source: "outbound-route",
+                target: destination?.target || "",
+            });
+            if (!started) {
+                failCall(sessionId, new Error("IVR route requested but session did not enter IVR mode"), "IVR startup failed");
+                return;
+            }
+        }
         if (!isInbound && destination.route === "webrtc-multiring" && typeof startPendingMultiBridge === "function") {
             startPendingMultiBridge(sessionId);
         }
