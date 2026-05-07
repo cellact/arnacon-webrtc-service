@@ -162,6 +162,20 @@ function createCallFlowApi({
     async function handleRing(sessionId, payload) {
         const session = sessions.get(sessionId);
         if (!session || !session.peerConnection) throw new Error("Session or PeerConnection not found");
+        if (session.phase === "post-call") {
+            session.linkedSessionId = null;
+            session.bridgedWith = null;
+            session.mediaRelayActive = false;
+            session.pendingReoffer = null;
+            session.endCallRenegDone = true;
+            if (Array.isArray(session._bridgeDisposers)) {
+                for (const dispose of session._bridgeDisposers) {
+                    try { dispose(); } catch (_) {}
+                }
+                session._bridgeDisposers = [];
+            }
+            logger.log(`[${sessionId}] Reusing post-call session for new ring`);
+        }
         // Keep latest caller ring-offer so multi-ring can fan out with client-compatible offer payload.
         session.lastRingOfferPayload = payload;
         const pc = session.peerConnection;
