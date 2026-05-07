@@ -6,6 +6,7 @@ function createSignalingHandlers({
     handleReofferAnswer,
     handleInboundCalleeAnswer,
     handleMultiRingLegAnswer = null,
+    handleSingleBridgeLegAnswer = null,
     handleIceRestart,
     handleRing,
     handleCallEnd,
@@ -61,6 +62,8 @@ function createSignalingHandlers({
                     enqueueSignaling(sessionId, "reoffer-answer", () => handleReofferAnswer(sessionId, payload));
                 } else if (s && s.multiRingLeg && typeof handleMultiRingLegAnswer === "function") {
                     enqueueSignaling(sessionId, "multiring-leg-answer", () => handleMultiRingLegAnswer(sessionId, payload));
+                } else if (s && s.singleBridgeLeg && typeof handleSingleBridgeLegAnswer === "function") {
+                    enqueueSignaling(sessionId, "single-bridge-leg-answer", () => handleSingleBridgeLegAnswer(sessionId, payload));
                 } else if (s && s.isGatewayCaller) {
                     enqueueSignaling(sessionId, "inbound-answer", () => handleInboundCalleeAnswer(sessionId, payload));
                 }

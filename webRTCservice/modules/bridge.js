@@ -114,6 +114,7 @@ function createBridgeApi({
 
         const legSession = createSession(legSessionId, callerEns, calleeEns);
         legSession.isGatewayCaller = true;
+        legSession.singleBridgeLeg = true;
         legSession.walletAddress = walletKey;
         legSession.serviceId = callerSession.serviceId || null;
 
@@ -604,6 +605,29 @@ function createBridgeApi({
         logger.log(`[Bridge] WebRTC bridge initiated between ${callerSessionId} and ${calleeSessionId}`);
     }
 
+    function commitSingleBridgePickup(sessionId) {
+        if (!sessionId) return { handled: false };
+        for (const [walletKey, list] of pendingBridges.entries()) {
+            const entries = Array.isArray(list) ? list : [list];
+            const nextList = [];
+            let matched = null;
+            for (const pending of entries) {
+                if (pending.kind === "single" && pending.legSessionId === sessionId) {
+                    matched = pending;
+                    continue;
+                }
+                nextList.push(pending);
+            }
+            if (!matched) continue;
+            clearTimeout(matched.timer);
+            setPendingList(walletKey, nextList);
+            matched.resolve(sessionId);
+            logger.log(`[Bridge] Single WebRTC pickup confirmed sessionId=${sessionId}`);
+            return { handled: true, sessionId };
+        }
+        return { handled: false };
+    }
+
     function checkPendingBridge(sessionId, walletAddress) {
         if (!walletAddress) return false;
         const key = walletAddress.toLowerCase();
@@ -618,8 +642,15 @@ function createBridgeApi({
                     nextList.push(pending);
                     continue;
                 }
-                clearTimeout(pending.timer);
-                pending.resolve(sessionId);
+                if (pending.legSessionId && pending.legSessionId !== sessionId) {
+                    nextList.push(pending);
+                    continue;
+                }
+                const session = sessions.get(sessionId);
+                if (session) session.singleBridgeTransportReady = true;
+                // Keep pending open until the callee answers the stage2 RING
+                // over data channel. HTTP/WebRTC readiness is not pickup.
+                nextList.push(pending);
                 handled = true;
                 continue;
             }
@@ -710,6 +741,7 @@ function createBridgeApi({
         startPendingMultiBridge,
         commitWinnerFromAnswer,
         commitWinnerFromDataChannelAnswer,
+        commitSingleBridgePickup,
         checkPendingBridge,
         checkPendingInboundCall,
         handleIceRestart,

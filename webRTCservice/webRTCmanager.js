@@ -437,6 +437,7 @@ const signalingHandlersApi = createSignalingHandlers({
     handleReofferAnswer: (...args) => handleReofferAnswer(...args),
     handleInboundCalleeAnswer: (...args) => handleInboundCalleeAnswer(...args),
     handleMultiRingLegAnswer: (...args) => handleMultiRingLegAnswer(...args),
+    handleSingleBridgeLegAnswer: (...args) => handleSingleBridgeLegAnswer(...args),
     handleIceRestart: (...args) => handleIceRestart(...args),
     handleRing: (...args) => handleRing(...args),
     handleCallEnd: (...args) => handleCallEnd(...args),
@@ -889,6 +890,14 @@ async function handleMultiRingLegAnswer(sessionId, payload) {
     return winner || null;
 }
 
+async function handleSingleBridgeLegAnswer(sessionId, payload) {
+    const session = sessions.get(sessionId);
+    if (!session || !session.singleBridgeLeg) return null;
+    await callFlowApi.handleMultiRingLegAnswer(sessionId, payload);
+    console.log(`[Bridge] stage2 DC pickup observed sessionId=${sessionId}`);
+    return bridgeApi.commitSingleBridgePickup(sessionId);
+}
+
 /**
  * Enqueues an async task on the session's signaling queue so SDP operations
  * (end-call renegotiation, RING offers, answers, ICE restarts) never overlap.
@@ -984,6 +993,22 @@ async function redirectIvrSessionToWebrtc(sessionId, targetEns, { reason = "ivr-
 }
 
 async function onVerifiedNotifyAnswer(sessionId, offer, session) {
+    if (session?.singleBridgeLeg) {
+        session.singleBridgeHttpAnswered = true;
+        console.log(`[Bridge] stage1 HTTP answer observed sessionId=${sessionId}`);
+        try {
+            await callFlowApi.triggerSingleBridgeLegRing(sessionId, destroySession);
+        } catch (err) {
+            console.error(`[${sessionId}] Failed single stage1->stage2 ring trigger: ${err.message}`);
+        }
+        return {
+            ok: true,
+            handled: true,
+            sessionId,
+            pickedUp: false,
+        };
+    }
+
     if (!session || !session.multiRingLeg) return null;
     session.multiRingHttpAnswered = true;
     console.log(`[MR:${session.multiRingGroupId || "unknown"}] stage1 HTTP answer observed sessionId=${sessionId}`);

@@ -53,6 +53,11 @@ function createCallFlowApi({
                 logger.error(`[${sessionId}] Failed to send multiring leg RING on DC open: ${err.message}`);
             });
         }
+        if (session.isGatewayCaller && session.singleBridgeLeg) {
+            triggerSingleBridgeLegRing(sessionId, destroySession).catch((err) => {
+                logger.error(`[${sessionId}] Failed to send single bridge leg RING on DC open: ${err.message}`);
+            });
+        }
         if (session.walletAddress) {
             checkPendingBridge(sessionId, session.walletAddress);
             checkPendingInboundCall(sessionId, session.walletAddress);
@@ -72,6 +77,26 @@ function createCallFlowApi({
             return true;
         } catch (err) {
             session.multiRingLegRingSent = false;
+            if (typeof destroySession === "function") {
+                try { destroySession(sessionId, false); } catch (_) {}
+            }
+            throw err;
+        }
+    }
+
+    async function triggerSingleBridgeLegRing(sessionId, destroySession = null) {
+        const session = sessions.get(sessionId);
+        if (!session || !session.singleBridgeLeg) return false;
+        if (!session.singleBridgeHttpAnswered) return false;
+        if (session.singleBridgeLegRingSent) return true;
+        if (!session.dataChannel) return false;
+        session.singleBridgeLegRingSent = true;
+        try {
+            await sendInboundRing(sessionId);
+            logger.log(`[${sessionId}] Single bridge stage1->stage2: RING offer sent over data channel`);
+            return true;
+        } catch (err) {
+            session.singleBridgeLegRingSent = false;
             if (typeof destroySession === "function") {
                 try { destroySession(sessionId, false); } catch (_) {}
             }
@@ -343,6 +368,7 @@ function createCallFlowApi({
         onDataChannelOpen,
         sendInboundRing,
         triggerMultiRingLegRing,
+        triggerSingleBridgeLegRing,
         handleInboundCalleeAnswer,
         handleMultiRingLegAnswer,
         handleRing,
