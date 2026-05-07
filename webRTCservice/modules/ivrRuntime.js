@@ -246,7 +246,7 @@ async function onDigit3(ctx) {
         ...buildDigitExtra(ctx, "3"),
         waitForCompletion: true,
     };
-    await ctx.say("redirecting to 972557012407", "ivr-digit-3-redirect", extra);
+    await ctx.say("redirecting to 9 7 2 5 5 7 0 1 2 4 0 7", "ivr-digit-3-redirect", extra);
     await ctx.redirectTo("972557012407.secnumtest.global", {
         reason: "ivr-digit-3",
     });
