@@ -167,14 +167,16 @@ function createCallFlowApi({
         logger.log(`[${sessionId}] outbound WebRTC stage2: pickup answer received over data channel`);
     }
 
-    function narrowAudioOfferToG711(sdp) {
+    function narrowAudioOfferToPayloads(sdp, allowedPayloads) {
         if (!sdp || !sdp.includes("m=audio")) return sdp;
+        const allowedPayloadSet = new Set((allowedPayloads || []).map(String));
+        if (allowedPayloadSet.size === 0) return sdp;
         const sections = sdp.split(/\r\n(?=m=)/);
         return sections.map((section) => {
             if (!section.startsWith("m=audio")) return section;
             const lines = section.split(/\r\n/);
             const mLine = lines[0].split(" ");
-            const payloads = mLine.slice(3).filter((pt) => pt === "0" || pt === "8");
+            const payloads = mLine.slice(3).filter((pt) => allowedPayloadSet.has(pt));
             if (!payloads.length) return section;
 
             const allowed = new Set(payloads);
@@ -188,9 +190,19 @@ function createCallFlowApi({
         }).join("\r\n");
     }
 
-    function routeRequiresG711(destination, isInbound) {
+    function narrowAudioOfferToG711(sdp) {
+        return narrowAudioOfferToPayloads(sdp, ["0", "8"]);
+    }
+
+    function narrowAudioOfferToPcma(sdp) {
+        return narrowAudioOfferToPayloads(sdp, ["8"]);
+    }
+
+    function routeCodecPolicy(destination, isInbound) {
         if (isInbound) return false;
-        return destination?.route === "ivr" || destination?.route === "sbc";
+        if (destination?.route === "sbc") return "pcma";
+        if (destination?.route === "ivr") return "g711";
+        return null;
     }
 
     function storeIvrNegotiatedAudio(session, sessionId, answerSdp) {
@@ -263,13 +275,17 @@ function createCallFlowApi({
 
         let offerSdp = payload.sdp;
         if (isInactive) offerSdp = patchInactiveToSendrecv(offerSdp);
-        if (routeRequiresG711(destination, isInbound)) {
-            const g711OfferSdp = narrowAudioOfferToG711(offerSdp);
-            if (g711OfferSdp !== offerSdp) {
-                logger.log(`[${sessionId}] ${destination.route} route: narrowed caller audio offer to PCMU/PCMA`);
-                offerSdp = g711OfferSdp;
+        const codecPolicy = routeCodecPolicy(destination, isInbound);
+        if (codecPolicy) {
+            const narrowedOfferSdp = codecPolicy === "pcma"
+                ? narrowAudioOfferToPcma(offerSdp)
+                : narrowAudioOfferToG711(offerSdp);
+            if (narrowedOfferSdp !== offerSdp) {
+                const label = codecPolicy === "pcma" ? "PCMA" : "PCMU/PCMA";
+                logger.log(`[${sessionId}] ${destination.route} route: narrowed caller audio offer to ${label}`);
+                offerSdp = narrowedOfferSdp;
             }
-            session.mediaCodecPolicy = "g711";
+            session.mediaCodecPolicy = codecPolicy;
         } else {
             session.mediaCodecPolicy = null;
         }

@@ -48,7 +48,7 @@ function applyPolyfills({ fixSdpForWerift = null, logger = console } = {}) {
         channels: 1,
         payloadType: 0,
     });
-    const defaultAudioCodecs = [PCMU_CODEC, PCMA_CODEC, OPUS_CODEC];
+    const defaultAudioCodecs = [PCMA_CODEC, PCMU_CODEC, OPUS_CODEC];
     const WrappedRTCPeerConnection = function (config = {}) {
         if (!config.codecs) config.codecs = {};
         if (!config.codecs.audio) {
