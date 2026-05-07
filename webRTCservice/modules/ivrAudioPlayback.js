@@ -220,6 +220,7 @@ function createIvrAudioPlayback({
             debugPacketsLogged: 0,
             playbackStateLogged: false,
             completionResolver: null,
+            loop: false,
             timeline,
         };
     }
@@ -514,7 +515,7 @@ function createIvrAudioPlayback({
         return true;
     }
 
-    async function playFile(sessionId, fileNameOrPath, { interrupt = true, waitForCompletion = false } = {}) {
+    async function playFile(sessionId, fileNameOrPath, { interrupt = true, waitForCompletion = false, loop = false } = {}) {
         validateDependencies();
         const session = sessions.get(sessionId);
         if (!session?.localAudioTrack) {
@@ -543,6 +544,7 @@ function createIvrAudioPlayback({
         } catch (_) {}
 
         const state = buildPlaybackState(timeline);
+        state.loop = Boolean(loop);
         playbackBySession.set(sessionId, state);
         const completionPromise = waitForCompletion ? waitForPlaybackCompletion(state) : null;
         const codecInfo = payloadToCodec(timeline.payloadType);
@@ -582,6 +584,10 @@ function createIvrAudioPlayback({
             const playbackReady = ensurePlaybackReady(sessionId, session, "file", state);
             if (!playbackReady.ready) return;
             if (idx >= frames.length) {
+                if (state.loop) {
+                    idx = 0;
+                    return;
+                }
                 if (typeof state.completionResolver === "function") {
                     state.completionResolver({ completed: true, reason: "completed" });
                     state.completionResolver = null;
@@ -623,7 +629,7 @@ function createIvrAudioPlayback({
         }, 20);
         logger.log(
             `[${sessionId}] IVR audio file playback started source=file codec=${codecInfo.label} ` +
-            `file=${resolvedPath} frames=${frames.length}`
+            `file=${resolvedPath} frames=${frames.length} loop=${state.loop}`
         );
         if (completionPromise) {
             const result = await completionPromise;

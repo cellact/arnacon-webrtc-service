@@ -241,6 +241,7 @@ function createCallFlowApi({
                 route: "ivr",
                 source: "outbound-route",
                 target: destination?.target || "",
+                waitingAudioFile: destination?.waitingAudioFile || null,
             });
             if (!started) {
                 failCall(sessionId, new Error("IVR route requested but session did not enter IVR mode"), "IVR startup failed");

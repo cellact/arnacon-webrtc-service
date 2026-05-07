@@ -941,7 +941,7 @@ async function notifyAndBridgeMulti(callerSessionId, destinations) {
     return bridgeApi.notifyAndBridgeMulti(callerSessionId, destinations);
 }
 
-async function redirectIvrSessionToWebrtc(sessionId, targetEns, { reason = "ivr-redirect" } = {}) {
+async function redirectIvrSessionToWebrtc(sessionId, targetEns, { reason = "ivr-redirect", waitingAudioFile = null } = {}) {
     const session = sessions.get(sessionId);
     if (!session) {
         console.warn(`[${sessionId}] IVR redirect skipped: session missing target=${targetEns}`);
@@ -961,11 +961,26 @@ async function redirectIvrSessionToWebrtc(sessionId, targetEns, { reason = "ivr-
     }
 
     console.log(`[${sessionId}] IVR redirect target=${targetEns} wallet=${destination.wallet} reason=${reason}`);
-    ivrRuntimeApi.stopIvr(sessionId, `redirect:${reason}`);
-    await ivrAudioPlaybackApi.stopSessionPlayback(sessionId, `redirect:${reason}`);
-    session.toIdentity = destination.ensName || targetEns;
-    await notifyAndBridge(sessionId, destination);
-    return true;
+    const waitingFile = waitingAudioFile || session.ivr?.waitingAudioFile || null;
+    try {
+        if (waitingFile) {
+            await ivrAudioPlaybackApi.playFile(sessionId, waitingFile, {
+                interrupt: true,
+                reason: `redirect-waiting:${reason}`,
+                loop: true,
+            });
+            console.log(`[${sessionId}] IVR redirect waiting audio started file=${waitingFile}`);
+        }
+        session.toIdentity = destination.ensName || targetEns;
+        await notifyAndBridge(sessionId, destination);
+        return true;
+    } catch (err) {
+        console.warn(`[${sessionId}] IVR redirect failed target=${targetEns} reason=${reason} err=${err.message}`);
+        return false;
+    } finally {
+        ivrRuntimeApi.stopIvr(sessionId, `redirect:${reason}`);
+        await ivrAudioPlaybackApi.stopSessionPlayback(sessionId, `redirect:${reason}`);
+    }
 }
 
 async function onVerifiedNotifyAnswer(sessionId, offer, session) {

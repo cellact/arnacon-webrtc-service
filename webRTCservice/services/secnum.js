@@ -1,6 +1,7 @@
 "use strict";
 
 const DOMAINS = ["secnumtest.global", "secnum.global", "cellactm.global", "cellactl.global"];
+const IVR_WAITING_AUDIO_FILE = "waiting.mp3";
 const HARD_CODED_MULTI_RING = {
     callerEns: "972557012401.secnumtest.global",
     callerSbcNumber: "972557258108",
@@ -103,7 +104,12 @@ async function resolveDestination(ctx) {
 
     const normalizedTarget = helpers.normalizePhone(parsedTo.value || parsedTo.full || "");
     if (normalizedTarget === "2006") {
-        return { route: "ivr", providerId: "secnum", target: "2006" };
+        return {
+            route: "ivr",
+            providerId: "secnum",
+            target: "2006",
+            waitingAudioFile: IVR_WAITING_AUDIO_FILE,
+        };
     }
 
     if (parsedTo.type === "raw" || parsedTo.type === "unknown") {
@@ -143,6 +149,7 @@ module.exports = {
     providerId: "secnum",
     primaryDomain: DOMAINS[0],
     domainAliases: DOMAINS.slice(1),
+    ivrWaitingAudioFile: IVR_WAITING_AUDIO_FILE,
     resolveDestination,
     resolveCallerId,
     resolveInboundTarget,

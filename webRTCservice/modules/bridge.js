@@ -105,6 +105,7 @@ function createBridgeApi({
         const calleeWallet = destination.wallet;
         const calleeEns = destination.ensName || calleeWallet;
         const callerEns = callerSession.callerEns;
+        const callerNumberLabel = getCallerNumberLabel(callerEns);
         const walletKey = String(calleeWallet || "").toLowerCase();
         const legSessionId = `${callerSessionId}-webrtc-${Date.now()}`;
         if (!calleeWallet || !calleeEns) {
@@ -174,9 +175,10 @@ function createBridgeApi({
 
         const callPayload = JSON.stringify({
             type: "offer",
-            from: callerEns,
+            from: callerNumberLabel || callerEns,
             to: calleeEns,
             sessionId: legSessionId,
+            label: callerNumberLabel || undefined,
             sdp: offerSdp,
             candidates: relayCandidates,
             callNonce: sourceOffer?.callNonce || null,

@@ -61,6 +61,7 @@ function createIvrRuntime({
                 reason,
                 meta: extra,
                 waitForCompletion: Boolean(extra?.waitForCompletion),
+                loop: Boolean(extra?.loop),
             });
             if (played) return true;
         }
@@ -147,6 +148,7 @@ function createIvrRuntime({
             startedAt: Date.now(),
             source: meta.source || "unknown",
             lastDigit: null,
+            waitingAudioFile: meta.waitingAudioFile || null,
         };
 
         sendDataChannelMessage(sessionId, {
@@ -247,6 +249,7 @@ async function onDigit3(ctx) {
     await ctx.say("redirecting to 972557012407", "ivr-digit-3-redirect", extra);
     await ctx.redirectTo("972557012407.secnumtest.global", {
         reason: "ivr-digit-3",
+        waitingAudioFile: ctx.session?.ivr?.waitingAudioFile || null,
     });
 }
 
