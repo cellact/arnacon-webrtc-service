@@ -436,8 +436,7 @@ const signalingHandlersApi = createSignalingHandlers({
     handleEndCallRenegotiation: (...args) => handleEndCallRenegotiation(...args),
     handleReofferAnswer: (...args) => handleReofferAnswer(...args),
     handleInboundCalleeAnswer: (...args) => handleInboundCalleeAnswer(...args),
-    handleMultiRingLegAnswer: (...args) => handleMultiRingLegAnswer(...args),
-    handleSingleBridgeLegAnswer: (...args) => handleSingleBridgeLegAnswer(...args),
+    handleOutboundWebrtcLegAnswer: (...args) => handleOutboundWebrtcLegAnswer(...args),
     handleIceRestart: (...args) => handleIceRestart(...args),
     handleRing: (...args) => handleRing(...args),
     handleCallEnd: (...args) => handleCallEnd(...args),
@@ -881,21 +880,16 @@ async function handleInboundCalleeAnswer(sessionId, payload) {
     return callFlowApi.handleInboundCalleeAnswer(sessionId, payload);
 }
 
-async function handleMultiRingLegAnswer(sessionId, payload) {
+async function handleOutboundWebrtcLegAnswer(sessionId, payload) {
     const session = sessions.get(sessionId);
-    if (!session || !session.multiRingLeg) return null;
-    await callFlowApi.handleMultiRingLegAnswer(sessionId, payload);
-    console.log(`[MR:${session.multiRingGroupId || "unknown"}] stage2 DC answer observed sessionId=${sessionId}`);
-    const winner = bridgeApi.commitWinnerFromDataChannelAnswer(sessionId);
-    return winner || null;
-}
-
-async function handleSingleBridgeLegAnswer(sessionId, payload) {
-    const session = sessions.get(sessionId);
-    if (!session || !session.singleBridgeLeg) return null;
-    await callFlowApi.handleMultiRingLegAnswer(sessionId, payload);
-    console.log(`[Bridge] stage2 DC pickup observed sessionId=${sessionId}`);
-    return bridgeApi.commitSingleBridgePickup(sessionId);
+    if (!session || !session.outboundWebrtcLeg) return null;
+    await callFlowApi.handleOutboundWebrtcLegAnswer(sessionId, payload);
+    console.log(`[Bridge] outbound WebRTC pickup observed sessionId=${sessionId} kind=${session.outboundBridgeKind || "unknown"}`);
+    if (session.multiRingLeg) {
+        const winner = bridgeApi.commitWinnerFromDataChannelAnswer(sessionId);
+        return winner || null;
+    }
+    return bridgeApi.commitWebrtcBridgePickup(sessionId);
 }
 
 /**
@@ -980,7 +974,6 @@ async function redirectIvrSessionToWebrtc(sessionId, targetEns, { reason = "ivr-
             });
             console.log(`[${sessionId}] IVR redirect waiting audio started file=${waitingFile}`);
         }
-        session.toIdentity = destination.ensName || targetEns;
         await notifyAndBridge(sessionId, destination);
         return true;
     } catch (err) {
@@ -993,36 +986,30 @@ async function redirectIvrSessionToWebrtc(sessionId, targetEns, { reason = "ivr-
 }
 
 async function onVerifiedNotifyAnswer(sessionId, offer, session) {
-    if (session?.singleBridgeLeg) {
-        session.singleBridgeHttpAnswered = true;
-        console.log(`[Bridge] stage1 HTTP answer observed sessionId=${sessionId}`);
-        try {
-            await callFlowApi.triggerSingleBridgeLegRing(sessionId, destroySession);
-        } catch (err) {
-            console.error(`[${sessionId}] Failed single stage1->stage2 ring trigger: ${err.message}`);
-        }
-        return {
-            ok: true,
-            handled: true,
-            sessionId,
-            pickedUp: false,
-        };
+    if (!session || !session.outboundWebrtcLeg) return null;
+
+    session.outboundLegHttpAnswered = true;
+    console.log(
+        `[Bridge] outbound WebRTC stage1 HTTP answer observed ` +
+        `sessionId=${sessionId} kind=${session.outboundBridgeKind || "unknown"}`
+    );
+
+    let observed = { handled: true };
+    if (session.multiRingLeg) {
+        observed = bridgeApi.commitWinnerFromAnswer(sessionId);
+        if (!observed || !observed.handled) return null;
     }
 
-    if (!session || !session.multiRingLeg) return null;
-    session.multiRingHttpAnswered = true;
-    console.log(`[MR:${session.multiRingGroupId || "unknown"}] stage1 HTTP answer observed sessionId=${sessionId}`);
-    const observed = bridgeApi.commitWinnerFromAnswer(sessionId);
-    if (!observed || !observed.handled) return null;
     try {
-        await callFlowApi.triggerMultiRingLegRing(sessionId);
+        await callFlowApi.triggerOutboundWebrtcLegRing(sessionId, destroySession);
     } catch (err) {
-        console.error(`[${sessionId}] Failed stage1->stage2 ring trigger: ${err.message}`);
+        console.error(`[${sessionId}] Failed outbound stage1->stage2 ring trigger: ${err.message}`);
     }
     return {
         ok: true,
         handled: true,
         sessionId,
+        pickedUp: false,
         won: false,
     };
 }

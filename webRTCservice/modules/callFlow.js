@@ -48,14 +48,9 @@ function createCallFlowApi({
             });
             return;
         }
-        if (session.isGatewayCaller && session.multiRingLeg) {
-            triggerMultiRingLegRing(sessionId, destroySession).catch((err) => {
-                logger.error(`[${sessionId}] Failed to send multiring leg RING on DC open: ${err.message}`);
-            });
-        }
-        if (session.isGatewayCaller && session.singleBridgeLeg) {
-            triggerSingleBridgeLegRing(sessionId, destroySession).catch((err) => {
-                logger.error(`[${sessionId}] Failed to send single bridge leg RING on DC open: ${err.message}`);
+        if (session.isGatewayCaller && session.outboundWebrtcLeg) {
+            triggerOutboundWebrtcLegRing(sessionId, destroySession).catch((err) => {
+                logger.error(`[${sessionId}] Failed to send outbound WebRTC leg RING on DC open: ${err.message}`);
             });
         }
         if (session.walletAddress) {
@@ -64,39 +59,19 @@ function createCallFlowApi({
         }
     }
 
-    async function triggerMultiRingLegRing(sessionId, destroySession = null) {
+    async function triggerOutboundWebrtcLegRing(sessionId, destroySession = null) {
         const session = sessions.get(sessionId);
-        if (!session || !session.multiRingLeg) return false;
-        if (!session.multiRingHttpAnswered) return false;
-        if (session.multiRingLegRingSent) return true;
+        if (!session || !session.outboundWebrtcLeg) return false;
+        if (!session.outboundLegHttpAnswered) return false;
+        if (session.outboundLegRingSent) return true;
         if (!session.dataChannel) return false;
-        session.multiRingLegRingSent = true;
+        session.outboundLegRingSent = true;
         try {
             await sendInboundRing(sessionId);
-            logger.log(`[${sessionId}] MR stage1->stage2: RING offer sent over data channel`);
+            logger.log(`[${sessionId}] outbound WebRTC stage1->stage2: RING offer sent over data channel`);
             return true;
         } catch (err) {
-            session.multiRingLegRingSent = false;
-            if (typeof destroySession === "function") {
-                try { destroySession(sessionId, false); } catch (_) {}
-            }
-            throw err;
-        }
-    }
-
-    async function triggerSingleBridgeLegRing(sessionId, destroySession = null) {
-        const session = sessions.get(sessionId);
-        if (!session || !session.singleBridgeLeg) return false;
-        if (!session.singleBridgeHttpAnswered) return false;
-        if (session.singleBridgeLegRingSent) return true;
-        if (!session.dataChannel) return false;
-        session.singleBridgeLegRingSent = true;
-        try {
-            await sendInboundRing(sessionId);
-            logger.log(`[${sessionId}] Single bridge stage1->stage2: RING offer sent over data channel`);
-            return true;
-        } catch (err) {
-            session.singleBridgeLegRingSent = false;
+            session.outboundLegRingSent = false;
             if (typeof destroySession === "function") {
                 try { destroySession(sessionId, false); } catch (_) {}
             }
@@ -173,7 +148,7 @@ function createCallFlowApi({
         }
     }
 
-    async function handleMultiRingLegAnswer(sessionId, payload) {
+    async function handleOutboundWebrtcLegAnswer(sessionId, payload) {
         const session = sessions.get(sessionId);
         if (!session || !session.peerConnection) throw new Error("Session or PeerConnection not found");
         const pc = session.peerConnection;
@@ -181,7 +156,7 @@ function createCallFlowApi({
         session.phase = "in-call";
         await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp, "answer"));
         sendDataChannelMessage(sessionId, { msgType: "call", action: "ack", ackFor: "answer" });
-        logger.log(`[${sessionId}] MR stage2: pickup answer received over data channel`);
+        logger.log(`[${sessionId}] outbound WebRTC stage2: pickup answer received over data channel`);
     }
 
     async function handleRing(sessionId, payload) {
@@ -367,10 +342,9 @@ function createCallFlowApi({
     return {
         onDataChannelOpen,
         sendInboundRing,
-        triggerMultiRingLegRing,
-        triggerSingleBridgeLegRing,
+        triggerOutboundWebrtcLegRing,
         handleInboundCalleeAnswer,
-        handleMultiRingLegAnswer,
+        handleOutboundWebrtcLegAnswer,
         handleRing,
         handleReofferAnswer,
         handleCallEnd,

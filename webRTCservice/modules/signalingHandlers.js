@@ -5,8 +5,7 @@ function createSignalingHandlers({
     handleEndCallRenegotiation,
     handleReofferAnswer,
     handleInboundCalleeAnswer,
-    handleMultiRingLegAnswer = null,
-    handleSingleBridgeLegAnswer = null,
+    handleOutboundWebrtcLegAnswer = null,
     handleIceRestart,
     handleRing,
     handleCallEnd,
@@ -60,10 +59,8 @@ function createSignalingHandlers({
                 const s = sessions.get(sessionId);
                 if (s && s.pendingReoffer) {
                     enqueueSignaling(sessionId, "reoffer-answer", () => handleReofferAnswer(sessionId, payload));
-                } else if (s && s.multiRingLeg && typeof handleMultiRingLegAnswer === "function") {
-                    enqueueSignaling(sessionId, "multiring-leg-answer", () => handleMultiRingLegAnswer(sessionId, payload));
-                } else if (s && s.singleBridgeLeg && typeof handleSingleBridgeLegAnswer === "function") {
-                    enqueueSignaling(sessionId, "single-bridge-leg-answer", () => handleSingleBridgeLegAnswer(sessionId, payload));
+                } else if (s && s.outboundWebrtcLeg && typeof handleOutboundWebrtcLegAnswer === "function") {
+                    enqueueSignaling(sessionId, "outbound-webrtc-leg-answer", () => handleOutboundWebrtcLegAnswer(sessionId, payload));
                 } else if (s && s.isGatewayCaller) {
                     enqueueSignaling(sessionId, "inbound-answer", () => handleInboundCalleeAnswer(sessionId, payload));
                 }
