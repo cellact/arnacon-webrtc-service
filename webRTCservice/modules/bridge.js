@@ -98,6 +98,27 @@ function createBridgeApi({
         return trimmed;
     }
 
+    function narrowAudioOfferToG711(sdp) {
+        if (!sdp || !sdp.includes("m=audio")) return sdp;
+        const sections = sdp.split(/\r\n(?=m=)/);
+        return sections.map((section) => {
+            if (!section.startsWith("m=audio")) return section;
+            const lines = section.split(/\r\n/);
+            const mLine = lines[0].split(" ");
+            const payloads = mLine.slice(3).filter((pt) => pt === "0" || pt === "8");
+            if (!payloads.length) return section;
+
+            const allowed = new Set(payloads);
+            const filtered = lines.filter((line, index) => {
+                if (index === 0) return true;
+                const payloadMatch = line.match(/^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)(?:\s|$)/);
+                return !payloadMatch || allowed.has(payloadMatch[1]);
+            });
+            filtered[0] = [...mLine.slice(0, 3), ...payloads].join(" ");
+            return filtered.join("\r\n");
+        }).join("\r\n");
+    }
+
     function attachOutboundDataChannel(legSessionId, legSession) {
         const pc = createPeerConnection(legSessionId);
         if (typeof pc.createDataChannel !== "function") return pc;
@@ -140,6 +161,7 @@ function createBridgeApi({
         legSession.outboundBridgeKind = options.kind || "single";
         legSession.walletAddress = walletKey;
         legSession.serviceId = callerSession.serviceId || null;
+        legSession.mediaCodecPolicy = callerSession.mediaCodecPolicy || null;
         if (options.multiRingGroupId) {
             legSession.multiRingGroupId = options.multiRingGroupId;
             legSession.multiRingLeg = true;
@@ -163,7 +185,15 @@ function createBridgeApi({
         });
         const candidatesToEmbed = srflxAndRelay.length > 0 ? srflxAndRelay : gatheredCandidates;
         const relayCandidates = getRelayCandidates(gatheredCandidates);
-        const offerSdp = embedCandidatesInSdp(offer.sdp, candidatesToEmbed);
+        let baseOfferSdp = offer.sdp;
+        if (callerSession.mediaCodecPolicy === "g711") {
+            const g711OfferSdp = narrowAudioOfferToG711(baseOfferSdp);
+            if (g711OfferSdp !== baseOfferSdp) {
+                logger.log(`[${legSessionId}] WebRTC leg inherited G.711 bridge codec policy`);
+                baseOfferSdp = g711OfferSdp;
+            }
+        }
+        const offerSdp = embedCandidatesInSdp(baseOfferSdp, candidatesToEmbed);
         const sourceOffer = callerSession.lastRingOfferPayload || null;
 
         const callPayload = JSON.stringify({

@@ -48,15 +48,11 @@ function applyPolyfills({ fixSdpForWerift = null, logger = console } = {}) {
         channels: 1,
         payloadType: 0,
     });
-    const codecPref = String(process.env.WEBRTC_AUDIO_CODEC_PREF || "opus").toLowerCase();
-    const preferredCodecs =
-        codecPref === "pcma" ? [PCMA_CODEC, PCMU_CODEC, OPUS_CODEC] :
-            codecPref === "pcmu" ? [PCMU_CODEC, PCMA_CODEC, OPUS_CODEC] :
-                [OPUS_CODEC, PCMU_CODEC, PCMA_CODEC];
+    const defaultAudioCodecs = [OPUS_CODEC, PCMU_CODEC, PCMA_CODEC];
     const WrappedRTCPeerConnection = function (config = {}) {
         if (!config.codecs) config.codecs = {};
         if (!config.codecs.audio) {
-            config.codecs.audio = preferredCodecs;
+            config.codecs.audio = defaultAudioCodecs;
         } else {
             const hasOPUS = config.codecs.audio.some((c) => c.mimeType?.toLowerCase() === "audio/opus");
             const hasPCMA = config.codecs.audio.some((c) => c.mimeType?.toLowerCase() === "audio/pcma");

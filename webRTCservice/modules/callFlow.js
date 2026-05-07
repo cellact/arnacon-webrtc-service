@@ -99,7 +99,15 @@ function createCallFlowApi({
         const srflxAndRelay = gatheredCandidates.filter(c => c.candidate.includes("typ srflx") || c.candidate.includes("typ relay"));
         const candidatesToEmbed = srflxAndRelay.length > 0 ? srflxAndRelay : gatheredCandidates;
         const relayCandidates = getRelayCandidates(gatheredCandidates);
-        const offerSdp = embedCandidatesInSdp(offer.sdp, candidatesToEmbed);
+        let baseOfferSdp = offer.sdp;
+        if (session.mediaCodecPolicy === "g711") {
+            const g711OfferSdp = narrowAudioOfferToG711(baseOfferSdp);
+            if (g711OfferSdp !== baseOfferSdp) {
+                logger.log(`[${sessionId}] outbound WebRTC leg: narrowed RING offer to PCMU/PCMA`);
+                baseOfferSdp = g711OfferSdp;
+            }
+        }
+        const offerSdp = embedCandidatesInSdp(baseOfferSdp, candidatesToEmbed);
         logSdp(sessionId, "RING OFFER SDP (to callee)", offerSdp);
         sendDataChannelMessage(sessionId, {
             msgType: "signaling",
@@ -159,7 +167,7 @@ function createCallFlowApi({
         logger.log(`[${sessionId}] outbound WebRTC stage2: pickup answer received over data channel`);
     }
 
-    function forceAudioOfferToG711(sdp) {
+    function narrowAudioOfferToG711(sdp) {
         if (!sdp || !sdp.includes("m=audio")) return sdp;
         const sections = sdp.split(/\r\n(?=m=)/);
         return sections.map((section) => {
@@ -180,6 +188,27 @@ function createCallFlowApi({
         }).join("\r\n");
     }
 
+    function routeRequiresG711(destination, isInbound) {
+        if (isInbound) return false;
+        return destination?.route === "ivr" || destination?.route === "sbc";
+    }
+
+    function storeIvrNegotiatedAudio(session, sessionId, answerSdp) {
+        session.ivrLastAnswerSdp = answerSdp;
+        const ssrcMatch = answerSdp.match(/a=ssrc:(\d+)/);
+        if (!ssrcMatch) return;
+        const parsedSsrc = Number(ssrcMatch[1]);
+        if (!Number.isFinite(parsedSsrc) || parsedSsrc <= 0) return;
+
+        session.ivrNegotiatedSsrc = parsedSsrc >>> 0;
+        if (session.localAudioTrack) {
+            try {
+                session.localAudioTrack.ssrc = session.ivrNegotiatedSsrc;
+            } catch (_) {}
+        }
+        logger.log(`[${sessionId}] IVR negotiated audio SSRC=${session.ivrNegotiatedSsrc}`);
+    }
+
     async function handleRing(sessionId, payload) {
         const session = sessions.get(sessionId);
         if (!session || !session.peerConnection) throw new Error("Session or PeerConnection not found");
@@ -189,6 +218,10 @@ function createCallFlowApi({
             session.mediaRelayActive = false;
             session.pendingReoffer = null;
             session.endCallRenegDone = true;
+            session.ivrLastAnswerSdp = null;
+            session.ivrNegotiatedSsrc = null;
+            session.ivr = null;
+            session.mediaCodecPolicy = null;
             if (Array.isArray(session._bridgeDisposers)) {
                 for (const dispose of session._bridgeDisposers) {
                     try { dispose(); } catch (_) {}
@@ -230,32 +263,22 @@ function createCallFlowApi({
 
         let offerSdp = payload.sdp;
         if (isInactive) offerSdp = patchInactiveToSendrecv(offerSdp);
-        if (!isInbound && destination?.route === "ivr") {
-            const g711OfferSdp = forceAudioOfferToG711(offerSdp);
+        if (routeRequiresG711(destination, isInbound)) {
+            const g711OfferSdp = narrowAudioOfferToG711(offerSdp);
             if (g711OfferSdp !== offerSdp) {
-                logger.log(`[${sessionId}] IVR route: narrowed caller audio offer to PCMU/PCMA`);
+                logger.log(`[${sessionId}] ${destination.route} route: narrowed caller audio offer to PCMU/PCMA`);
                 offerSdp = g711OfferSdp;
             }
+            session.mediaCodecPolicy = "g711";
+        } else {
+            session.mediaCodecPolicy = null;
         }
         await pc.setRemoteDescription(new RTCSessionDescription(offerSdp, "offer"));
 
         ensureLocalAudioTrack(session, pc, sessionId);
         const answerLabel = isInactive ? "PHASE 1 ANSWER SDP" : "ANSWER SDP";
         const answerSdp = await createAnswerSdp(pc, sessionId, answerLabel);
-        session.ivrLastAnswerSdp = answerSdp;
-        const ssrcMatch = answerSdp.match(/a=ssrc:(\d+)/);
-        if (ssrcMatch) {
-            const parsedSsrc = Number(ssrcMatch[1]);
-            if (Number.isFinite(parsedSsrc) && parsedSsrc > 0) {
-                session.ivrNegotiatedSsrc = parsedSsrc >>> 0;
-                if (session.localAudioTrack) {
-                    try {
-                        session.localAudioTrack.ssrc = session.ivrNegotiatedSsrc;
-                    } catch (_) {}
-                }
-                logger.log(`[${sessionId}] IVR negotiated audio SSRC=${session.ivrNegotiatedSsrc}`);
-            }
-        }
+        if (!isInbound && destination?.route === "ivr") storeIvrNegotiatedAudio(session, sessionId, answerSdp);
 
         if (!isInbound) sendAck(sessionId);
         let routeResult = null;
