@@ -100,11 +100,11 @@ function createCallFlowApi({
         const candidatesToEmbed = srflxAndRelay.length > 0 ? srflxAndRelay : gatheredCandidates;
         const relayCandidates = getRelayCandidates(gatheredCandidates);
         let baseOfferSdp = offer.sdp;
-        if (session.mediaCodecPolicy === "g711") {
-            const g711OfferSdp = narrowAudioOfferToG711(baseOfferSdp);
-            if (g711OfferSdp !== baseOfferSdp) {
-                logger.log(`[${sessionId}] outbound WebRTC leg: narrowed RING offer to PCMU/PCMA`);
-                baseOfferSdp = g711OfferSdp;
+        if (session.mediaCodecPolicy) {
+            const narrowedOfferSdp = narrowAudioOfferForCodecPolicy(baseOfferSdp, session.mediaCodecPolicy);
+            if (narrowedOfferSdp !== baseOfferSdp) {
+                logger.log(`[${sessionId}] outbound WebRTC leg: narrowed RING offer codecPolicy=${session.mediaCodecPolicy}`);
+                baseOfferSdp = narrowedOfferSdp;
             }
         }
         const offerSdp = embedCandidatesInSdp(baseOfferSdp, candidatesToEmbed);
@@ -196,6 +196,30 @@ function createCallFlowApi({
 
     function narrowAudioOfferToPcma(sdp) {
         return narrowAudioOfferToPayloads(sdp, ["8"]);
+    }
+
+    function narrowAudioOfferToPcmu(sdp) {
+        return narrowAudioOfferToPayloads(sdp, ["0"]);
+    }
+
+    function narrowAudioOfferForCodecPolicy(sdp, codecPolicy) {
+        if (codecPolicy === "pcma") return narrowAudioOfferToPcma(sdp);
+        if (codecPolicy === "pcmu") return narrowAudioOfferToPcmu(sdp);
+        if (codecPolicy === "g711") return narrowAudioOfferToG711(sdp);
+        return sdp;
+    }
+
+    function getPrimaryAudioPayload(sdp) {
+        const audioSection = String(sdp || "").match(/m=audio[^\r\n]*[\s\S]*?(?=\r?\nm=|$)/m)?.[0] || "";
+        const mLine = audioSection.match(/^m=audio[^\r\n]*/m)?.[0] || "";
+        return mLine.split(/\s+/).slice(3)[0] || null;
+    }
+
+    function exactG711PolicyFromAnswer(answerSdp) {
+        const primaryPt = getPrimaryAudioPayload(answerSdp);
+        if (primaryPt === "0") return "pcmu";
+        if (primaryPt === "8") return "pcma";
+        return null;
     }
 
     function routeCodecPolicy(destination, isInbound) {
@@ -294,7 +318,14 @@ function createCallFlowApi({
         ensureLocalAudioTrack(session, pc, sessionId);
         const answerLabel = isInactive ? "PHASE 1 ANSWER SDP" : "ANSWER SDP";
         const answerSdp = await createAnswerSdp(pc, sessionId, answerLabel);
-        if (!isInbound && destination?.route === "ivr") storeIvrNegotiatedAudio(session, sessionId, answerSdp);
+        if (!isInbound && destination?.route === "ivr") {
+            const exactPolicy = exactG711PolicyFromAnswer(answerSdp);
+            if (exactPolicy) {
+                session.mediaCodecPolicy = exactPolicy;
+                logger.log(`[${sessionId}] IVR bridge codec policy resolved to ${exactPolicy}`);
+            }
+            storeIvrNegotiatedAudio(session, sessionId, answerSdp);
+        }
 
         if (!isInbound) sendAck(sessionId);
         let routeResult = null;

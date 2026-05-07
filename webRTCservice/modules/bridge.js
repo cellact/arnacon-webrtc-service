@@ -98,14 +98,16 @@ function createBridgeApi({
         return trimmed;
     }
 
-    function narrowAudioOfferToG711(sdp) {
+    function narrowAudioOfferToPayloads(sdp, allowedPayloads) {
         if (!sdp || !sdp.includes("m=audio")) return sdp;
+        const allowedPayloadSet = new Set((allowedPayloads || []).map(String));
+        if (allowedPayloadSet.size === 0) return sdp;
         const sections = sdp.split(/\r\n(?=m=)/);
         return sections.map((section) => {
             if (!section.startsWith("m=audio")) return section;
             const lines = section.split(/\r\n/);
             const mLine = lines[0].split(" ");
-            const payloads = mLine.slice(3).filter((pt) => pt === "0" || pt === "8");
+            const payloads = mLine.slice(3).filter((pt) => allowedPayloadSet.has(pt));
             if (!payloads.length) return section;
 
             const allowed = new Set(payloads);
@@ -117,6 +119,13 @@ function createBridgeApi({
             filtered[0] = [...mLine.slice(0, 3), ...payloads].join(" ");
             return filtered.join("\r\n");
         }).join("\r\n");
+    }
+
+    function narrowAudioOfferForCodecPolicy(sdp, codecPolicy) {
+        if (codecPolicy === "pcmu") return narrowAudioOfferToPayloads(sdp, ["0"]);
+        if (codecPolicy === "pcma") return narrowAudioOfferToPayloads(sdp, ["8"]);
+        if (codecPolicy === "g711") return narrowAudioOfferToPayloads(sdp, ["0", "8"]);
+        return sdp;
     }
 
     function attachOutboundDataChannel(legSessionId, legSession) {
@@ -186,11 +195,11 @@ function createBridgeApi({
         const candidatesToEmbed = srflxAndRelay.length > 0 ? srflxAndRelay : gatheredCandidates;
         const relayCandidates = getRelayCandidates(gatheredCandidates);
         let baseOfferSdp = offer.sdp;
-        if (callerSession.mediaCodecPolicy === "g711") {
-            const g711OfferSdp = narrowAudioOfferToG711(baseOfferSdp);
-            if (g711OfferSdp !== baseOfferSdp) {
-                logger.log(`[${legSessionId}] WebRTC leg inherited G.711 bridge codec policy`);
-                baseOfferSdp = g711OfferSdp;
+        if (callerSession.mediaCodecPolicy) {
+            const narrowedOfferSdp = narrowAudioOfferForCodecPolicy(baseOfferSdp, callerSession.mediaCodecPolicy);
+            if (narrowedOfferSdp !== baseOfferSdp) {
+                logger.log(`[${legSessionId}] WebRTC leg inherited bridge codec policy=${callerSession.mediaCodecPolicy}`);
+                baseOfferSdp = narrowedOfferSdp;
             }
         }
         const offerSdp = embedCandidatesInSdp(baseOfferSdp, candidatesToEmbed);
