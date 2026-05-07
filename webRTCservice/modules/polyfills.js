@@ -30,6 +30,12 @@ function applyPolyfills({ fixSdpForWerift = null, logger = console } = {}) {
         };
     }
 
+    const OPUS_CODEC = new werift.RTCRtpCodecParameters({
+        mimeType: "audio/opus",
+        clockRate: 48000,
+        channels: 2,
+        payloadType: 111,
+    });
     const PCMA_CODEC = new werift.RTCRtpCodecParameters({
         mimeType: "audio/PCMA",
         clockRate: 8000,
@@ -42,15 +48,20 @@ function applyPolyfills({ fixSdpForWerift = null, logger = console } = {}) {
         channels: 1,
         payloadType: 0,
     });
-    const codecPref = String(process.env.WEBRTC_AUDIO_CODEC_PREF || "pcmu").toLowerCase();
-    const preferredCodecs = codecPref === "pcma" ? [PCMA_CODEC, PCMU_CODEC] : [PCMU_CODEC, PCMA_CODEC];
+    const codecPref = String(process.env.WEBRTC_AUDIO_CODEC_PREF || "opus").toLowerCase();
+    const preferredCodecs =
+        codecPref === "pcma" ? [PCMA_CODEC, PCMU_CODEC, OPUS_CODEC] :
+            codecPref === "pcmu" ? [PCMU_CODEC, PCMA_CODEC, OPUS_CODEC] :
+                [OPUS_CODEC, PCMU_CODEC, PCMA_CODEC];
     const WrappedRTCPeerConnection = function (config = {}) {
         if (!config.codecs) config.codecs = {};
         if (!config.codecs.audio) {
             config.codecs.audio = preferredCodecs;
         } else {
+            const hasOPUS = config.codecs.audio.some((c) => c.mimeType?.toLowerCase() === "audio/opus");
             const hasPCMA = config.codecs.audio.some((c) => c.mimeType?.toLowerCase() === "audio/pcma");
             const hasPCMU = config.codecs.audio.some((c) => c.mimeType?.toLowerCase() === "audio/pcmu");
+            if (!hasOPUS) config.codecs.audio.push(OPUS_CODEC);
             if (!hasPCMA) config.codecs.audio.push(PCMA_CODEC);
             if (!hasPCMU) config.codecs.audio.push(PCMU_CODEC);
         }

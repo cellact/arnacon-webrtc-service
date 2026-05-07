@@ -159,6 +159,27 @@ function createCallFlowApi({
         logger.log(`[${sessionId}] outbound WebRTC stage2: pickup answer received over data channel`);
     }
 
+    function forceAudioOfferToG711(sdp) {
+        if (!sdp || !sdp.includes("m=audio")) return sdp;
+        const sections = sdp.split(/\r\n(?=m=)/);
+        return sections.map((section) => {
+            if (!section.startsWith("m=audio")) return section;
+            const lines = section.split(/\r\n/);
+            const mLine = lines[0].split(" ");
+            const payloads = mLine.slice(3).filter((pt) => pt === "0" || pt === "8");
+            if (!payloads.length) return section;
+
+            const allowed = new Set(payloads);
+            const filtered = lines.filter((line, index) => {
+                if (index === 0) return true;
+                const payloadMatch = line.match(/^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)(?:\s|$)/);
+                return !payloadMatch || allowed.has(payloadMatch[1]);
+            });
+            filtered[0] = [...mLine.slice(0, 3), ...payloads].join(" ");
+            return filtered.join("\r\n");
+        }).join("\r\n");
+    }
+
     async function handleRing(sessionId, payload) {
         const session = sessions.get(sessionId);
         if (!session || !session.peerConnection) throw new Error("Session or PeerConnection not found");
@@ -209,6 +230,13 @@ function createCallFlowApi({
 
         let offerSdp = payload.sdp;
         if (isInactive) offerSdp = patchInactiveToSendrecv(offerSdp);
+        if (!isInbound && destination?.route === "ivr") {
+            const g711OfferSdp = forceAudioOfferToG711(offerSdp);
+            if (g711OfferSdp !== offerSdp) {
+                logger.log(`[${sessionId}] IVR route: narrowed caller audio offer to PCMU/PCMA`);
+                offerSdp = g711OfferSdp;
+            }
+        }
         await pc.setRemoteDescription(new RTCSessionDescription(offerSdp, "offer"));
 
         ensureLocalAudioTrack(session, pc, sessionId);
