@@ -14,6 +14,13 @@ function createSipClient({
     startMediaRelay,
     logger = console,
 }) {
+    function sipIdentityUri(value) {
+        const normalized = String(value || "").trim();
+        if (!normalized) return null;
+        if (/^sip:/i.test(normalized)) return normalized;
+        return `sip:${normalized}@${kamailioDomain}`;
+    }
+
     async function openSipSession(sessionId, sessionStore, options = {}) {
         const { callerEns, calleeIdentity, sipDirective } = options;
         const session = sessionStore.get(sessionId);
@@ -41,19 +48,23 @@ function createSipClient({
         const targetUri = UserAgent.makeURI(toUri);
         if (!targetUri) throw new Error(`Invalid To URI for SIP session: ${toUri}`);
         const extraHeaders = [];
+        const assertedIdentity = sipIdentityUri(sipDirective?.callerId);
         if (sipDirective?.identity?.paiUri) {
             extraHeaders.push(`P-Asserted-Identity: <${sipDirective.identity.paiUri}>`);
-        } else if (sipDirective?.privateId) {
-            extraHeaders.push(`P-Asserted-Identity: <sip:${sipDirective.privateId}@${kamailioDomain}>`);
+        } else if (assertedIdentity) {
+            extraHeaders.push(`P-Asserted-Identity: <${assertedIdentity}>`);
         }
         if (sipDirective?.identity?.rpidUri) {
             extraHeaders.push(`Remote-Party-ID: <${sipDirective.identity.rpidUri}>`);
-        } else if (sipDirective?.privateId) {
-            extraHeaders.push(`Remote-Party-ID: <sip:${sipDirective.privateId}@${kamailioDomain}>`);
+        } else if (assertedIdentity) {
+            extraHeaders.push(`Remote-Party-ID: <${assertedIdentity}>`);
         }
         const privacyEnabled = sipDirective?.privacy?.enabled === true || Boolean(sipDirective?.privateId);
         if (privacyEnabled) {
             extraHeaders.push(`Privacy: ${sipDirective?.privacy?.value || "id"}`);
+        }
+        if (sipDirective?.privateId) {
+            extraHeaders.push(`X-Arnacon-Private-Id: ${sipDirective.privateId}`);
         }
         if (sipDirective?.headers && typeof sipDirective.headers === "object") {
             for (const [name, value] of Object.entries(sipDirective.headers)) {
