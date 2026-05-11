@@ -63,9 +63,6 @@ function createSipClient({
         if (privacyEnabled) {
             extraHeaders.push(`Privacy: ${sipDirective?.privacy?.value || "id"}`);
         }
-        if (sipDirective?.privateId) {
-            extraHeaders.push(`X-Arnacon-Private-Id: ${sipDirective.privateId}`);
-        }
         if (sipDirective?.headers && typeof sipDirective.headers === "object") {
             for (const [name, value] of Object.entries(sipDirective.headers)) {
                 if (!name || value === undefined || value === null || value === "") continue;
