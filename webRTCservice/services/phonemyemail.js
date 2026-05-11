@@ -9,7 +9,7 @@ function getDomains(helpers) {
 
 function looksLikeBusinessDomain(value) {
     const target = String(value || "").trim().toLowerCase();
-    return target.includes(".") && !target.includes("@") && !target.endsWith(".global");
+    return !!target && !/^[+*]?\d+$/.test(target) && !target.includes("@") && !target.endsWith(".global");
 }
 
 async function resolveInboundTarget(ctx) {

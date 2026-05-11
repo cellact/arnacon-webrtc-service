@@ -76,12 +76,12 @@
     "roflLogic": {
       "rpc": "https://sapphire.oasis.io",
       "chainId": 23294,
-      "businessNumberDbAddress": "",
+      "businessNumberDbAddress": "0xeFB374e146440160583960Ce4Dc8525127919b78",
       "callerIdPoolAddress": "0x903796dc34Bb9A5eD76A41bBA6C40CfebD1f4269",
       "businessNumberDb": {
-        "rpc": "https://sapphire.oasis.io",
-        "chainId": 23294,
-        "address": "0xFc80534F731E3849Bc06970B0e8645d72A34f493"
+        "rpc": "https://testnet.sapphire.oasis.io",
+        "chainId": 23295,
+        "address": "0xeFB374e146440160583960Ce4Dc8525127919b78"
       },
       "callerIdPool": {
         "rpc": "https://sapphire.oasis.io",
