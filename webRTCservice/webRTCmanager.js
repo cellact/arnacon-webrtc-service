@@ -541,6 +541,7 @@ function getServiceHelpers(serviceRuntime) {
         lookupEnsTextRecord: (...args) => blockchainApi.resolveEnsTextRecord(...args),
         lookupNftOwnedNumber: (...args) => blockchainApi.nftGetOwnedNumber(...args),
         lookupBusinessNumber: (...args) => callRouterApi.roflFindBusinessNumber(...args),
+        lookupBusinessNumberCascade: (...args) => callRouterApi.roflCascadingBusinessLookup(...args),
         assignPoolFromNumber: (...args) => callRouterApi.roflAssignFromNumber(...args),
         getProviderForDomain: (domain) => {
             if (!domain) return null;

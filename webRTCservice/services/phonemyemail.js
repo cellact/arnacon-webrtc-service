@@ -42,8 +42,15 @@ async function resolveDestination(ctx) {
     if (parsedTo.type === "raw" || parsedTo.type === "unknown") {
         const normalized = helpers.normalizePhone(parsedTo.value);
         if (looksLikeBusinessDomain(normalized)) {
-            const businessNumber = await helpers.lookupBusinessNumber(normalized);
+            const businessNumber = await helpers.lookupBusinessNumberCascade(normalized);
+            helpers.logRouteDecision?.({
+                serviceId: "phonemyemail",
+                route: "business-domain-cascade",
+                target: normalized,
+                result: businessNumber || null,
+            });
             if (businessNumber) return { route: "sbc", number: businessNumber };
+            return { route: "reject", reason: `No business mapping for ${normalized}` };
         }
         const webrtcHit = await helpers.tryInternalWebrtcLookup(normalized, helpers.getAllServiceDomains());
         if (webrtcHit) return webrtcHit;

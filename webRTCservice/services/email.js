@@ -46,8 +46,7 @@ async function resolveDestination(ctx) {
         if (addr && addr !== helpers.zeroAddress) {
             return { route: "webrtc", wallet: addr, ensName: emailEns };
         }
-        const domainPart = String(parsedTo.value || "").split("@")[1] || parsedTo.value;
-        const businessNumber = await helpers.lookupBusinessNumber(domainPart);
+        const businessNumber = await helpers.lookupBusinessNumberCascade(parsedTo.value);
         if (businessNumber) return { route: "sbc", number: businessNumber };
         return { route: "reject", reason: "No ENS owner and no business mapping" };
     }
@@ -55,8 +54,15 @@ async function resolveDestination(ctx) {
     if (parsedTo.type === "raw" || parsedTo.type === "unknown") {
         const normalized = helpers.normalizePhone(parsedTo.value);
         if (looksLikeBusinessDomain(normalized)) {
-            const businessNumber = await helpers.lookupBusinessNumber(normalized);
+            const businessNumber = await helpers.lookupBusinessNumberCascade(normalized);
+            helpers.logRouteDecision?.({
+                serviceId: "email",
+                route: "business-domain-cascade",
+                target: normalized,
+                result: businessNumber || null,
+            });
             if (businessNumber) return { route: "sbc", number: businessNumber };
+            return { route: "reject", reason: `No business mapping for ${normalized}` };
         }
         const webrtcHit = await helpers.tryInternalWebrtcLookup(normalized, helpers.getAllServiceDomains());
         if (webrtcHit) return webrtcHit;

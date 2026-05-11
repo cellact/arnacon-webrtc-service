@@ -454,7 +454,9 @@ function createBlockchainApi({
         if (!businessName) return null;
         try {
             const phoneNumber = await contract.getPhoneNumber(businessName);
-            return phoneNumber && phoneNumber !== "" ? phoneNumber : null;
+            const result = phoneNumber && phoneNumber !== "" ? phoneNumber : null;
+            logger.log(`[ROFL_LOCAL] business lookup ${businessName} -> ${result || "no-match"}`);
+            return result;
         } catch (err) {
             logger.error(`[ROFL_LOCAL] find-business-number failed for ${businessName}: ${err.message}`);
             return null;

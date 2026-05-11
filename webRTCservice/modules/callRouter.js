@@ -61,11 +61,19 @@ function createCallRouter({
         }
     }
 
-    async function roflCascadingBusinessLookup(identifier) {
-        const lookups = [identifier];
+    function buildBusinessLookupKeys(identifier) {
+        const normalized = String(identifier || "").trim().toLowerCase().replace("@", "_");
+        if (!normalized) return [];
+        const lookups = [normalized];
 
-        if (identifier.includes("_")) {
-            const domain = identifier.split("_", 2)[1];
+        if (normalized.includes("_")) {
+            const [local, domain] = normalized.split("_", 2);
+            const localParts = String(local || "").split(".").filter(Boolean);
+            for (let i = 1; i < localParts.length; i++) {
+                const localSuffix = localParts.slice(i).join(".");
+                const key = `${localSuffix}_${domain}`;
+                if (localSuffix && domain && !lookups.includes(key)) lookups.push(key);
+            }
             if (!lookups.includes(domain)) lookups.push(domain);
             let parts = domain;
             while (parts.includes(".")) {
@@ -73,12 +81,19 @@ function createCallRouter({
                 if (!lookups.includes(parts)) lookups.push(parts);
             }
         } else {
-            let parts = identifier;
+            let parts = normalized;
             while (parts.includes(".")) {
                 parts = parts.substring(0, parts.lastIndexOf("."));
                 if (!lookups.includes(parts)) lookups.push(parts);
             }
         }
+
+        return lookups;
+    }
+
+    async function roflCascadingBusinessLookup(identifier) {
+        const lookups = buildBusinessLookupKeys(identifier);
+        if (lookups.length === 0) return null;
 
         logger.log(`[Route] Cascading business lookup: [${lookups.join(", ")}]`);
 
