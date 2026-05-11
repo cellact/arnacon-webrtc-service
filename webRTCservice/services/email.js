@@ -83,14 +83,21 @@ async function resolveDestination(ctx) {
 async function resolveCallerId(ctx) {
     const { parsedFrom, walletAddress, helpers } = ctx;
     const value = parsedFrom?.value || parsedFrom?.full || "";
+    const withProviderDomain = (callerId) => ({
+        callerId,
+        privateId: value,
+        identity: {
+            fromUser: `${callerId}.${getDomains(helpers)[0] || "email.global"}`,
+        },
+    });
     if (walletAddress) {
         const owned = await helpers.lookupNftOwnedNumber(walletAddress);
         if (owned) {
-            return { callerId: owned, privateId: value };
+            return withProviderDomain(owned);
         }
     }
     const pooled = await helpers.assignPoolFromNumber();
-    return { callerId: pooled || null, privateId: value };
+    return pooled ? withProviderDomain(pooled) : { callerId: null, privateId: value };
 }
 
 function normalizeIdentity(ctx) {

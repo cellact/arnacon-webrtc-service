@@ -100,7 +100,6 @@ function createCallRuntimeCore({
                 headers: {
                     ...(callerIdResult?.headers || {}),
                     "X-Arnacon-Service-Id": session?.serviceId || "",
-                    "X-Arnacon-Session-Id": sessionId,
                 },
                 trace: {
                     serviceId: session?.serviceId || "",

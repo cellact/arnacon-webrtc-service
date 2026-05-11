@@ -31,7 +31,10 @@ function createSipClient({
             server: kamailioWssUrl,
             webSocketConstruction: (url, protocols) => new WsWebSocket(url, protocols),
         };
-        const fromUri = sipDirective?.identity?.fromUri || `sip:${callerEns}@${kamailioDomain}`;
+        const fromUri =
+            sipDirective?.identity?.fromUri ||
+            (sipDirective?.identity?.fromUser ? `sip:${sipDirective.identity.fromUser}@${kamailioDomain}` : null) ||
+            `sip:${callerEns}@${kamailioDomain}`;
         const sipUri = UserAgent.makeURI(fromUri);
         if (!sipUri) throw new Error(`Invalid From URI for SIP session: ${fromUri}`);
         const userAgent = new UserAgent({
@@ -53,11 +56,6 @@ function createSipClient({
             extraHeaders.push(`P-Asserted-Identity: <${sipDirective.identity.paiUri}>`);
         } else if (assertedIdentity) {
             extraHeaders.push(`P-Asserted-Identity: <${assertedIdentity}>`);
-        }
-        if (sipDirective?.identity?.rpidUri) {
-            extraHeaders.push(`Remote-Party-ID: <${sipDirective.identity.rpidUri}>`);
-        } else if (assertedIdentity) {
-            extraHeaders.push(`Remote-Party-ID: <${assertedIdentity}>`);
         }
         const privacyEnabled = sipDirective?.privacy?.enabled === true || Boolean(sipDirective?.privateId);
         if (privacyEnabled) {
