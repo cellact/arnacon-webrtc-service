@@ -88,6 +88,9 @@ function createCallRuntimeCore({
     async function routeCall(sessionId, session, destination, parsedFrom) {
         if (destination.route === "sbc") {
             const callerIdResult = await resolveCallerId(parsedFrom, session.walletAddress, session.serviceId || null);
+            if (callerIdResult?.privateId && !callerIdResult?.callerId && !callerIdResult?.identity?.fromUri) {
+                throw new Error("SBC privacy policy requires a masked caller ID, but none was available");
+            }
             const sipFrom = callerIdResult?.callerId || session.callerEns;
             const sipTo = destination?.number;
             const sipDirective = {
