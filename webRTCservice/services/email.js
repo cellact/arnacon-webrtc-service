@@ -7,6 +7,11 @@ function getDomains(helpers) {
     return Array.isArray(configured) && configured.length ? configured : DOMAINS;
 }
 
+function looksLikeBusinessDomain(value) {
+    const target = String(value || "").trim().toLowerCase();
+    return target.includes(".") && !target.includes("@") && !target.endsWith(".global");
+}
+
 async function resolveInboundTarget(ctx) {
     const { payload, helpers } = ctx;
     const targetValue = helpers.selectInboundLookupValue({
@@ -49,6 +54,10 @@ async function resolveDestination(ctx) {
 
     if (parsedTo.type === "raw" || parsedTo.type === "unknown") {
         const normalized = helpers.normalizePhone(parsedTo.value);
+        if (looksLikeBusinessDomain(normalized)) {
+            const businessNumber = await helpers.lookupBusinessNumber(normalized);
+            if (businessNumber) return { route: "sbc", number: businessNumber };
+        }
         const webrtcHit = await helpers.tryInternalWebrtcLookup(normalized, helpers.getAllServiceDomains());
         if (webrtcHit) return webrtcHit;
         return { route: "sbc", number: normalized };

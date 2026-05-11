@@ -768,6 +768,14 @@ const tlsOptions = {
 };
 const httpServers = [];
 for (const serviceRuntime of activeServiceRuntimes) {
+    const configuredDomains = Array.isArray(serviceRuntime.serviceConstants?.domains)
+        ? serviceRuntime.serviceConstants.domains.join(",")
+        : "";
+    console.log(
+        `[Startup] service=${serviceRuntime.id} provider=${serviceRuntime.providerId} deployEnv=${deployEnv} ` +
+        `domain=${config.domain || ""} notifyPort=${serviceRuntime.notifyPort} ` +
+        `callbackPort=${serviceRuntime.callbackPort} domains=${configuredDomains}`,
+    );
     const handlers = createHandlers({
         buildSignalingContextFromNotify,
         buildSignalingContextFromInbound,
