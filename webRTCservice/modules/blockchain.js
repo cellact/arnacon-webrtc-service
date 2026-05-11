@@ -16,6 +16,8 @@ function createBlockchainApi({
     const SAPPHIRE_TESTNET_RPC = config.sapphireTestnet.rpc;
     const NFT_CALLER_ID_POOL_ADDRESS = config.sapphireTestnet.NFTCallerIdPool;
     const ROFL_LOGIC_CONFIG = config.roflLogic || {};
+    const ROFL_BUSINESS_NUMBER_DB_CONFIG = ROFL_LOGIC_CONFIG.businessNumberDb || {};
+    const ROFL_CALLER_ID_POOL_CONFIG = ROFL_LOGIC_CONFIG.callerIdPool || {};
     const ROFL_LOGIC_RPC =
         process.env.ROFL_LOGIC_RPC_URL ||
         ROFL_LOGIC_CONFIG.rpc ||
@@ -23,12 +25,36 @@ function createBlockchainApi({
         SAPPHIRE_RPC;
     const ROFL_LOGIC_CHAIN_ID =
         Number(process.env.ROFL_LOGIC_CHAIN_ID || ROFL_LOGIC_CONFIG.chainId || 0) || undefined;
+    const ROFL_BUSINESS_NUMBER_DB_RPC =
+        process.env.ROFL_LOGIC_BUSINESS_NUMBER_DB_RPC_URL ||
+        ROFL_BUSINESS_NUMBER_DB_CONFIG.rpc ||
+        ROFL_LOGIC_RPC;
+    const ROFL_BUSINESS_NUMBER_DB_CHAIN_ID =
+        Number(
+            process.env.ROFL_LOGIC_BUSINESS_NUMBER_DB_CHAIN_ID ||
+            ROFL_BUSINESS_NUMBER_DB_CONFIG.chainId ||
+            ROFL_LOGIC_CHAIN_ID ||
+            0,
+        ) || undefined;
     const ROFL_BUSINESS_NUMBER_DB_ADDRESS =
         process.env.ROFL_LOGIC_BUSINESS_NUMBER_DB_ADDRESS ||
+        ROFL_BUSINESS_NUMBER_DB_CONFIG.address ||
         ROFL_LOGIC_CONFIG.businessNumberDbAddress ||
         "";
+    const ROFL_CALLER_ID_POOL_RPC =
+        process.env.ROFL_LOGIC_CALLER_ID_POOL_RPC_URL ||
+        ROFL_CALLER_ID_POOL_CONFIG.rpc ||
+        ROFL_LOGIC_RPC;
+    const ROFL_CALLER_ID_POOL_CHAIN_ID =
+        Number(
+            process.env.ROFL_LOGIC_CALLER_ID_POOL_CHAIN_ID ||
+            ROFL_CALLER_ID_POOL_CONFIG.chainId ||
+            ROFL_LOGIC_CHAIN_ID ||
+            0,
+        ) || undefined;
     const ROFL_CALLER_ID_POOL_ADDRESS =
         process.env.ROFL_LOGIC_CALLER_ID_POOL_ADDRESS ||
+        ROFL_CALLER_ID_POOL_CONFIG.address ||
         ROFL_LOGIC_CONFIG.callerIdPoolAddress ||
         NFT_CALLER_ID_POOL_ADDRESS;
     const ROFL_PKEY = process.env.ROFL_LOGIC_PKEY || process.env.PKEY || "";
@@ -68,6 +94,8 @@ function createBlockchainApi({
     let sapphireProvider = null;
     let sapphireTestnetProvider = null;
     let roflLogicProvider = null;
+    let businessNumberDbProvider = null;
+    let callerIdPoolProvider = null;
     let businessNumberDbContract = null;
     let callerIdPoolRoflContract = null;
     let roflPoolOwnerAddress = null;
@@ -101,6 +129,34 @@ function createBlockchainApi({
         return roflLogicProvider;
     }
 
+    function getBusinessNumberDbProvider() {
+        if (!businessNumberDbProvider) {
+            if (ROFL_BUSINESS_NUMBER_DB_CHAIN_ID) {
+                businessNumberDbProvider = new ethers.providers.JsonRpcProvider(
+                    ROFL_BUSINESS_NUMBER_DB_RPC,
+                    ROFL_BUSINESS_NUMBER_DB_CHAIN_ID,
+                );
+            } else {
+                businessNumberDbProvider = new ethers.providers.JsonRpcProvider(ROFL_BUSINESS_NUMBER_DB_RPC);
+            }
+        }
+        return businessNumberDbProvider;
+    }
+
+    function getCallerIdPoolProvider() {
+        if (!callerIdPoolProvider) {
+            if (ROFL_CALLER_ID_POOL_CHAIN_ID) {
+                callerIdPoolProvider = new ethers.providers.JsonRpcProvider(
+                    ROFL_CALLER_ID_POOL_RPC,
+                    ROFL_CALLER_ID_POOL_CHAIN_ID,
+                );
+            } else {
+                callerIdPoolProvider = new ethers.providers.JsonRpcProvider(ROFL_CALLER_ID_POOL_RPC);
+            }
+        }
+        return callerIdPoolProvider;
+    }
+
     function normalizeContractAddress(value) {
         const normalized = String(value || "").trim();
         if (!normalized || normalized === "0x0000000000000000000000000000000000000000") return "";
@@ -129,7 +185,7 @@ function createBlockchainApi({
         if (!businessNumberDbContract) {
             const address = normalizeContractAddress(ROFL_BUSINESS_NUMBER_DB_ADDRESS);
             if (!address) return null;
-            businessNumberDbContract = new ethers.Contract(address, BUSINESS_NUMBER_DB_ABI, getRoflLogicProvider());
+            businessNumberDbContract = new ethers.Contract(address, BUSINESS_NUMBER_DB_ABI, getBusinessNumberDbProvider());
         }
         return businessNumberDbContract;
     }
@@ -138,7 +194,7 @@ function createBlockchainApi({
         if (!callerIdPoolRoflContract) {
             const address = normalizeContractAddress(ROFL_CALLER_ID_POOL_ADDRESS);
             if (!address) return null;
-            callerIdPoolRoflContract = new ethers.Contract(address, CALLER_ID_POOL_ROFL_ABI, getRoflLogicProvider());
+            callerIdPoolRoflContract = new ethers.Contract(address, CALLER_ID_POOL_ROFL_ABI, getCallerIdPoolProvider());
         }
         return callerIdPoolRoflContract;
     }
@@ -452,7 +508,11 @@ function createBlockchainApi({
         return {
             rpc: ROFL_LOGIC_RPC || null,
             chainId: ROFL_LOGIC_CHAIN_ID || null,
+            businessNumberDbRpc: ROFL_BUSINESS_NUMBER_DB_RPC || null,
+            businessNumberDbChainId: ROFL_BUSINESS_NUMBER_DB_CHAIN_ID || null,
             businessNumberDbAddress: normalizeContractAddress(ROFL_BUSINESS_NUMBER_DB_ADDRESS) || null,
+            callerIdPoolRpc: ROFL_CALLER_ID_POOL_RPC || null,
+            callerIdPoolChainId: ROFL_CALLER_ID_POOL_CHAIN_ID || null,
             callerIdPoolAddress: normalizeContractAddress(ROFL_CALLER_ID_POOL_ADDRESS) || null,
             roflAddress: getRoflAddress() || null,
         };

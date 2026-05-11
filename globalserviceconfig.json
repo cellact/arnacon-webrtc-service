@@ -77,7 +77,17 @@
       "rpc": "https://sapphire.oasis.io",
       "chainId": 23294,
       "businessNumberDbAddress": "",
-      "callerIdPoolAddress": "0x903796dc34Bb9A5eD76A41bBA6C40CfebD1f4269"
+      "callerIdPoolAddress": "0x903796dc34Bb9A5eD76A41bBA6C40CfebD1f4269",
+      "businessNumberDb": {
+        "rpc": "https://sapphire.oasis.io",
+        "chainId": 23294,
+        "address": "0xFc80534F731E3849Bc06970B0e8645d72A34f493"
+      },
+      "callerIdPool": {
+        "rpc": "https://sapphire.oasis.io",
+        "chainId": 23294,
+        "address": "0x903796dc34Bb9A5eD76A41bBA6C40CfebD1f4269"
+      }
     },
     "messageProcessorUrl": "https://europe-west3-asterisk-tts-test.cloudfunctions.net/client_msg_processor",
     "polygon": {

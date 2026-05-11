@@ -331,8 +331,14 @@ const roflLogicInfo = blockchainApi.getRoflLogicInfo();
 console.log(
     `[ROFL] mode=${USE_LOCAL_ROFL_LOGIC ? "local_rofl_logic" : "remote_http"} ` +
         `baseUrl=${ROFL_BASE_URL || "n/a"} rpc=${roflLogicInfo.rpc || "n/a"} ` +
-        `chainId=${roflLogicInfo.chainId || "n/a"} businessDb=${roflLogicInfo.businessNumberDbAddress || "n/a"} ` +
-        `callerIdPool=${roflLogicInfo.callerIdPoolAddress || "n/a"} roflAddress=${roflLogicInfo.roflAddress || "n/a"}`,
+        `chainId=${roflLogicInfo.chainId || "n/a"} ` +
+        `businessDb=${roflLogicInfo.businessNumberDbAddress || "n/a"} ` +
+        `businessDbRpc=${roflLogicInfo.businessNumberDbRpc || "n/a"} ` +
+        `businessDbChainId=${roflLogicInfo.businessNumberDbChainId || "n/a"} ` +
+        `callerIdPool=${roflLogicInfo.callerIdPoolAddress || "n/a"} ` +
+        `callerIdPoolRpc=${roflLogicInfo.callerIdPoolRpc || "n/a"} ` +
+        `callerIdPoolChainId=${roflLogicInfo.callerIdPoolChainId || "n/a"} ` +
+        `roflAddress=${roflLogicInfo.roflAddress || "n/a"}`,
 );
 const notificationApi = createNotificationApi({
     blockchainApi,
