@@ -202,9 +202,16 @@ async function resolveDestination(ctx) {
 }
 
 async function resolveCallerId(ctx) {
-    const { parsedFrom } = ctx;
+    const { parsedFrom, helpers } = ctx;
     const value = parsedFrom?.value || parsedFrom?.full || "";
-    return { callerId: parsedFrom?.full || value, privateId: null };
+    const callerId = helpers.normalizePhone(value);
+    return {
+        callerId,
+        privateId: null,
+        identity: parsedFrom?.full
+            ? { fromUser: parsedFrom.full }
+            : null,
+    };
 }
 
 function normalizeIdentity(ctx) {
