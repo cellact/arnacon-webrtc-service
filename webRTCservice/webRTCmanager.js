@@ -138,6 +138,7 @@ const { createCallRuntimeCore } = require("./modules/callRuntimeCore");
 const { createSignalingPipeline } = require("./modules/signalingPipeline");
 const { createIvrRuntime } = require("./modules/ivrRuntime");
 const { createIvrAudioPlayback } = require("./modules/ivrAudioPlayback");
+const { createMinuteCounter } = require("./modules/minuteCounter");
 const {
     MediaStreamTrack,
 } = werift;
@@ -241,6 +242,7 @@ const config = {
     tlsCertPath: commonConfig.tlsCertPath,
     roflBaseUrl: pickRuntimeConfig("roflBaseUrl"),
     messageProcessorUrl: pickRuntimeConfig("messageProcessorUrl"),
+    minuteCounterPath: process.env.MINUTE_COUNTER_PATH || pickRuntimeConfig("minuteCounterPath", "/etc/webrtcservice/minute-counter.json"),
     polygon: pickRuntimeConfig("polygon", {}),
     sapphire: pickRuntimeConfig("sapphire", {}),
     sapphireTestnet: pickRuntimeConfig("sapphireTestnet", {}),
@@ -300,6 +302,10 @@ const sessions = sessionStore.sessions;
 const sessionsByUser = sessionStore.sessionsByUser; // stableKey(from, to) → sessionId
 const pendingBridges = sessionStore.pendingBridges; // callee wallet (lowercase) → { callerSessionId, resolve, reject, timer }
 const pendingInboundCalls = sessionStore.pendingInboundCalls; // callee wallet (lowercase) → { fromNumber, toNumber, callId, timer }
+const minuteCounterApi = createMinuteCounter({
+    filePath: config.minuteCounterPath,
+    logger: console,
+});
 const dataChannelApi = createDataChannelApi({ sessions, logger: console });
 const messagingFlowApi = createMessagingFlow({
     sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
@@ -368,6 +374,7 @@ const sipRuntimeApi = createSipRuntime({
     sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
     patchRouterForDynamicSsrc: (...args) => peerConnectionApi.patchRouterForDynamicSsrc(...args),
     SessionState,
+    finishMinuteCounter: (session) => minuteCounterApi.finish(session),
     logger: console,
 });
 const sipClientApi = createSipClient({
@@ -435,6 +442,7 @@ const callFlowApi = createCallFlowApi({
     startPendingMultiBridge: (...args) => bridgeApi.startPendingMultiBridge(...args),
     shouldStartIvrForSession: (...args) => ivrRuntimeApi.shouldStartForSession(...args),
     startIvrForSession: (...args) => ivrRuntimeApi.startIvr(...args),
+    finishMinuteCounter: (session) => minuteCounterApi.finish(session),
     logger: console,
 });
 const signalingHandlersApi = createSignalingHandlers({
@@ -478,6 +486,41 @@ const sendNotification = notificationApi.sendNotification;
 
 function normalizePhone(value) {
     return String(value || "").replace(/^\+/, "");
+}
+
+function getMinuteLimitSeconds(serviceRuntime) {
+    const constants = serviceRuntime?.serviceConstants || {};
+    if (constants.minuteLimitSeconds !== undefined) {
+        const parsedSeconds = Number(constants.minuteLimitSeconds);
+        return Number.isFinite(parsedSeconds) && parsedSeconds > 0 ? Math.floor(parsedSeconds) : null;
+    }
+    if (constants.minuteLimitMinutes !== undefined) {
+        const parsedMinutes = Number(constants.minuteLimitMinutes);
+        return Number.isFinite(parsedMinutes) && parsedMinutes > 0 ? Math.floor(parsedMinutes * 60) : null;
+    }
+    return null;
+}
+
+function getMinuteCounterSettings(serviceId = null) {
+    const runtime = getServiceRuntime(serviceId);
+    const limitSeconds = getMinuteLimitSeconds(runtime);
+    if (!runtime?.id || !limitSeconds) return null;
+    return {
+        serviceId: runtime.id,
+        limitSeconds,
+    };
+}
+
+function getMinuteCounterIdentity(parsedFrom, session) {
+    const rawFull = String(parsedFrom?.full || session?.callerEns || "").trim().toLowerCase();
+    if (rawFull.endsWith(".global")) return rawFull;
+
+    const runtime = getServiceRuntime(session?.serviceId || null);
+    const domains = Array.isArray(runtime?.serviceConstants?.domains) ? runtime.serviceConstants.domains : [];
+    const domain = domains[0] || runtime?.primaryDomain || "";
+    const label = normalizePhone(parsedFrom?.value || rawFull).trim().toLowerCase();
+    if (!label || !domain) return rawFull || label;
+    return `${label}.${domain}`;
 }
 
 function getAllServiceDomains() {
@@ -715,6 +758,9 @@ const callRuntimeCoreApi = createCallRuntimeCore({
             source: "outbound-route",
             target: destination?.target || "",
         }),
+    minuteCounter: minuteCounterApi,
+    getMinuteCounterSettings: (...args) => getMinuteCounterSettings(...args),
+    getMinuteCounterIdentity: (...args) => getMinuteCounterIdentity(...args),
     logger: console,
 });
 // TEMPORARY:
@@ -1212,6 +1258,7 @@ async function handleEndCallRenegotiation(sessionId, payload) {
  * Closes the SIP session — sends BYE via sip.js, tears down UserAgent.
  */
 async function closeSipSession(sessionId) {
+    minuteCounterApi.finish(sessions.get(sessionId));
     return sipClientApi.closeSipSession(sessionId, sessionStore);
 }
 
@@ -1244,6 +1291,7 @@ function createSession(sessionId, callerEns, toIdentity) {
 }
 
 function destroySession(sessionId, notify = false) {
+    minuteCounterApi.finish(sessions.get(sessionId));
     ivrRuntimeApi.stopIvr(sessionId, "session-destroyed");
     ivrAudioPlaybackApi.stopSessionPlayback(sessionId, "session-destroyed").catch(() => {});
     return sessionStore.destroySession(sessionId, {

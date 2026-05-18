@@ -5,7 +5,8 @@
       "status": "active",
       "domains": ["secnumtest.global", "secnum.global", "cellactm.global", "cellactl.global"],
       "trustedIngressIps": ["51.85.90.127"],
-      "outboundSbcAddress": "185.62.121.10"
+      "outboundSbcAddress": "185.62.121.10",
+      "minuteLimitSeconds": 600
     }
   },
   "production": {
@@ -14,7 +15,8 @@
       "status": "active",
       "domains": ["secnum.global", "secnumtest.global", "cellactm.global", "cellactl.global"],
       "trustedIngressIps": ["51.85.90.127"],
-      "outboundSbcAddress": "185.62.121.10"
+      "outboundSbcAddress": "185.62.121.10",
+      "minuteLimitSeconds": 600
     }
   }
 }

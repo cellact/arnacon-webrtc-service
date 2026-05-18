@@ -12,6 +12,9 @@ function createCallRuntimeCore({
     notifyAndBridge,
     notifyAndBridgeMulti,
     startIvrSession,
+    minuteCounter = null,
+    getMinuteCounterSettings = null,
+    getMinuteCounterIdentity = null,
     logger = console,
 }) {
     function failCall(sessionId, err, context) {
@@ -110,7 +113,27 @@ function createCallRuntimeCore({
                 callerId: callerIdResult?.callerId || null,
                 privateId: callerIdResult?.privateId || null,
             };
+            const minuteCounterSettings = typeof getMinuteCounterSettings === "function"
+                ? getMinuteCounterSettings(session.serviceId || null)
+                : null;
+            const minuteCounterIdentity = typeof getMinuteCounterIdentity === "function"
+                ? getMinuteCounterIdentity(parsedFrom, session)
+                : (parsedFrom?.full || session.callerEns || "");
+            if (minuteCounter && minuteCounterSettings?.limitSeconds) {
+                minuteCounter.assertCanStart({
+                    serviceId: minuteCounterSettings.serviceId,
+                    identity: minuteCounterIdentity,
+                    limitSeconds: minuteCounterSettings.limitSeconds,
+                });
+            }
             await openSipSession(sessionId, sipFrom, sipTo, sipDirective);
+            if (minuteCounter && minuteCounterSettings?.limitSeconds) {
+                minuteCounter.start(session, {
+                    serviceId: minuteCounterSettings.serviceId,
+                    identity: minuteCounterIdentity,
+                    limitSeconds: minuteCounterSettings.limitSeconds,
+                });
+            }
             return "sbc";
         }
         if (destination.route === "webrtc") {

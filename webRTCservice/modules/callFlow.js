@@ -30,6 +30,7 @@ function createCallFlowApi({
     startPendingMultiBridge = null,
     shouldStartIvrForSession = null,
     startIvrForSession = null,
+    finishMinuteCounter = null,
     logger = console,
 }) {
     function onDataChannelOpen(sessionId, deps = {}) {
@@ -406,6 +407,7 @@ function createCallFlowApi({
         }
 
         stopMediaRelay(sessionId);
+        if (typeof finishMinuteCounter === "function") finishMinuteCounter(session);
         await closeSipSession(sessionId);
         logger.log(`[${sessionId}] SIP torn down — awaiting end-call renegotiation from client (${reason})`);
     }
@@ -415,6 +417,7 @@ function createCallFlowApi({
         if (!session || !session.peerConnection) return;
         const pc = session.peerConnection;
         logSdp(sessionId, "END-CALL OFFER SDP (from client)", payload.sdp);
+        if (typeof finishMinuteCounter === "function") finishMinuteCounter(session);
         await closeSipSession(sessionId);
         stopMediaRelay(sessionId);
         await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp, "offer"));

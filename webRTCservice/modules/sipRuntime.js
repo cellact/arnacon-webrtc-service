@@ -6,6 +6,7 @@ function createSipRuntime({
     sendDataChannelMessage,
     patchRouterForDynamicSsrc,
     SessionState,
+    finishMinuteCounter = null,
     logger = console,
 }) {
     function attachSbcByeHandler(sipSession, sessionId) {
@@ -14,6 +15,7 @@ function createSipRuntime({
                 const s = sessions.get(sessionId);
                 if (s && s.phase === "in-call") {
                     stopMediaRelay(sessionId);
+                    if (typeof finishMinuteCounter === "function") finishMinuteCounter(s);
                     s.sipConnection = null;
                     s.sipPeerConnection = null;
                     s.sipLocalAudioTrack = null;
