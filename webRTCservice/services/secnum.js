@@ -180,7 +180,7 @@ async function resolveDestination(ctx) {
         };
     }
     if (normalizedTarget === "2005") {
-        return { route: "sbc", number: "2005", target: "openai-sip" };
+        return { route: "openai-sip", number: "2005", target: "openai-realtime" };
     }
 
     const multiRing = await buildConfiguredMultiRing(parsedTo, helpers);

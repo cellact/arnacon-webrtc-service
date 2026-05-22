@@ -9,6 +9,7 @@ function createCallRuntimeCore({
     sendDataChannelMessage,
     resolveCallerId,
     openSipSession,
+    openOpenAiSipSession,
     notifyAndBridge,
     notifyAndBridgeMulti,
     startIvrSession,
@@ -135,6 +136,18 @@ function createCallRuntimeCore({
                 });
             }
             return "sbc";
+        }
+        if (destination.route === "openai-sip") {
+            if (typeof openOpenAiSipSession !== "function") {
+                throw new Error("OpenAI SIP route requested but gateway is unavailable");
+            }
+            const callerIdResult = await resolveCallerId(parsedFrom, session.walletAddress, session.serviceId || null);
+            await openOpenAiSipSession(sessionId, {
+                callerEns: callerIdResult?.callerId || session.callerEns,
+                callerId: callerIdResult?.callerId || null,
+                destination,
+            });
+            return "openai-sip";
         }
         if (destination.route === "webrtc") {
             await notifyAndBridge(sessionId, destination);

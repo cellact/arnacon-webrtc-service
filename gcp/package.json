@@ -9,7 +9,8 @@
   },
   "dependencies": {
     "@google-cloud/functions-framework": "latest",
-    "openai": "latest"
+    "openai": "latest",
+    "ws": "latest"
   },
   "engines": {
     "node": ">=20"

@@ -226,6 +226,7 @@ function createCallFlowApi({
     function routeCodecPolicy(destination, isInbound) {
         if (isInbound) return false;
         if (destination?.route === "sbc") return "pcma";
+        if (destination?.route === "openai-sip") return "pcma";
         if (destination?.route === "ivr") return "g711";
         return null;
     }

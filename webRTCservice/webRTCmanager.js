@@ -135,6 +135,7 @@ const { createHandshakeFlow } = require("./modules/handshakeFlow");
 const { createDataChannelApi } = require("./modules/dataChannel");
 const { createSipRuntime } = require("./modules/sipRuntime");
 const { createCallRuntimeCore } = require("./modules/callRuntimeCore");
+const { createOpenAiSipGateway } = require("./modules/openAiSipGateway");
 const { createSignalingPipeline } = require("./modules/signalingPipeline");
 const { createIvrRuntime } = require("./modules/ivrRuntime");
 const { createIvrAudioPlayback } = require("./modules/ivrAudioPlayback");
@@ -275,6 +276,17 @@ const KAMAILIO_DOMAIN = config.domain;
 const KAMAILIO_REGISTER_EXPIRES = 300;
 
 const INTERNAL_BIND_IP = config.bindIp || "127.0.0.1";
+const OPENAI_SIP_CONFIG = {
+    kamailioHost: process.env.OPENAI_SIP_KAMAILIO_HOST || config.kamailioWssHost || config.domain,
+    kamailioPort: Number(process.env.OPENAI_SIP_KAMAILIO_PORT || 5060),
+    kamailioDomain: process.env.OPENAI_SIP_KAMAILIO_DOMAIN || KAMAILIO_DOMAIN,
+    bindIp: process.env.OPENAI_SIP_BIND_IP || "0.0.0.0",
+    contactHost: process.env.OPENAI_SIP_CONTACT_HOST || INTERNAL_BIND_IP,
+    mediaIp: process.env.OPENAI_SIP_MEDIA_IP || INTERNAL_BIND_IP,
+    sipUser: process.env.OPENAI_SIP_USER || "openai-bridge",
+    targetUser: process.env.OPENAI_SIP_TARGET_USER || "2005",
+    payloadType: Number(process.env.OPENAI_SIP_PAYLOAD_TYPE || 8),
+};
 
 // ROFL API config
 const ROFL_BASE_URL = config.roflBaseUrl;
@@ -389,6 +401,14 @@ const sipClientApi = createSipClient({
     attachSbcByeHandler: (...args) => attachSbcByeHandler(...args),
     setupPc2: (...args) => setupPc2(...args),
     startMediaRelay: (sessionId) => startMediaRelay(sessionId),
+    logger: console,
+});
+const openAiSipGatewayApi = createOpenAiSipGateway({
+    sessions,
+    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
+    stopMediaRelay: (...args) => stopMediaRelay(...args),
+    finishMinuteCounter: (session) => minuteCounterApi.finish(session),
+    config: OPENAI_SIP_CONFIG,
     logger: console,
 });
 const bridgeApi = createBridgeApi({
@@ -750,6 +770,7 @@ const callRuntimeCoreApi = createCallRuntimeCore({
     sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
     resolveCallerId: (...args) => resolveCallerId(...args),
     openSipSession: (...args) => openSipSession(...args),
+    openOpenAiSipSession: (...args) => openOpenAiSipSession(...args),
     notifyAndBridge: (...args) => notifyAndBridge(...args),
     notifyAndBridgeMulti: (...args) => notifyAndBridgeMulti(...args),
     startIvrSession: (sessionId, destination) =>
@@ -1122,6 +1143,10 @@ async function openSipSession(sessionId, callerEns, calleeIdentity, sipDirective
     return sipClientApi.openSipSession(sessionId, sessionStore, { callerEns, calleeIdentity, sipDirective });
 }
 
+async function openOpenAiSipSession(sessionId, options = {}) {
+    return openAiSipGatewayApi.openOpenAiSipSession(sessionId, options);
+}
+
 /**
  * Opens a SIP session for an inbound SBC call. Registers with Kamailio using
  * the called phone number as the SIP identity, which triggers PUSHJOIN to
@@ -1259,6 +1284,7 @@ async function handleEndCallRenegotiation(sessionId, payload) {
  */
 async function closeSipSession(sessionId) {
     minuteCounterApi.finish(sessions.get(sessionId));
+    await openAiSipGatewayApi.closeOpenAiSipSession(sessionId);
     return sipClientApi.closeSipSession(sessionId, sessionStore);
 }
 
