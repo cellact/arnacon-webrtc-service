@@ -6,7 +6,7 @@ const { RtpHeader, RtpPacket } = require("werift");
 
 const CRLF = "\r\n";
 const DEFAULT_INVITE_TIMEOUT_MS = 30000;
-const DEFAULT_RTP_PAYLOAD_TYPE = 8; // PCMA.
+const DEFAULT_RTP_PAYLOAD_TYPE = 0; // PCMU. OpenAI SIP ingress is stricter with mixed G.711 offers.
 
 function randomToken(bytes = 8) {
     return crypto.randomBytes(bytes).toString("hex");
@@ -105,7 +105,6 @@ function buildPlainRtpSdp({ mediaIp, mediaPort, sessionId, payloadType = DEFAULT
         `a=rtpmap:${payloadType} ${rtpmap}`,
         "a=ptime:20",
         "a=sendrecv",
-        `a=x-arnacon-session:${sessionId}`,
         "",
     ].join(CRLF);
 }

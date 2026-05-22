@@ -285,7 +285,7 @@ const OPENAI_SIP_CONFIG = {
     mediaIp: process.env.OPENAI_SIP_MEDIA_IP || INTERNAL_BIND_IP,
     sipUser: process.env.OPENAI_SIP_USER || "openai-bridge",
     targetUser: process.env.OPENAI_SIP_TARGET_USER || "2005",
-    payloadType: Number(process.env.OPENAI_SIP_PAYLOAD_TYPE || 8),
+    payloadType: Number(process.env.OPENAI_SIP_PAYLOAD_TYPE || 0),
 };
 
 // ROFL API config

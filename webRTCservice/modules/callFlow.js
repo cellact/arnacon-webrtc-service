@@ -226,7 +226,7 @@ function createCallFlowApi({
     function routeCodecPolicy(destination, isInbound) {
         if (isInbound) return false;
         if (destination?.route === "sbc") return "pcma";
-        if (destination?.route === "openai-sip") return "pcma";
+        if (destination?.route === "openai-sip") return "pcmu";
         if (destination?.route === "ivr") return "g711";
         return null;
     }
@@ -303,11 +303,11 @@ function createCallFlowApi({
         if (isInactive) offerSdp = patchInactiveToSendrecv(offerSdp);
         const codecPolicy = routeCodecPolicy(destination, isInbound);
         if (codecPolicy) {
-            const narrowedOfferSdp = codecPolicy === "pcma"
-                ? narrowAudioOfferToPcma(offerSdp)
-                : narrowAudioOfferToG711(offerSdp);
+            const narrowedOfferSdp = narrowAudioOfferForCodecPolicy(offerSdp, codecPolicy);
             if (narrowedOfferSdp !== offerSdp) {
-                const label = codecPolicy === "pcma" ? "PCMA" : "PCMU/PCMA";
+                const label = codecPolicy === "pcma"
+                    ? "PCMA"
+                    : (codecPolicy === "pcmu" ? "PCMU" : "PCMU/PCMA");
                 logger.log(`[${sessionId}] ${destination.route} route: narrowed caller audio offer to ${label}`);
                 offerSdp = narrowedOfferSdp;
             }
