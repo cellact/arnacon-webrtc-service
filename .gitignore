@@ -5,3 +5,4 @@ dist/
 .npmrc
 *.log
 .DS_Store
+.env

@@ -1,0 +1,17 @@
+{
+  "name": "open-ai-webhook",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "functions-framework --target=helloHttp"
+  },
+  "dependencies": {
+    "@google-cloud/functions-framework": "latest",
+    "openai": "latest"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

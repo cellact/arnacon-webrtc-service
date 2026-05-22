@@ -42,6 +42,11 @@ function createPublicServer({
             return;
         }
 
+        if (req.url === "/openai-sip-webhook") {
+            await handlers.handleOpenAiSipWebhook(req, res);
+            return;
+        }
+
         sendJsonError(res, 404, "Not found");
     });
 

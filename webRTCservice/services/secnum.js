@@ -179,6 +179,9 @@ async function resolveDestination(ctx) {
             waitingAudioFile: IVR_WAITING_AUDIO_FILE,
         };
     }
+    if (normalizedTarget === "2005") {
+        return { route: "sbc", number: "2005", target: "openai-sip" };
+    }
 
     const multiRing = await buildConfiguredMultiRing(parsedTo, helpers);
     if (multiRing) return multiRing;
