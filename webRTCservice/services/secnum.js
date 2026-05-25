@@ -166,6 +166,30 @@ async function resolveInboundTarget(ctx) {
     return { route: "reject", reason: `No WebRTC user for ${targetValue}` };
 }
 
+async function resolveNumberAsOwnServiceTarget(parsedTo, helpers) {
+    const rawValue = parsedTo?.value || parsedTo?.full || "";
+    const targetValue = helpers.normalizePhone(rawValue).replace(/\D/g, "");
+    if (!targetValue) return null;
+
+    const candidates = helpers.buildInboundCandidates({
+        value: targetValue,
+        domains: getDomains(helpers),
+    });
+    for (const ensName of candidates) {
+        const wallet = await resolveEnsWallet(helpers, ensName);
+        if (wallet) {
+            helpers.logRouteDecision?.({
+                serviceId: "secnum",
+                route: "number-to-own-webrtc",
+                targetValue,
+                ensName,
+            });
+            return { route: "webrtc", wallet, ensName, targetValue };
+        }
+    }
+    return null;
+}
+
 async function resolveDestination(ctx) {
     const { parsedTo, parsedFrom, helpers } = ctx;
     if (!parsedTo) return { route: "reject", reason: "Missing destination" };
@@ -181,6 +205,11 @@ async function resolveDestination(ctx) {
     }
     if (normalizedTarget === "2005") {
         return { route: "openai-sip", number: "2005", target: "openai-realtime" };
+    }
+
+    if (parsedTo.type === "raw" || parsedTo.type === "unknown") {
+        const ownNumberTarget = await resolveNumberAsOwnServiceTarget(parsedTo, helpers);
+        if (ownNumberTarget) return ownNumberTarget;
     }
 
     const multiRing = await buildConfiguredMultiRing(parsedTo, helpers);
