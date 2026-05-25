@@ -36,11 +36,12 @@ function createNotificationApi({
         if (!steps || steps.length === 0) {
             throw new Error("No signaling plan returned");
         }
-        const result = await executePlan(steps, message);
+        const result = await executePlan(steps);
         if (!result.success) throw new Error(`Plan-based execution failed (HTTP ${result.statusCode})`);
+        return result;
     }
 
-    async function executePlan(steps, messageOverride) {
+    async function executePlan(steps) {
         const placeholders = {};
         let finalStep = null;
         let i = 0;
@@ -101,7 +102,9 @@ function createNotificationApi({
             if (method === "CLIENT_JSON_EXTRACT") {
                 const extracted = handleClientJsonExtract(body);
                 if (extracted === null) {
-                    return { success: false, statusCode: -1, error: `CLIENT_JSON_EXTRACT failed: ${body}` };
+                    logger.log(`[Notification] Step ${i + 1} CLIENT_JSON_EXTRACT missing field, leaving placeholder unchanged`);
+                    i++;
+                    continue;
                 }
                 logger.log(`[Notification] Step ${i + 1} CLIENT_JSON_EXTRACT -> ${placeholderKey}`);
                 if (placeholderKey) placeholders[placeholderKey] = extracted;
@@ -121,6 +124,11 @@ function createNotificationApi({
                 continue;
             }
 
+            if (method === "CLIENT_RETURN") {
+                logger.log(`[Notification] Step ${i + 1} CLIENT_RETURN`);
+                return { success: true, statusCode: 200, responseBody: body };
+            }
+
             if (extractField) {
                 logger.log(`[Notification] Step ${i + 1} intermediate HTTP: ${method} ${url}`);
                 let result = await executeHttpRequest(url, method, contentType, body, headers);
@@ -136,7 +144,9 @@ function createNotificationApi({
 
                 const extracted = extractJsonField(result.responseBody, extractField);
                 if (!extracted) {
-                    return { success: false, statusCode: -1, error: `Failed to extract '${extractField}' from step ${i + 1} response` };
+                    logger.log(`[Notification] Step ${i + 1} missing '${extractField}', leaving placeholder unchanged`);
+                    i++;
+                    continue;
                 }
 
                 logger.log(`[Notification] Step ${i + 1} extracted '${extractField}' -> ${placeholderKey}`);
@@ -152,28 +162,15 @@ function createNotificationApi({
             return { success: false, statusCode: -1, error: "No final HTTP step found in plan" };
         }
 
-        const isApns = finalStep.url && finalStep.url.includes("push.apple.com");
-        const isFcm = finalStep.url && finalStep.url.includes("fcm.googleapis.com");
-        let sendBody = finalStep.body;
-
-        if (isApns && messageOverride) {
-            sendBody = messageOverride;
-            logger.log(`[Notification] Using offerPayload as APNS body (${messageOverride.length} bytes) instead of Sapphire body (${(finalStep.body || "").length} bytes)`);
-        }
-        if (isFcm && messageOverride) {
-            sendBody = buildFcmBodyWithOfferPayload(finalStep.body, messageOverride);
-            logger.log(`[Notification] Using offerPayload as FCM data.body (${messageOverride.length} bytes)`);
-        }
-
         logger.log(`[Notification] Executing final HTTP step: ${finalStep.method} ${finalStep.url}`);
         let result = await executeHttpRequest(
-            finalStep.url, finalStep.method, finalStep.contentType, sendBody, finalStep.headers,
+            finalStep.url, finalStep.method, finalStep.contentType, finalStep.body, finalStep.headers,
         );
 
         if (!result.success && finalStep.fallbackUrl) {
             logger.log(`[Notification] Final step primary URL failed (${result.statusCode}), trying fallback`);
             result = await executeHttpRequest(
-                finalStep.fallbackUrl, finalStep.method, finalStep.contentType, sendBody, finalStep.headers,
+                finalStep.fallbackUrl, finalStep.method, finalStep.contentType, finalStep.body, finalStep.headers,
             );
         }
 
@@ -249,9 +246,21 @@ function createNotificationApi({
         }
     }
 
+    function parseConditionParts(body) {
+        const parts = [];
+        let start = 0;
+        for (let i = 0; i < body.length && parts.length < 3; i++) {
+            if (body[i] !== ":") continue;
+            parts.push(body.slice(start, i));
+            start = i + 1;
+        }
+        parts.push(body.slice(start));
+        return parts;
+    }
+
     function handleClientCondition(body) {
         try {
-            const parts = body.split(":");
+            const parts = parseConditionParts(String(body || ""));
             if (parts.length < 4) return 0;
             const [op, left, right, skipCountStr] = parts;
             const skipCount = parseInt(skipCountStr, 10);
@@ -291,24 +300,6 @@ function createNotificationApi({
             return obj?.[field];
         } catch (_) {
             return null;
-        }
-    }
-
-    function buildFcmBodyWithOfferPayload(originalBody, offerPayload) {
-        try {
-            const parsed = JSON.parse(originalBody || "{}");
-            if (!parsed.message || typeof parsed.message !== "object") parsed.message = {};
-            if (!parsed.message.data || typeof parsed.message.data !== "object") parsed.message.data = {};
-            parsed.message.data.body = offerPayload;
-            return JSON.stringify(parsed);
-        } catch (_) {
-            if (typeof originalBody === "string" && originalBody.length > 0) {
-                if (originalBody.includes("\"body\"")) {
-                    return originalBody.replace(/"body"\s*:\s*"[^"]*"/, `"body":${JSON.stringify(offerPayload)}`);
-                }
-                return originalBody;
-            }
-            return JSON.stringify({ message: { data: { body: offerPayload } } });
         }
     }
 

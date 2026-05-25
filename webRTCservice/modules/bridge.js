@@ -272,6 +272,7 @@ function createBridgeApi({
 
     async function notifyAndBridge(callerSessionId, destination) {
         const {
+            legSession,
             legSessionId,
             walletKey,
             calleeEns,
@@ -281,7 +282,7 @@ function createBridgeApi({
 
         const pickup = waitForWebrtcPickup(callerSessionId, legSessionId, walletKey);
         try {
-            await sendNotification(callerEns, calleeEns, callPayload, notiTypeCall);
+            legSession.lastNotificationResult = await sendNotification(callerEns, calleeEns, callPayload, notiTypeCall);
         } catch (err) {
             pickup.promise.catch(() => {});
             pickup.cancel("webrtc-notification-failed");
@@ -346,6 +347,7 @@ function createBridgeApi({
         const legSessionId = `${group.groupId}-leg${legIndex}`;
         try {
             const {
+                legSession,
                 calleeEns,
                 callerEns,
                 callPayload,
@@ -370,7 +372,7 @@ function createBridgeApi({
                 legSessionId,
             });
 
-            await sendNotification(callerEns, calleeEns, callPayload, notiTypeCall);
+            legSession.lastNotificationResult = await sendNotification(callerEns, calleeEns, callPayload, notiTypeCall);
             logger.log(`[MR:${group.groupId}] leg invited sessionId=${legSessionId} to=${calleeEns}`);
             return legSessionId;
         } catch (err) {

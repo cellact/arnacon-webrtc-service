@@ -2,6 +2,7 @@
 
 const crypto = require("crypto");
 const dgram = require("dgram");
+const http = require("http");
 const { RtpHeader, RtpPacket } = require("werift");
 
 const CRLF = "\r\n";
@@ -147,6 +148,69 @@ function deserializeRtpPacket(buffer) {
     return null;
 }
 
+function normalizeHeaderName(name) {
+    return String(name || "").trim().toLowerCase();
+}
+
+function getHeader(headers, name) {
+    if (!headers || typeof headers !== "object") return "";
+    const target = normalizeHeaderName(name);
+    for (const [key, value] of Object.entries(headers)) {
+        if (normalizeHeaderName(key) === target) return String(value || "");
+    }
+    return "";
+}
+
+function extractCallIdFromAuthRequest(body = {}) {
+    return (
+        body.sipCallId ||
+        body.sip_call_id ||
+        getHeader(body.sipHeaders, "call-id") ||
+        getHeader(body.sip_headers, "call-id") ||
+        body.callId ||
+        body.call_id ||
+        ""
+    ).trim();
+}
+
+function readJsonRequest(req, maxBytes = 64 * 1024) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        let total = 0;
+        req.on("data", (chunk) => {
+            total += chunk.length;
+            if (total > maxBytes) {
+                reject(new Error("request body too large"));
+                req.destroy();
+                return;
+            }
+            chunks.push(chunk);
+        });
+        req.on("end", () => {
+            const raw = Buffer.concat(chunks).toString("utf8").trim();
+            if (!raw) {
+                resolve({});
+                return;
+            }
+            try {
+                resolve(JSON.parse(raw));
+            } catch (_) {
+                reject(new Error("invalid json body"));
+            }
+        });
+        req.on("error", reject);
+    });
+}
+
+function sendJson(res, statusCode, payload) {
+    const body = JSON.stringify(payload);
+    res.writeHead(statusCode, {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+    });
+    res.end(body);
+}
+
 function createOpenAiSipGateway({
     sessions,
     sendDataChannelMessage,
@@ -166,6 +230,11 @@ function createOpenAiSipGateway({
     const targetUser = sanitizeSipUser(config.targetUser || "2005", "2005");
     const inviteTimeoutMs = Number(config.inviteTimeoutMs || DEFAULT_INVITE_TIMEOUT_MS);
     const offeredPayloadType = Number(config.payloadType || DEFAULT_RTP_PAYLOAD_TYPE);
+    const authPort = Number(config.authPort || 2006);
+    const authBindIp = config.authBindIp || "0.0.0.0";
+    const authPath = config.authPath || "/authorize-openai-call";
+    const authToken = config.authToken || "";
+    let authServer = null;
 
     function sendUdp(socket, message, port = kamailioPort, host = kamailioHost) {
         return new Promise((resolve, reject) => {
@@ -255,6 +324,80 @@ function createOpenAiSipGateway({
             session.phase = "post-call";
         }
         cleanupCall(sessionId);
+    }
+
+    function authorizeIncomingOpenAiCall(body = {}) {
+        const requestedCallId = extractCallIdFromAuthRequest(body);
+        if (!requestedCallId) {
+            return { allowed: false, reason: "missing SIP Call-ID" };
+        }
+
+        for (const call of activeCalls.values()) {
+            if (call.callId !== requestedCallId) continue;
+
+            const session = sessions.get(call.sessionId);
+            if (!session) {
+                return { allowed: false, reason: "matched OpenAI SIP call has no active WebRTC session" };
+            }
+
+            return {
+                allowed: true,
+                reason: "matched active OpenAI SIP call",
+                sessionId: call.sessionId,
+                callId: call.callId,
+                phase: session.phase || null,
+                established: Boolean(call.established),
+            };
+        }
+
+        return { allowed: false, reason: "no active OpenAI SIP call matched SIP Call-ID" };
+    }
+
+    function startAuthServer() {
+        if (authServer) return authServer;
+
+        authServer = http.createServer(async (req, res) => {
+            const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+            if (req.method === "GET" && url.pathname === "/health") {
+                sendJson(res, 200, { ok: true, service: "openai-sip-auth" });
+                return;
+            }
+
+            const allowedPaths = new Set([authPath, "/openai-call-auth"]);
+            if (req.method !== "POST" || !allowedPaths.has(url.pathname)) {
+                sendJson(res, 404, { allowed: false, reason: "not found" });
+                return;
+            }
+            if (authToken && req.headers.authorization !== `Bearer ${authToken}`) {
+                sendJson(res, 401, { allowed: false, reason: "unauthorized" });
+                return;
+            }
+
+            try {
+                const body = await readJsonRequest(req);
+                const decision = authorizeIncomingOpenAiCall(body);
+                sendJson(res, decision.allowed ? 200 : 403, decision);
+            } catch (err) {
+                sendJson(res, 400, { allowed: false, reason: err.message });
+            }
+        });
+
+        authServer.on("error", (err) => {
+            logger.error(`[OpenAI-SIP-Auth] server error: ${err.message}`);
+        });
+        authServer.listen(authPort, authBindIp, () => {
+            logger.log(`[OpenAI-SIP-Auth] listening on ${authBindIp}:${authPort}${authPath}`);
+        });
+        return authServer;
+    }
+
+    function stopAuthServer() {
+        if (!authServer) return;
+        const server = authServer;
+        authServer = null;
+        server.close((err) => {
+            if (err) logger.warn(`[OpenAI-SIP-Auth] close failed: ${err.message}`);
+        });
     }
 
     async function sendSipOk(call, request) {
@@ -452,6 +595,9 @@ function createOpenAiSipGateway({
     return {
         openOpenAiSipSession,
         closeOpenAiSipSession,
+        authorizeIncomingOpenAiCall,
+        startAuthServer,
+        stopAuthServer,
     };
 }
 

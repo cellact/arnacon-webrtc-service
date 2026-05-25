@@ -95,28 +95,96 @@ async function handleRealtimeCallIncoming(event) {
     throw new Error("Missing realtime call_id");
   }
 
-  await beforeAcceptRealtimeCall(event);
+  const preAccept = await beforeAcceptRealtimeCall(event);
+  if (!preAccept.allowed) {
+    console.warn("OpenAI SIP call denied before accept:", {
+      eventId: event.id,
+      callId,
+      reason: preAccept.reason,
+    });
+    return;
+  }
   await acceptRealtimeCall(callId, buildRealtimeAcceptConfig(event));
   startRealtimeCallMonitor(callId);
   await afterAcceptRealtimeCall(event);
 }
 
 async function beforeAcceptRealtimeCall(event) {
+  const sipHeaders = summarizeSipHeaders(event.data.sip_headers || []);
   console.log("Incoming OpenAI SIP call:", {
     eventId: event.id,
     callId: event.data.call_id,
-    sipHeaders: summarizeSipHeaders(event.data.sip_headers || []),
+    sipHeaders,
   });
+
+  return authorizeRealtimeCallWithWebRtcService(event, sipHeaders);
+}
+
+async function authorizeRealtimeCallWithWebRtcService(event, sipHeaders) {
+  const authUrl = process.env.WEBRTC_CALL_AUTH_URL;
+  if (!authUrl) {
+    console.warn("WEBRTC_CALL_AUTH_URL is not configured; allowing OpenAI SIP call");
+    return { allowed: true, reason: "auth-url-not-configured" };
+  }
+
+  const controller = new AbortController();
+  const timeoutMs = Number(process.env.WEBRTC_CALL_AUTH_TIMEOUT_MS || 2500);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(authUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(process.env.WEBRTC_CALL_AUTH_TOKEN
+          ? { Authorization: `Bearer ${process.env.WEBRTC_CALL_AUTH_TOKEN}` }
+          : {}),
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        eventId: event.id,
+        callId: event.data.call_id,
+        sipHeaders,
+        openAiEventType: event.type,
+      }),
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      return {
+        allowed: false,
+        reason: `webrtc-auth-http-${response.status}:${body.slice(0, 200)}`,
+      };
+    }
+
+    const result = await response.json().catch(() => ({}));
+    return {
+      allowed: result.allowed === true,
+      reason: result.reason || (result.allowed === true ? "webrtc-authorized" : "webrtc-denied"),
+      sessionId: result.sessionId || null,
+    };
+  } catch (error) {
+    return {
+      allowed: false,
+      reason: `webrtc-auth-error:${error.message}`,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function buildRealtimeAcceptConfig() {
   return {
     type: "realtime",
-    model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2",
-    voice: process.env.OPENAI_REALTIME_VOICE || "alloy",
+        model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime",
     instructions:
       process.env.OPENAI_REALTIME_INSTRUCTIONS ||
       "You are a helpful phone assistant for Arnacon.",
+        audio: {
+            output: {
+                voice: process.env.OPENAI_REALTIME_VOICE || "alloy",
+            },
+        },
   };
 }
 
@@ -145,6 +213,7 @@ function startRealtimeCallMonitor(callId) {
     {
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        origin: "https://api.openai.com",
       },
     },
   );
@@ -194,3 +263,4 @@ function summarizeSipHeaders(headers) {
     return acc;
   }, {});
 }
+

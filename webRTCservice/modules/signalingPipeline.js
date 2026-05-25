@@ -7,14 +7,47 @@ function createSignalingPipeline({
     createHttpError,
     enforceNotifySignatures = true,
 }) {
+    function parseObjectPayload(value) {
+        if (!value) return null;
+        if (typeof value === "object" && !Array.isArray(value)) return { ...value };
+        if (typeof value !== "string") return null;
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+        try {
+            const parsed = JSON.parse(trimmed);
+            return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function firstValueForKey(objects, keys) {
+        for (const obj of objects) {
+            if (!obj || typeof obj !== "object") continue;
+            for (const key of keys) {
+                if (obj[key] !== undefined && obj[key] !== null && obj[key] !== "") {
+                    return obj[key];
+                }
+            }
+        }
+        return null;
+    }
+
     function normalizeNotifyPayload(rawPayload) {
         const source = rawPayload || {};
-        const nested = source && typeof source.payload === "object" ? source.payload : null;
-        const normalized = nested ? { ...nested } : { ...source };
+        const nestedPayload = parseObjectPayload(source.payload);
+        const bodyPayload = parseObjectPayload(source.body);
+        const dataPayload = parseObjectPayload(source.data);
+        const dataBodyPayload = parseObjectPayload(source.data?.body);
+        const normalized = nestedPayload ||
+            bodyPayload ||
+            dataBodyPayload ||
+            (dataPayload?.type ? dataPayload : null) ||
+            { ...source };
 
-        // Support both legacy keys (xsign/xdata) and new transport keys (x-sign/x-data).
-        const xsign = source.xsign || source["x-sign"] || normalized.xsign || normalized["x-sign"];
-        const xdata = source.xdata || source["x-data"] || normalized.xdata || normalized["x-data"];
+        const authSources = [source, source.data, nestedPayload, bodyPayload, dataPayload, dataBodyPayload, normalized];
+        const xsign = firstValueForKey(authSources, ["xsign", "x-sign"]);
+        const xdata = firstValueForKey(authSources, ["xdata", "x-data"]);
         if (xsign && !normalized.xsign) normalized.xsign = xsign;
         if (xdata && !normalized.xdata) normalized.xdata = xdata;
 

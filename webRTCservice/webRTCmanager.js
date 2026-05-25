@@ -286,6 +286,10 @@ const OPENAI_SIP_CONFIG = {
     sipUser: process.env.OPENAI_SIP_USER || "openai-bridge",
     targetUser: process.env.OPENAI_SIP_TARGET_USER || "2005",
     payloadType: Number(process.env.OPENAI_SIP_PAYLOAD_TYPE || 0),
+    authPort: Number(process.env.OPENAI_SIP_AUTH_PORT || 2006),
+    authBindIp: process.env.OPENAI_SIP_AUTH_BIND_IP || "0.0.0.0",
+    authPath: process.env.OPENAI_SIP_AUTH_PATH || "/authorize-openai-call",
+    authToken: process.env.WEBRTC_CALL_AUTH_TOKEN || "",
 };
 
 // ROFL API config
@@ -302,7 +306,8 @@ const SIGNALING_PLAN_ABI = [
 ];
 
 // Notification type constants (match INotificationProvider.sol)
-const NOTI_TYPE_CALL = 1;
+const NOTI_TYPE_CALL = 0;
+const NOTI_TYPE_REALTIME_SIGNAL = 4;
 
 // ─── Ephemeral Wallet (for CLIENT_ETH_SIGN steps) ───────────
 const ephemeralWallet = ethers.Wallet.createRandom();
@@ -872,6 +877,7 @@ for (const serviceRuntime of activeServiceRuntimes) {
     serviceServers.startInternalServer();
     httpServers.push({ serviceId: serviceRuntime.id, servers: serviceServers });
 }
+openAiSipGatewayApi.startAuthServer();
 
 // ════════════════════════════════════════════════════════════
 // LAYER 3 — REACT AT RUNTIME

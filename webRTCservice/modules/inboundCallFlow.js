@@ -92,9 +92,9 @@ function createInboundCallFlow({
             sdp: sdpWithCandidates,
             candidates: relayCandidates,
             callNonce,
-            isCall: 1,
+            isCall: true,
         });
-        await sendNotification(calleeEns, calleeEns, offerPayload, notiTypeCall);
+        session.lastNotificationResult = await sendNotification(calleeEns, calleeEns, offerPayload, notiTypeCall);
         return { ok: true, wallet: destination.wallet, ensName: destination.ensName, sessionId };
     }
 
