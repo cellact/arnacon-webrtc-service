@@ -168,9 +168,16 @@ function createNotificationApi({
         );
 
         if (!result.success && finalStep.fallbackUrl) {
-            logger.log(`[Notification] Final step primary URL failed (${result.statusCode}), trying fallback`);
+            logger.log(
+                `[Notification] Final step primary URL failed status=${result.statusCode} ` +
+                `body=${result.responseBody || ""}, trying fallback`
+            );
             result = await executeHttpRequest(
                 finalStep.fallbackUrl, finalStep.method, finalStep.contentType, finalStep.body, finalStep.headers,
+            );
+            logger.log(
+                `[Notification] Final step fallback result success=${result.success} ` +
+                `status=${result.statusCode} body=${result.responseBody || ""}`
             );
         }
 
