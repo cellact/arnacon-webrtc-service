@@ -176,7 +176,20 @@ async function resolveNumberAsOwnServiceTarget(parsedTo, helpers) {
         domains: getDomains(helpers),
     });
     for (const ensName of candidates) {
+        helpers.logRouteDecision?.({
+            serviceId: "secnum",
+            route: "number-to-own-webrtc-check",
+            targetValue,
+            ensName,
+        });
         const wallet = await resolveEnsWallet(helpers, ensName);
+        helpers.logRouteDecision?.({
+            serviceId: "secnum",
+            route: wallet ? "number-to-own-webrtc-found" : "number-to-own-webrtc-miss",
+            targetValue,
+            ensName,
+            wallet: wallet || null,
+        });
         if (wallet) {
             helpers.logRouteDecision?.({
                 serviceId: "secnum",
@@ -187,6 +200,12 @@ async function resolveNumberAsOwnServiceTarget(parsedTo, helpers) {
             return { route: "webrtc", wallet, ensName, targetValue };
         }
     }
+    helpers.logRouteDecision?.({
+        serviceId: "secnum",
+        route: "number-to-own-webrtc-none",
+        targetValue,
+        candidates,
+    });
     return null;
 }
 
