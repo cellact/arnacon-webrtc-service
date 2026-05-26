@@ -41,13 +41,14 @@ function createCallRuntimeCore({
 
     async function createAnswerSdp(pc, sessionId, label) {
         const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
         let answerSdp = answer.sdp;
         const before = answerSdp;
         answerSdp = patchInactiveToSendrecv(answerSdp);
         if (answerSdp !== before) {
             logger.log(`[${sessionId}] Patched ${label}: inactive → sendrecv`);
+            answer.sdp = answerSdp;
         }
+        await pc.setLocalDescription(answer);
         const dir = answerSdp.match(/a=(sendrecv|recvonly|sendonly|inactive)/)?.[1] || "unknown";
         logger.log(`[${sessionId}] ${label} created (len=${answerSdp.length}, dir=${dir})`);
         logSdp(sessionId, label, answerSdp);

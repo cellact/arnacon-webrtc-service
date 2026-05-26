@@ -183,6 +183,15 @@ function createBridgeApi({
         legSession.iceCandidates = [];
 
         const offer = await pc.createOffer();
+        let baseOfferSdp = offer.sdp;
+        if (callerSession.mediaCodecPolicy) {
+            const narrowedOfferSdp = narrowAudioOfferForCodecPolicy(baseOfferSdp, callerSession.mediaCodecPolicy);
+            if (narrowedOfferSdp !== baseOfferSdp) {
+                logger.log(`[${legSessionId}] WebRTC leg inherited bridge codec policy=${callerSession.mediaCodecPolicy}`);
+                baseOfferSdp = narrowedOfferSdp;
+                offer.sdp = baseOfferSdp;
+            }
+        }
         await pc.setLocalDescription(offer);
         await waitForIceGathering(pc);
         const gatheredCandidates = formatIceCandidates(legSession).filter((c) => {
@@ -195,14 +204,6 @@ function createBridgeApi({
         });
         const candidatesToEmbed = srflxAndRelay.length > 0 ? srflxAndRelay : gatheredCandidates;
         const relayCandidates = getRelayCandidates(gatheredCandidates);
-        let baseOfferSdp = offer.sdp;
-        if (callerSession.mediaCodecPolicy) {
-            const narrowedOfferSdp = narrowAudioOfferForCodecPolicy(baseOfferSdp, callerSession.mediaCodecPolicy);
-            if (narrowedOfferSdp !== baseOfferSdp) {
-                logger.log(`[${legSessionId}] WebRTC leg inherited bridge codec policy=${callerSession.mediaCodecPolicy}`);
-                baseOfferSdp = narrowedOfferSdp;
-            }
-        }
         const offerSdp = embedCandidatesInSdp(baseOfferSdp, candidatesToEmbed);
         const sourceOffer = callerSession.lastRingOfferPayload || null;
 

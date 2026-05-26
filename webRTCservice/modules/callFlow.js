@@ -94,20 +94,21 @@ function createCallFlowApi({
         }
         session.iceCandidates = [];
         const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        await waitForIceGathering(pc);
-        const gatheredCandidates = formatIceCandidates(session).filter(c => !c.candidate.toLowerCase().includes(" tcp "));
-        const srflxAndRelay = gatheredCandidates.filter(c => c.candidate.includes("typ srflx") || c.candidate.includes("typ relay"));
-        const candidatesToEmbed = srflxAndRelay.length > 0 ? srflxAndRelay : gatheredCandidates;
-        const relayCandidates = getRelayCandidates(gatheredCandidates);
         let baseOfferSdp = offer.sdp;
         if (session.mediaCodecPolicy) {
             const narrowedOfferSdp = narrowAudioOfferForCodecPolicy(baseOfferSdp, session.mediaCodecPolicy);
             if (narrowedOfferSdp !== baseOfferSdp) {
                 logger.log(`[${sessionId}] outbound WebRTC leg: narrowed RING offer codecPolicy=${session.mediaCodecPolicy}`);
                 baseOfferSdp = narrowedOfferSdp;
+                offer.sdp = baseOfferSdp;
             }
         }
+        await pc.setLocalDescription(offer);
+        await waitForIceGathering(pc);
+        const gatheredCandidates = formatIceCandidates(session).filter(c => !c.candidate.toLowerCase().includes(" tcp "));
+        const srflxAndRelay = gatheredCandidates.filter(c => c.candidate.includes("typ srflx") || c.candidate.includes("typ relay"));
+        const candidatesToEmbed = srflxAndRelay.length > 0 ? srflxAndRelay : gatheredCandidates;
+        const relayCandidates = getRelayCandidates(gatheredCandidates);
         const offerSdp = embedCandidatesInSdp(baseOfferSdp, candidatesToEmbed);
         logSdp(sessionId, "RING OFFER SDP (to callee)", offerSdp);
         sendDataChannelMessage(sessionId, {
