@@ -2,7 +2,9 @@
 
 const crypto = require("crypto");
 const dgram = require("dgram");
+const fs = require("fs");
 const http = require("http");
+const https = require("https");
 const { RtpHeader, RtpPacket } = require("werift");
 
 const CRLF = "\r\n";
@@ -234,6 +236,7 @@ function createOpenAiSipGateway({
     const authBindIp = config.authBindIp || "0.0.0.0";
     const authPath = config.authPath || "/authorize-openai-call";
     const authToken = config.authToken || "";
+    const authUseHttps = config.authUseHttps !== false;
     let authServer = null;
 
     function sendUdp(socket, message, port = kamailioPort, host = kamailioHost) {
@@ -356,7 +359,8 @@ function createOpenAiSipGateway({
     function startAuthServer() {
         if (authServer) return authServer;
 
-        authServer = http.createServer(async (req, res) => {
+        const authServerOptions = getAuthServerOptions();
+        authServer = authServerOptions.createServer(async (req, res) => {
             const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
             if (req.method === "GET" && url.pathname === "/health") {
                 sendJson(res, 200, { ok: true, service: "openai-sip-auth" });
@@ -386,9 +390,38 @@ function createOpenAiSipGateway({
             logger.error(`[OpenAI-SIP-Auth] server error: ${err.message}`);
         });
         authServer.listen(authPort, authBindIp, () => {
-            logger.log(`[OpenAI-SIP-Auth] listening on ${authBindIp}:${authPort}${authPath}`);
+            logger.log(`[OpenAI-SIP-Auth] ${authServerOptions.scheme} listening on ${authBindIp}:${authPort}${authPath}`);
         });
         return authServer;
+    }
+
+    function getAuthServerOptions() {
+        if (!authUseHttps) {
+            return {
+                scheme: "http",
+                createServer: (handler) => http.createServer(handler),
+            };
+        }
+
+        try {
+            const tlsOptions = config.authTlsOptions || {
+                cert: config.authTlsCertPath ? fs.readFileSync(config.authTlsCertPath) : null,
+                key: config.authTlsKeyPath ? fs.readFileSync(config.authTlsKeyPath) : null,
+            };
+            if (!tlsOptions.cert || !tlsOptions.key) {
+                throw new Error("missing auth TLS cert/key");
+            }
+            return {
+                scheme: "https",
+                createServer: (handler) => https.createServer(tlsOptions, handler),
+            };
+        } catch (err) {
+            logger.warn(`[OpenAI-SIP-Auth] HTTPS unavailable (${err.message}); falling back to HTTP`);
+            return {
+                scheme: "http",
+                createServer: (handler) => http.createServer(handler),
+            };
+        }
     }
 
     function stopAuthServer() {

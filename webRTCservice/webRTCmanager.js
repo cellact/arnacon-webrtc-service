@@ -290,6 +290,9 @@ const OPENAI_SIP_CONFIG = {
     authBindIp: process.env.OPENAI_SIP_AUTH_BIND_IP || "0.0.0.0",
     authPath: process.env.OPENAI_SIP_AUTH_PATH || "/authorize-openai-call",
     authToken: process.env.WEBRTC_CALL_AUTH_TOKEN || "",
+    authUseHttps: process.env.OPENAI_SIP_AUTH_HTTPS !== "false",
+    authTlsCertPath: process.env.OPENAI_SIP_AUTH_TLS_CERT || `${config.tlsCertPath}/fullchain.pem`,
+    authTlsKeyPath: process.env.OPENAI_SIP_AUTH_TLS_KEY || `${config.tlsCertPath}/privkey.pem`,
 };
 
 // ROFL API config
