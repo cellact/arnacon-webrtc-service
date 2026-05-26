@@ -233,7 +233,7 @@ function createCallFlowApi({
         if (destination?.route === "sbc") return "pcma";
         if (destination?.route === "openai-sip") return "pcmu";
         if (destination?.route === "ivr") return "g711";
-        if (destination?.route === "webrtc" || destination?.route === "webrtc-multiring") return "opus";
+        if (destination?.route === "webrtc" || destination?.route === "webrtc-multiring") return "pcma";
         return null;
     }
 
