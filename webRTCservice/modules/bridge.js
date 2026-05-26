@@ -577,33 +577,30 @@ function createBridgeApi({
         function getReceiverAudioTracks(session) {
             const out = [];
             const seen = new Set();
-            // Prefer tracks that already fired onTrack and were stored on the session.
-            // In multiring, winner onTrack can happen before bridge start.
-            for (const t of session?.remoteTracks || []) {
-                if (!t || t.kind !== "audio") continue;
-                if (seen.has(t)) continue;
+            const addTrack = (t) => {
+                if (!t || t.kind !== "audio") return;
+                if (seen.has(t)) return;
                 seen.add(t);
                 out.push(t);
-            }
+            };
+
+            // Prefer the current receiver/transceiver track. Stored onTrack values can
+            // point at an older non-emitting track after renegotiation.
             if (session?.peerConnection?.getReceivers) {
                 for (const recv of session.peerConnection.getReceivers()) {
-                    const t = recv?.track;
-                    if (!t || t.kind !== "audio") continue;
-                    if (seen.has(t)) continue;
-                    seen.add(t);
-                    out.push(t);
+                    addTrack(recv?.track);
                 }
             }
             if (session?.peerConnection?.getTransceivers) {
                 for (const tr of session.peerConnection.getTransceivers()) {
                     if (tr?.kind !== "audio" || !tr.receiver?.tracks) continue;
                     for (const t of tr.receiver.tracks) {
-                        if (!t || t.kind !== "audio") continue;
-                        if (seen.has(t)) continue;
-                        seen.add(t);
-                        out.push(t);
+                        addTrack(t);
                     }
                 }
+            }
+            for (const t of session?.remoteTracks || []) {
+                addTrack(t);
             }
             return out;
         }
@@ -660,6 +657,11 @@ function createBridgeApi({
                 if (altCallerTrack) {
                     logger.log(`[Bridge][${callerSessionId}<->${calleeSessionId}] fallback rebind caller->callee`);
                     rebindCallerToCallee(altCallerTrack);
+                } else if (currentCallerTrack) {
+                    logger.log(`[Bridge][${callerSessionId}<->${calleeSessionId}] retry rebind caller->callee current track`);
+                    rebindCallerToCallee(currentCallerTrack);
+                } else {
+                    logger.warn(`[Bridge][${callerSessionId}<->${calleeSessionId}] no caller audio receiver track available`);
                 }
             }
             logger.log(`[Bridge][${callerSessionId}<->${calleeSessionId}] rtp c2w=${c2wPackets} w2c=${w2cPackets}`);
