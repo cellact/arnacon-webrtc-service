@@ -203,7 +203,12 @@ function createCallFlowApi({
         return narrowAudioOfferToPayloads(sdp, ["0"]);
     }
 
+    function narrowAudioOfferToOpus(sdp) {
+        return narrowAudioOfferToPayloads(sdp, ["111"]);
+    }
+
     function narrowAudioOfferForCodecPolicy(sdp, codecPolicy) {
+        if (codecPolicy === "opus") return narrowAudioOfferToOpus(sdp);
         if (codecPolicy === "pcma") return narrowAudioOfferToPcma(sdp);
         if (codecPolicy === "pcmu") return narrowAudioOfferToPcmu(sdp);
         if (codecPolicy === "g711") return narrowAudioOfferToG711(sdp);
@@ -228,6 +233,7 @@ function createCallFlowApi({
         if (destination?.route === "sbc") return "pcma";
         if (destination?.route === "openai-sip") return "pcmu";
         if (destination?.route === "ivr") return "g711";
+        if (destination?.route === "webrtc" || destination?.route === "webrtc-multiring") return "opus";
         return null;
     }
 
@@ -305,9 +311,11 @@ function createCallFlowApi({
         if (codecPolicy) {
             const narrowedOfferSdp = narrowAudioOfferForCodecPolicy(offerSdp, codecPolicy);
             if (narrowedOfferSdp !== offerSdp) {
-                const label = codecPolicy === "pcma"
-                    ? "PCMA"
-                    : (codecPolicy === "pcmu" ? "PCMU" : "PCMU/PCMA");
+                const label = codecPolicy === "opus"
+                    ? "OPUS"
+                    : (codecPolicy === "pcma"
+                        ? "PCMA"
+                        : (codecPolicy === "pcmu" ? "PCMU" : "PCMU/PCMA"));
                 logger.log(`[${sessionId}] ${destination.route} route: narrowed caller audio offer to ${label}`);
                 offerSdp = narrowedOfferSdp;
             }

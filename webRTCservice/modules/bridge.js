@@ -122,6 +122,7 @@ function createBridgeApi({
     }
 
     function narrowAudioOfferForCodecPolicy(sdp, codecPolicy) {
+        if (codecPolicy === "opus") return narrowAudioOfferToPayloads(sdp, ["111"]);
         if (codecPolicy === "pcmu") return narrowAudioOfferToPayloads(sdp, ["0"]);
         if (codecPolicy === "pcma") return narrowAudioOfferToPayloads(sdp, ["8"]);
         if (codecPolicy === "g711") return narrowAudioOfferToPayloads(sdp, ["0", "8"]);
@@ -218,6 +219,10 @@ function createBridgeApi({
             isCall: true,
             ...(options.payload || {}),
         });
+        logger.log(
+            `[${legSessionId}] outbound WebRTC invite payload from=${callerNumberLabel || callerEns} ` +
+            `to=${calleeEns} callerEns=${callerEns}`
+        );
 
         return {
             callerSession,
