@@ -121,7 +121,7 @@ async function beforeAcceptRealtimeCall(event) {
 }
 
 async function authorizeRealtimeCallWithWebRtcService(event, sipHeaders) {
-  const authUrl = process.env.WEBRTC_CALL_AUTH_URL;
+  const authUrl = process.env.WEBRTC_CALL_AUTH_URL || "https://test2.cellact.nl:2005/authorize-openai-call";
   if (!authUrl) {
     console.warn("WEBRTC_CALL_AUTH_URL is not configured; allowing OpenAI SIP call");
     return { allowed: true, reason: "auth-url-not-configured" };

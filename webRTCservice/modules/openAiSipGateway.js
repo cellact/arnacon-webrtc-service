@@ -230,7 +230,7 @@ function createOpenAiSipGateway({
     const targetUser = sanitizeSipUser(config.targetUser || "2005", "2005");
     const inviteTimeoutMs = Number(config.inviteTimeoutMs || DEFAULT_INVITE_TIMEOUT_MS);
     const offeredPayloadType = Number(config.payloadType || DEFAULT_RTP_PAYLOAD_TYPE);
-    const authPort = Number(config.authPort || 2006);
+    const authPort = Number(config.authPort || 2005);
     const authBindIp = config.authBindIp || "0.0.0.0";
     const authPath = config.authPath || "/authorize-openai-call";
     const authToken = config.authToken || "";

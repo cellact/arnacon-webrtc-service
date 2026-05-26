@@ -286,7 +286,7 @@ const OPENAI_SIP_CONFIG = {
     sipUser: process.env.OPENAI_SIP_USER || "openai-bridge",
     targetUser: process.env.OPENAI_SIP_TARGET_USER || "2005",
     payloadType: Number(process.env.OPENAI_SIP_PAYLOAD_TYPE || 0),
-    authPort: Number(process.env.OPENAI_SIP_AUTH_PORT || 2006),
+    authPort: Number(process.env.OPENAI_SIP_AUTH_PORT || 2005),
     authBindIp: process.env.OPENAI_SIP_AUTH_BIND_IP || "0.0.0.0",
     authPath: process.env.OPENAI_SIP_AUTH_PATH || "/authorize-openai-call",
     authToken: process.env.WEBRTC_CALL_AUTH_TOKEN || "",
