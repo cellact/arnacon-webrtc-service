@@ -207,7 +207,7 @@ function createBridgeApi({
 
         const callPayload = JSON.stringify({
             type: "offer",
-            from: callerNumberLabel || callerEns,
+            from: callerEns,
             to: calleeEns,
             sessionId: legSessionId,
             label: callerNumberLabel || undefined,
