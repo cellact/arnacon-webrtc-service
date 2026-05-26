@@ -433,23 +433,15 @@ function createCallFlowApi({
         for (const t of pc.getTransceivers()) {
             if (t.kind === "audio") {
                 t.setDirection("inactive");
+                if (t.sender && typeof t.sender.replaceTrack === "function") {
+                    try { await t.sender.replaceTrack(null); } catch (_) {}
+                }
                 break;
             }
         }
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         let answerSdp = answer.sdp;
-        const audioMidMatch = answerSdp.match(/m=audio[\s\S]*?a=mid:(\S+)/);
-        if (audioMidMatch) {
-            const audioMid = audioMidMatch[1];
-            const bundleMatch = answerSdp.match(/^(a=group:BUNDLE\s+.+)$/m);
-            if (bundleMatch && !bundleMatch[1].includes(` ${audioMid}`)) {
-                answerSdp = answerSdp.replace(/^(a=group:BUNDLE\s+.+)$/m, `$1 ${audioMid}`);
-            }
-        }
-        if (/^m=audio\s+0\s+/m.test(answerSdp)) {
-            answerSdp = answerSdp.replace(/^(m=audio\s+)0(\s+)/m, "$19$2");
-        }
 
         session.sipLocalAudioTrack = null;
         session.sipPeerConnection = null;
