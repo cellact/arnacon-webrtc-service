@@ -153,15 +153,43 @@ async function resolveInboundTarget(ctx) {
             reason: `No WebRTC user for (target empty, raw to='${String(payload?.to || "")}')`,
         };
     }
+    const inboundDomain = String(payload?.toDomain || "").trim().toLowerCase();
+    const domains = Array.from(new Set([
+        inboundDomain,
+        ...getDomains(helpers),
+    ].filter(Boolean)));
     const candidates = helpers.buildInboundCandidates({
         value: targetValue,
-        domains: getDomains(helpers),
+        domains,
     });
     for (const ensName of candidates) {
+        helpers.logRouteDecision?.({
+            serviceId: "secnum",
+            route: "inbound-webrtc-check",
+            targetValue,
+            toDomain: inboundDomain || null,
+            ensName,
+        });
         const wallet = await resolveEnsWallet(helpers, ensName);
         if (wallet) {
+            helpers.logRouteDecision?.({
+                serviceId: "secnum",
+                route: "inbound-webrtc-found",
+                targetValue,
+                toDomain: inboundDomain || null,
+                ensName,
+                wallet,
+            });
             return { route: "webrtc", wallet, ensName, targetValue };
         }
+        helpers.logRouteDecision?.({
+            serviceId: "secnum",
+            route: "inbound-webrtc-miss",
+            targetValue,
+            toDomain: inboundDomain || null,
+            ensName,
+            wallet: null,
+        });
     }
     return { route: "reject", reason: `No WebRTC user for ${targetValue}` };
 }
