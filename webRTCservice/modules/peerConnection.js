@@ -139,65 +139,69 @@ function patchRouterForDynamicSsrc(pc, logger = console) {
     if (!router || router._ssrcPatchApplied) return false;
     const origRouteRtp = router.routeRtp.bind(router);
     router._rtpInCount = 0;
+    router._inboundRtpSubscribers = router._inboundRtpSubscribers || new Set();
     router._ssrcPatchApplied = true;
     router.routeRtp = (packet) => {
         router._rtpInCount++;
         const incomingSsrc = packet.header.ssrc;
         if (router.ssrcTable && router.ssrcTable[incomingSsrc]) {
             origRouteRtp(packet);
-            return;
-        }
-        const recvs = pc.getReceivers ? pc.getReceivers() : [];
-        for (const recv of recvs) {
-            const bySsrc = recv.trackBySSRC || {};
-            if (bySsrc[incomingSsrc]) break;
+        } else {
+            const recvs = pc.getReceivers ? pc.getReceivers() : [];
+            for (const recv of recvs) {
+                const bySsrc = recv.trackBySSRC || {};
+                if (bySsrc[incomingSsrc]) break;
 
-            const tracks = recv.tracks || [];
-            if (tracks.length === 1) {
-                // Keep using the already-created track object so existing RTP subscriptions survive.
-                const existingTrack = tracks[0];
-                const oldSsrc = existingTrack.ssrc;
-                const oldNum = Number(oldSsrc);
-                const canLateBind =
-                    !Number.isFinite(oldNum) ||
-                    oldNum <= 0 ||
-                    oldNum === 1;
-                if (!canLateBind) {
-                    continue;
-                }
-                if (oldSsrc !== incomingSsrc) {
-                    if (router.ssrcTable) {
-                        delete router.ssrcTable[oldSsrc];
-                        router.ssrcTable[incomingSsrc] = recv;
+                const tracks = recv.tracks || [];
+                if (tracks.length === 1) {
+                    // Keep using the already-created track object so existing RTP subscriptions survive.
+                    const existingTrack = tracks[0];
+                    const oldSsrc = existingTrack.ssrc;
+                    const oldNum = Number(oldSsrc);
+                    const canLateBind =
+                        !Number.isFinite(oldNum) ||
+                        oldNum <= 0 ||
+                        oldNum === 1;
+                    if (!canLateBind) {
+                        continue;
                     }
-                    if (recv.trackBySSRC && recv.trackBySSRC[oldSsrc] === existingTrack) {
-                        delete recv.trackBySSRC[oldSsrc];
+                    if (oldSsrc !== incomingSsrc) {
+                        if (router.ssrcTable) {
+                            delete router.ssrcTable[oldSsrc];
+                            router.ssrcTable[incomingSsrc] = recv;
+                        }
+                        if (recv.trackBySSRC && recv.trackBySSRC[oldSsrc] === existingTrack) {
+                            delete recv.trackBySSRC[oldSsrc];
+                        }
+                        existingTrack.ssrc = incomingSsrc;
+                        if (recv.trackBySSRC) recv.trackBySSRC[incomingSsrc] = existingTrack;
+                        logger.log(`[SSRC-FIX] Rebound existing track: ssrc ${oldSsrc} -> ${incomingSsrc}`);
                     }
-                    existingTrack.ssrc = incomingSsrc;
-                    if (recv.trackBySSRC) recv.trackBySSRC[incomingSsrc] = existingTrack;
-                    logger.log(`[SSRC-FIX] Rebound existing track: ssrc ${oldSsrc} -> ${incomingSsrc}`);
-                }
-                break;
-            }
-
-            // Legacy placeholder behavior: receivers that start with SSRC=1.
-            if (tracks.length > 0 && tracks.every((t) => t.ssrc === 1)) {
-                const existingTrack = recv.trackBySSRC?.[1];
-                if (existingTrack) {
-                    const oldSsrc = 1;
-                    if (router.ssrcTable) {
-                        delete router.ssrcTable[oldSsrc];
-                        router.ssrcTable[incomingSsrc] = recv;
-                    }
-                    existingTrack.ssrc = incomingSsrc;
-                    delete recv.trackBySSRC[oldSsrc];
-                    recv.trackBySSRC[incomingSsrc] = existingTrack;
-                    logger.log(`[SSRC-FIX] Rebound existing track: ssrc ${oldSsrc} -> ${incomingSsrc}`);
                     break;
                 }
+
+                // Legacy placeholder behavior: receivers that start with SSRC=1.
+                if (tracks.length > 0 && tracks.every((t) => t.ssrc === 1)) {
+                    const existingTrack = recv.trackBySSRC?.[1];
+                    if (existingTrack) {
+                        const oldSsrc = 1;
+                        if (router.ssrcTable) {
+                            delete router.ssrcTable[oldSsrc];
+                            router.ssrcTable[incomingSsrc] = recv;
+                        }
+                        existingTrack.ssrc = incomingSsrc;
+                        delete recv.trackBySSRC[oldSsrc];
+                        recv.trackBySSRC[incomingSsrc] = existingTrack;
+                        logger.log(`[SSRC-FIX] Rebound existing track: ssrc ${oldSsrc} -> ${incomingSsrc}`);
+                        break;
+                    }
+                }
             }
+            origRouteRtp(packet);
         }
-        origRouteRtp(packet);
+        for (const fn of router._inboundRtpSubscribers || []) {
+            try { fn(packet); } catch (_) {}
+        }
     };
     logger.log("[SSRC-FIX] Router patched for late SSRC binding");
     return true;
@@ -306,6 +310,9 @@ function createPeerConnectionFactory({
         let clientToKamTranscoded = 0;
         let kamToClientTranscoded = 0;
         let kamUnsubscribe = null;
+        let kamTrackPackets = 0;
+        let kamRouterFallbackPackets = 0;
+        let lastKamTrackRtpAt = 0;
 
         if (pc1 && session.sipLocalAudioTrack) {
             for (const t of pc1.getTransceivers()) {
@@ -329,6 +336,8 @@ function createPeerConnectionFactory({
 
         const kamHandler = (rtp) => {
             if (!session.mediaRelayActive) return;
+            kamTrackPackets++;
+            lastKamTrackRtpAt = Date.now();
             if (!Number.isFinite(sipPayloadType)) sipPayloadType = Number(rtp?.header?.payloadType);
             if (!kamSourceNotified && session.localAudioTrack) {
                 kamSourceNotified = true;
@@ -343,6 +352,27 @@ function createPeerConnectionFactory({
                 if (outgoing !== rtp) kamToClientTranscoded++;
                 session.localAudioTrack.writeRtp(outgoing);
             }
+        };
+
+        const kamRouterFallbackHandler = (rtp) => {
+            if (!session.mediaRelayActive || !session.localAudioTrack || !rtp?.header) return;
+            // werift can keep counting inbound RTP while a receiver track subscription
+            // stops firing after late SSRC binding. Use router packets only when the
+            // normal track path has gone quiet, to avoid duplicate audio.
+            if (lastKamTrackRtpAt && Date.now() - lastKamTrackRtpAt < 500) return;
+            if (!Number.isFinite(sipPayloadType)) sipPayloadType = Number(rtp.header.payloadType);
+            if (!kamSourceNotified) {
+                kamSourceNotified = true;
+                session.localAudioTrack.onSourceChanged.execute({
+                    sequenceNumber: rtp.header.sequenceNumber,
+                    timestamp: rtp.header.timestamp,
+                });
+            }
+            const outgoing = adaptG711RtpPacket(rtp, clientPayloadType);
+            if (outgoing !== rtp) kamToClientTranscoded++;
+            kamRouterFallbackPackets++;
+            kamToClient++;
+            session.localAudioTrack.writeRtp(outgoing);
         };
 
         const subscribeKamTrack = (track) => {
@@ -373,6 +403,12 @@ function createPeerConnectionFactory({
             pc2.onTrack.subscribe((track) => {
                 if (track.kind === "audio") subscribeKamTrack(track);
             });
+            if (pc2.router?._inboundRtpSubscribers) {
+                pc2.router._inboundRtpSubscribers.add(kamRouterFallbackHandler);
+                session._relayDisposers.push(() => {
+                    try { pc2.router._inboundRtpSubscribers.delete(kamRouterFallbackHandler); } catch (_) {}
+                });
+            }
         }
         // Temporary diagnostics: verify whether RTP is flowing both directions.
         // Remove after media-path issue is resolved.
@@ -383,6 +419,7 @@ function createPeerConnectionFactory({
                 `[${sessionId}] RTP-STATS pc1_in=${pc1RtpIn} pc2_in=${pc2RtpIn} client_to_kam=${clientToKam} kam_to_client=${kamToClient} ` +
                 `client_pt=${clientPayloadType ?? "?"} sip_pt=${sipPayloadType ?? "?"} ` +
                 `c2k_xcode=${clientToKamTranscoded} k2c_xcode=${kamToClientTranscoded} ` +
+                `kam_track=${kamTrackPackets} kam_fallback=${kamRouterFallbackPackets} ` +
                 `pc2_present=${!!pc2} kam_pipe_active=${kamPipeActive}`
             );
         }, 2000);

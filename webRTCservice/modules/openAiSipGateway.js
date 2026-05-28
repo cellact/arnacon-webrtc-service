@@ -378,6 +378,7 @@ function createOpenAiSipGateway({
                 sessionId: call.sessionId,
                 callId: call.callId,
                 openAiCallId: call.openAiCallId || null,
+                mode: call.mode || "default",
                 phase: session.phase || null,
                 established: Boolean(call.established),
             };

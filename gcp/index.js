@@ -141,7 +141,7 @@ async function handleRealtimeCallIncoming(event) {
     });
     return;
   }
-  const mode = getOpenAiModeFromSipHeaders(preAccept.sipHeaders || {});
+  const mode = preAccept.mode || getOpenAiModeFromSipHeaders(preAccept.sipHeaders || {});
   await acceptRealtimeCall(callId, buildRealtimeAcceptConfig({ mode }));
   startRealtimeCallMonitor(callId, {
     eventId: event.id,
@@ -206,6 +206,7 @@ async function authorizeRealtimeCallWithWebRtcService(event, sipHeaders) {
       allowed: result.allowed === true,
       reason: result.reason || (result.allowed === true ? "webrtc-authorized" : "webrtc-denied"),
       sessionId: result.sessionId || null,
+      mode: result.mode || null,
     };
   } catch (error) {
     return {
