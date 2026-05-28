@@ -1357,6 +1357,9 @@ async function startOpenAiSalesAgentFlow({
         route: destination.route,
         startedAt: Date.now(),
     };
+    salesSession.lastRingOfferPayload = {
+        callNonce: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
+    };
 
     let targetSessionId = salesSessionId;
     let mediaSource = "sbc";
