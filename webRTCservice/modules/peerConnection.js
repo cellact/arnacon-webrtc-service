@@ -1,6 +1,139 @@
 "use strict";
 const sdpUtils = require("./sdpUtils");
 
+const RTP_PT_PCMU = 0;
+const RTP_PT_PCMA = 8;
+
+function parsePrimaryAudioPayloadType(sdp) {
+    const audioSection = String(sdp || "").match(/m=audio[^\r\n]*[\s\S]*?(?=\r?\nm=|$)/m)?.[0] || "";
+    const mLine = audioSection.match(/^m=audio[^\r\n]*/m)?.[0] || "";
+    const pt = Number(mLine.split(/\s+/).slice(3)[0]);
+    return Number.isFinite(pt) ? pt : null;
+}
+
+function payloadTypeFromCodecPolicy(policy) {
+    if (policy === "pcmu") return RTP_PT_PCMU;
+    if (policy === "pcma") return RTP_PT_PCMA;
+    return null;
+}
+
+function deriveClientPayloadType(session) {
+    const fromPolicy = payloadTypeFromCodecPolicy(session?.mediaCodecPolicy);
+    if (fromPolicy !== null) return fromPolicy;
+    return parsePrimaryAudioPayloadType(session?.peerConnection?.localDescription?.sdp);
+}
+
+function deriveSipPayloadType(pc2) {
+    return (
+        parsePrimaryAudioPayloadType(pc2?.remoteDescription?.sdp) ??
+        parsePrimaryAudioPayloadType(pc2?.localDescription?.sdp)
+    );
+}
+
+function muLawToLinear(value) {
+    const u = (~value) & 0xff;
+    let sample = ((u & 0x0f) << 3) + 0x84;
+    sample <<= (u & 0x70) >> 4;
+    return (u & 0x80) ? (0x84 - sample) : (sample - 0x84);
+}
+
+function linearToMuLaw(sample) {
+    const BIAS = 0x84;
+    const CLIP = 32635;
+    let sign = (sample >> 8) & 0x80;
+    if (sign) sample = -sample;
+    if (sample > CLIP) sample = CLIP;
+    sample += BIAS;
+
+    let exponent = 7;
+    for (let mask = 0x4000; exponent > 0 && (sample & mask) === 0; mask >>= 1) {
+        exponent--;
+    }
+    const mantissa = (sample >> (exponent + 3)) & 0x0f;
+    return (~(sign | (exponent << 4) | mantissa)) & 0xff;
+}
+
+function aLawToLinear(value) {
+    const a = value ^ 0x55;
+    let sample = (a & 0x0f) << 4;
+    const segment = (a & 0x70) >> 4;
+    if (segment === 0) {
+        sample += 8;
+    } else if (segment === 1) {
+        sample += 0x108;
+    } else {
+        sample += 0x108;
+        sample <<= segment - 1;
+    }
+    return (a & 0x80) ? sample : -sample;
+}
+
+function linearToALaw(sample) {
+    const SEG_END = [0x1f, 0x3f, 0x7f, 0xff, 0x1ff, 0x3ff, 0x7ff, 0xfff];
+    let mask;
+    let pcm = sample >> 3;
+    if (pcm >= 0) {
+        mask = 0xd5;
+    } else {
+        mask = 0x55;
+        pcm = -pcm - 1;
+        if (pcm < 0) pcm = 0;
+    }
+
+    let segment = 0;
+    while (segment < SEG_END.length && pcm > SEG_END[segment]) segment++;
+    if (segment >= SEG_END.length) return 0x7f ^ mask;
+
+    let encoded = segment << 4;
+    if (segment < 2) encoded |= (pcm >> 1) & 0x0f;
+    else encoded |= (pcm >> segment) & 0x0f;
+    return encoded ^ mask;
+}
+
+function transcodeG711Payload(payload, fromPt, toPt) {
+    if (!payload || fromPt === toPt) return payload;
+    if (!((fromPt === RTP_PT_PCMU && toPt === RTP_PT_PCMA) || (fromPt === RTP_PT_PCMA && toPt === RTP_PT_PCMU))) {
+        return payload;
+    }
+
+    const source = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
+    const converted = Buffer.allocUnsafe(source.length);
+    if (fromPt === RTP_PT_PCMU) {
+        for (let i = 0; i < source.length; i++) {
+            converted[i] = linearToALaw(muLawToLinear(source[i]));
+        }
+    } else {
+        for (let i = 0; i < source.length; i++) {
+            converted[i] = linearToMuLaw(aLawToLinear(source[i]));
+        }
+    }
+    return converted;
+}
+
+function adaptG711RtpPacket(rtp, targetPayloadType) {
+    if (targetPayloadType === null || targetPayloadType === undefined) return rtp;
+    const sourcePayloadType = Number(rtp?.header?.payloadType);
+    const targetPt = Number(targetPayloadType);
+    if (!rtp || !rtp.header || !Number.isFinite(sourcePayloadType) || !Number.isFinite(targetPt)) {
+        return rtp;
+    }
+    if (sourcePayloadType === targetPt) return rtp;
+
+    const convertedPayload = transcodeG711Payload(rtp.payload, sourcePayloadType, targetPt);
+    if (convertedPayload === rtp.payload && !(
+        (sourcePayloadType === RTP_PT_PCMU && targetPt === RTP_PT_PCMA) ||
+        (sourcePayloadType === RTP_PT_PCMA && targetPt === RTP_PT_PCMU)
+    )) {
+        return rtp;
+    }
+
+    const packet = Object.assign(Object.create(Object.getPrototypeOf(rtp)), rtp);
+    packet.header = Object.assign(Object.create(Object.getPrototypeOf(rtp.header)), rtp.header);
+    packet.header.payloadType = targetPt;
+    packet.payload = convertedPayload;
+    return packet;
+}
+
 function patchRouterForDynamicSsrc(pc, logger = console) {
     const router = pc?.router;
     if (!router || router._ssrcPatchApplied) return false;
@@ -163,11 +296,15 @@ function createPeerConnectionFactory({
         session.mediaRelayActive = true;
         const pc2 = session.sipPeerConnection;
         const pc1 = session.peerConnection;
+        const clientPayloadType = deriveClientPayloadType(session);
+        let sipPayloadType = deriveSipPayloadType(pc2);
         if (pc1?.router) pc1.router._rtpInCount = 0;
         let kamPipeActive = false;
         let kamSourceNotified = false;
         let clientToKam = 0;
         let kamToClient = 0;
+        let clientToKamTranscoded = 0;
+        let kamToClientTranscoded = 0;
         let kamUnsubscribe = null;
 
         if (pc1 && session.sipLocalAudioTrack) {
@@ -178,7 +315,9 @@ function createPeerConnectionFactory({
                             const { unSubscribe } = track.onReceiveRtp.subscribe((rtp) => {
                                 if (!session.mediaRelayActive) return;
                                 clientToKam++;
-                                session.sipLocalAudioTrack.writeRtp(rtp);
+                                const outgoing = adaptG711RtpPacket(rtp, sipPayloadType);
+                                if (outgoing !== rtp) clientToKamTranscoded++;
+                                session.sipLocalAudioTrack.writeRtp(outgoing);
                             });
                             session._relayDisposers.push(unSubscribe);
                         }
@@ -190,6 +329,7 @@ function createPeerConnectionFactory({
 
         const kamHandler = (rtp) => {
             if (!session.mediaRelayActive) return;
+            if (!Number.isFinite(sipPayloadType)) sipPayloadType = Number(rtp?.header?.payloadType);
             if (!kamSourceNotified && session.localAudioTrack) {
                 kamSourceNotified = true;
                 session.localAudioTrack.onSourceChanged.execute({
@@ -198,7 +338,11 @@ function createPeerConnectionFactory({
                 });
             }
             kamToClient++;
-            if (session.localAudioTrack) session.localAudioTrack.writeRtp(rtp);
+            if (session.localAudioTrack) {
+                const outgoing = adaptG711RtpPacket(rtp, clientPayloadType);
+                if (outgoing !== rtp) kamToClientTranscoded++;
+                session.localAudioTrack.writeRtp(outgoing);
+            }
         };
 
         const subscribeKamTrack = (track) => {
@@ -237,10 +381,15 @@ function createPeerConnectionFactory({
             const pc2RtpIn = pc2?.router?._rtpInCount || 0;
             logger.log(
                 `[${sessionId}] RTP-STATS pc1_in=${pc1RtpIn} pc2_in=${pc2RtpIn} client_to_kam=${clientToKam} kam_to_client=${kamToClient} ` +
+                `client_pt=${clientPayloadType ?? "?"} sip_pt=${sipPayloadType ?? "?"} ` +
+                `c2k_xcode=${clientToKamTranscoded} k2c_xcode=${kamToClientTranscoded} ` +
                 `pc2_present=${!!pc2} kam_pipe_active=${kamPipeActive}`
             );
         }, 2000);
-        logger.log(`[${sessionId}] Media relay active`);
+        logger.log(
+            `[${sessionId}] Media relay active ` +
+            `client_pt=${clientPayloadType ?? "?"} sip_pt=${sipPayloadType ?? "?"}`
+        );
     }
 
     function stopMediaRelay(sessionId) {
