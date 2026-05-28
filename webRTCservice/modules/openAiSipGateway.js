@@ -218,6 +218,7 @@ function createOpenAiSipGateway({
     sendDataChannelMessage,
     stopMediaRelay,
     finishMinuteCounter = null,
+    onTransferOpenAiCall = null,
     config = {},
     logger = console,
 }) {
@@ -235,7 +236,7 @@ function createOpenAiSipGateway({
     const authPort = Number(config.authPort || 2005);
     const authBindIp = config.authBindIp || "0.0.0.0";
     const authPath = config.authPath || "/authorize-openai-call";
-    const authToken = config.authToken || "";
+    const transferPath = config.transferPath || "/transfer-openai-call";
     const authUseHttps = config.authUseHttps !== false;
     let authServer = null;
 
@@ -334,6 +335,7 @@ function createOpenAiSipGateway({
         if (!requestedCallId) {
             return { allowed: false, reason: "missing SIP Call-ID" };
         }
+        const openAiCallId = body.openAiCallId || body.callId || body.call_id || null;
 
         for (const call of activeCalls.values()) {
             if (call.callId !== requestedCallId) continue;
@@ -342,18 +344,71 @@ function createOpenAiSipGateway({
             if (!session) {
                 return { allowed: false, reason: "matched OpenAI SIP call has no active WebRTC session" };
             }
+            if (openAiCallId) call.openAiCallId = openAiCallId;
 
             return {
                 allowed: true,
                 reason: "matched active OpenAI SIP call",
                 sessionId: call.sessionId,
                 callId: call.callId,
+                openAiCallId: call.openAiCallId || null,
                 phase: session.phase || null,
                 established: Boolean(call.established),
             };
         }
 
         return { allowed: false, reason: "no active OpenAI SIP call matched SIP Call-ID" };
+    }
+
+    function findActiveOpenAiCall(body = {}) {
+        const sessionId = String(body.sessionId || "").trim();
+        if (sessionId && activeCalls.has(sessionId)) {
+            return activeCalls.get(sessionId);
+        }
+
+        const sipCallId = String(body.sipCallId || body.sip_call_id || "").trim();
+        const openAiCallId = String(body.openAiCallId || body.callId || body.call_id || "").trim();
+        for (const call of activeCalls.values()) {
+            if (sipCallId && call.callId === sipCallId) return call;
+            if (openAiCallId && call.openAiCallId === openAiCallId) return call;
+        }
+        return null;
+    }
+
+    async function transferOpenAiCall(body = {}) {
+        if (typeof onTransferOpenAiCall !== "function") {
+            throw Object.assign(new Error("OpenAI call transfer is not configured"), { statusCode: 501 });
+        }
+        const call = findActiveOpenAiCall(body);
+        if (!call) {
+            throw Object.assign(new Error("No active OpenAI SIP call matched transfer request"), { statusCode: 404 });
+        }
+        const target = String(body.target || body.number || "").trim();
+        if (!target) {
+            throw Object.assign(new Error("transfer target is required"), { statusCode: 400 });
+        }
+
+        const session = sessions.get(call.sessionId);
+        if (!session) {
+            throw Object.assign(new Error("matched OpenAI SIP call has no active WebRTC session"), { statusCode: 404 });
+        }
+
+        const result = await onTransferOpenAiCall({
+            sessionId: call.sessionId,
+            sipCallId: call.callId,
+            openAiCallId: call.openAiCallId || body.openAiCallId || body.callId || null,
+            target,
+            label: body.label || null,
+            reason: body.reason || "openai-transfer-call",
+        });
+        return {
+            ok: true,
+            sessionId: call.sessionId,
+            sipCallId: call.callId,
+            openAiCallId: call.openAiCallId || null,
+            target,
+            ...result,
+        };
     }
 
     function startAuthServer() {
@@ -367,22 +422,22 @@ function createOpenAiSipGateway({
                 return;
             }
 
-            const allowedPaths = new Set([authPath, "/openai-call-auth"]);
+            const allowedPaths = new Set([authPath, "/openai-call-auth", transferPath]);
             if (req.method !== "POST" || !allowedPaths.has(url.pathname)) {
                 sendJson(res, 404, { allowed: false, reason: "not found" });
                 return;
             }
-            if (authToken && req.headers.authorization !== `Bearer ${authToken}`) {
-                sendJson(res, 401, { allowed: false, reason: "unauthorized" });
-                return;
-            }
-
             try {
                 const body = await readJsonRequest(req);
+                if (url.pathname === transferPath) {
+                    const result = await transferOpenAiCall(body);
+                    sendJson(res, 200, result);
+                    return;
+                }
                 const decision = authorizeIncomingOpenAiCall(body);
                 sendJson(res, decision.allowed ? 200 : 403, decision);
             } catch (err) {
-                sendJson(res, 400, { allowed: false, reason: err.message });
+                sendJson(res, err.statusCode || 400, { allowed: false, reason: err.message });
             }
         });
 
@@ -520,6 +575,7 @@ function createOpenAiSipGateway({
             inviteCseq: 1,
             cseq: 1,
             callId,
+            openAiCallId: null,
             fromHeader: `<sip:${callerUser}@${kamailioDomain}>;tag=${fromTag}`,
             toHeader: `<sip:${targetUser}@${kamailioDomain}>`,
             contactHeader: `<sip:${sipUser}@${contactHost}:${localSipPort}>`,
@@ -629,6 +685,7 @@ function createOpenAiSipGateway({
         openOpenAiSipSession,
         closeOpenAiSipSession,
         authorizeIncomingOpenAiCall,
+        transferOpenAiCall,
         startAuthServer,
         stopAuthServer,
     };

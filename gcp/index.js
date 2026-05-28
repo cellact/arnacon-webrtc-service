@@ -5,6 +5,33 @@ const WebSocket = require("ws");
 const EVENT_HANDLERS = {
   "realtime.call.incoming": handleRealtimeCallIncoming,
 };
+const activeRealtimeCalls = new Map();
+
+const TRANSFER_CALL_TOOL = {
+  type: "function",
+  name: "transfer_call",
+  description:
+    "Transfer the active phone call to a destination phone number or Arnacon/secnum target after the user asks to be redirected.",
+  parameters: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      target: {
+        type: "string",
+        description: "Destination number or routable target, preferably in international format such as +97235222222.",
+      },
+      label: {
+        type: "string",
+        description: "Human readable destination name, such as Hilton Tel Aviv.",
+      },
+      reason: {
+        type: "string",
+        description: "Short reason for the transfer request.",
+      },
+    },
+    required: ["target"],
+  },
+};
 
 functions.http("helloHttp", async (req, res) => {
   if (req.method !== "POST") {
@@ -105,7 +132,11 @@ async function handleRealtimeCallIncoming(event) {
     return;
   }
   await acceptRealtimeCall(callId, buildRealtimeAcceptConfig(event));
-  startRealtimeCallMonitor(callId);
+  startRealtimeCallMonitor(callId, {
+    eventId: event.id,
+    sipHeaders: preAccept.sipHeaders || {},
+    sessionId: preAccept.sessionId || null,
+  });
   await afterAcceptRealtimeCall(event);
 }
 
@@ -117,7 +148,11 @@ async function beforeAcceptRealtimeCall(event) {
     sipHeaders,
   });
 
-  return authorizeRealtimeCallWithWebRtcService(event, sipHeaders);
+  const decision = await authorizeRealtimeCallWithWebRtcService(event, sipHeaders);
+  return {
+    ...decision,
+    sipHeaders,
+  };
 }
 
 async function authorizeRealtimeCallWithWebRtcService(event, sipHeaders) {
@@ -136,9 +171,6 @@ async function authorizeRealtimeCallWithWebRtcService(event, sipHeaders) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(process.env.WEBRTC_CALL_AUTH_TOKEN
-          ? { Authorization: `Bearer ${process.env.WEBRTC_CALL_AUTH_TOKEN}` }
-          : {}),
       },
       signal: controller.signal,
       body: JSON.stringify({
@@ -179,12 +211,14 @@ function buildRealtimeAcceptConfig() {
         model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime",
     instructions:
       process.env.OPENAI_REALTIME_INSTRUCTIONS ||
-      "You are a helpful phone assistant for Arnacon.",
+      "You are a helpful phone assistant for Arnacon. If the caller asks to be redirected or transferred to a business, find the destination number yourself and call transfer_call with the number you found.",
         audio: {
             output: {
                 voice: process.env.OPENAI_REALTIME_VOICE || "alloy",
             },
         },
+    tools: [TRANSFER_CALL_TOOL],
+    tool_choice: "auto",
   };
 }
 
@@ -207,7 +241,7 @@ async function acceptRealtimeCall(callId, acceptConfig) {
   }
 }
 
-function startRealtimeCallMonitor(callId) {
+function startRealtimeCallMonitor(callId, context = {}) {
   const websocket = new WebSocket(
     `wss://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`,
     {
@@ -217,9 +251,23 @@ function startRealtimeCallMonitor(callId) {
       },
     },
   );
+  const state = {
+    callId,
+    eventId: context.eventId || null,
+    sessionId: context.sessionId || null,
+    sipHeaders: context.sipHeaders || {},
+    sipCallId: context.sipHeaders?.["call-id"] || null,
+    processedToolCalls: new Set(),
+    websocket,
+  };
+  activeRealtimeCalls.set(callId, state);
 
   websocket.on("open", () => {
-    console.log("OpenAI realtime monitor connected:", { callId });
+    console.log("OpenAI realtime monitor connected:", {
+      callId,
+      sipCallId: state.sipCallId,
+      sessionId: state.sessionId,
+    });
     websocket.send(
       JSON.stringify({
         type: "response.create",
@@ -231,7 +279,12 @@ function startRealtimeCallMonitor(callId) {
   });
 
   websocket.on("message", (data) => {
-    console.log("OpenAI realtime event:", data.toString());
+    handleRealtimeMonitorMessage(state, data).catch((error) => {
+      console.error("OpenAI realtime monitor message failed:", {
+        callId,
+        error: error.message,
+      });
+    });
   });
 
   websocket.on("error", (error) => {
@@ -242,12 +295,155 @@ function startRealtimeCallMonitor(callId) {
   });
 
   websocket.on("close", (code, reason) => {
+    activeRealtimeCalls.delete(callId);
     console.log("OpenAI realtime monitor closed:", {
       callId,
       code,
       reason: reason.toString(),
     });
   });
+}
+
+async function handleRealtimeMonitorMessage(state, data) {
+  const raw = data.toString();
+  console.log("OpenAI realtime event:", raw);
+  let event;
+  try {
+    event = JSON.parse(raw);
+  } catch {
+    return;
+  }
+
+  const toolCall = extractTransferToolCall(event);
+  if (!toolCall) return;
+
+  const id = toolCall.callId || toolCall.itemId || `${event.type}:${Date.now()}`;
+  if (state.processedToolCalls.has(id)) return;
+  state.processedToolCalls.add(id);
+
+  let args;
+  try {
+    args = JSON.parse(toolCall.arguments || "{}");
+  } catch (error) {
+    await sendTransferToolResult(state, toolCall, {
+      ok: false,
+      error: `Invalid transfer_call arguments: ${error.message}`,
+    });
+    return;
+  }
+
+  try {
+    const result = await forwardTransferCallToWebRtc(state, args);
+    await sendTransferToolResult(state, toolCall, {
+      ok: true,
+      ...result,
+    });
+  } catch (error) {
+    await sendTransferToolResult(state, toolCall, {
+      ok: false,
+      error: error.message,
+    });
+  }
+}
+
+function extractTransferToolCall(event) {
+  const candidates = [
+    event?.item,
+    event?.response?.output?.find?.((item) => item?.type === "function_call"),
+    event,
+  ].filter(Boolean);
+
+  for (const item of candidates) {
+    const name = item.name || item.function?.name;
+    if (name !== "transfer_call") continue;
+    const args =
+      item.arguments ||
+      item.function?.arguments ||
+      event.arguments ||
+      "";
+    return {
+      callId: item.call_id || item.callId || event.call_id || event.callId || null,
+      itemId: item.id || event.item_id || event.itemId || null,
+      arguments: args,
+    };
+  }
+
+  if (event?.type === "response.function_call_arguments.done" && event?.name === "transfer_call") {
+    return {
+      callId: event.call_id || null,
+      itemId: event.item_id || null,
+      arguments: event.arguments || "",
+    };
+  }
+
+  return null;
+}
+
+async function forwardTransferCallToWebRtc(state, args) {
+  const target = String(args.target || args.number || "").trim();
+  if (!target) throw new Error("transfer_call target is required");
+
+  const transferUrl =
+    process.env.WEBRTC_CALL_TRANSFER_URL ||
+    "https://test2.cellact.nl:2005/transfer-openai-call";
+  const controller = new AbortController();
+  const timeoutMs = Number(process.env.WEBRTC_CALL_TRANSFER_TIMEOUT_MS || 8000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(transferUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        openAiCallId: state.callId,
+        sipCallId: state.sipCallId,
+        sessionId: state.sessionId,
+        target,
+        label: args.label || null,
+        reason: args.reason || "openai-transfer-call",
+      }),
+    });
+
+    const text = await response.text();
+    let body = {};
+    try {
+      body = text ? JSON.parse(text) : {};
+    } catch {
+      body = { message: text };
+    }
+    if (!response.ok) {
+      throw new Error(`WebRTC transfer failed (${response.status}): ${text.slice(0, 300)}`);
+    }
+    return body;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function sendTransferToolResult(state, toolCall, result) {
+  if (!state.websocket || state.websocket.readyState !== WebSocket.OPEN) return;
+  const output = JSON.stringify(result);
+  if (toolCall.callId) {
+    state.websocket.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: toolCall.callId,
+        output,
+      },
+    }));
+  }
+  state.websocket.send(JSON.stringify({
+    type: "response.create",
+    response: {
+      instructions: result.ok
+        ? "Tell the caller the transfer is being connected now."
+        : `Tell the caller the transfer failed: ${result.error || "unknown error"}`,
+    },
+  }));
 }
 
 async function afterAcceptRealtimeCall(event) {

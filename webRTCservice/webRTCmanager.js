@@ -289,7 +289,7 @@ const OPENAI_SIP_CONFIG = {
     authPort: Number(process.env.OPENAI_SIP_AUTH_PORT || 2005),
     authBindIp: process.env.OPENAI_SIP_AUTH_BIND_IP || "0.0.0.0",
     authPath: process.env.OPENAI_SIP_AUTH_PATH || "/authorize-openai-call",
-    authToken: process.env.WEBRTC_CALL_AUTH_TOKEN || "",
+    transferPath: process.env.OPENAI_SIP_TRANSFER_PATH || "/transfer-openai-call",
     authUseHttps: process.env.OPENAI_SIP_AUTH_HTTPS !== "false",
     authTlsCertPath: process.env.OPENAI_SIP_AUTH_TLS_CERT || `${config.tlsCertPath}/fullchain.pem`,
     authTlsKeyPath: process.env.OPENAI_SIP_AUTH_TLS_KEY || `${config.tlsCertPath}/privkey.pem`,
@@ -416,6 +416,7 @@ const openAiSipGatewayApi = createOpenAiSipGateway({
     sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
     stopMediaRelay: (...args) => stopMediaRelay(...args),
     finishMinuteCounter: (session) => minuteCounterApi.finish(session),
+    onTransferOpenAiCall: (...args) => transferOpenAiCallRequest(...args),
     config: OPENAI_SIP_CONFIG,
     logger: console,
 });
@@ -1073,6 +1074,103 @@ async function redirectIvrSessionToWebrtc(sessionId, targetEns, { reason = "ivr-
     } finally {
         ivrRuntimeApi.stopIvr(sessionId, `redirect:${reason}`);
         await ivrAudioPlaybackApi.stopSessionPlayback(sessionId, `redirect:${reason}`);
+    }
+}
+
+function normalizeOpenAiTransferTarget(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const withoutSip = raw.replace(/^sip:/i, "").split(";")[0].split("@")[0].trim();
+    if (withoutSip.toLowerCase().endsWith(".global")) return withoutSip.toLowerCase();
+
+    let number = withoutSip.replace(/[^\d+]/g, "");
+    if (number.startsWith("+")) number = number.slice(1);
+    if (number.startsWith("00") && number.length > 4) number = number.slice(2);
+    return number;
+}
+
+async function transferOpenAiCallRequest({
+    sessionId,
+    sipCallId = null,
+    openAiCallId = null,
+    target,
+    label = null,
+    reason = "openai-transfer-call",
+} = {}) {
+    const session = sessions.get(sessionId);
+    if (!session || !session.peerConnection) {
+        throw Object.assign(new Error("transfer session not found"), { statusCode: 404 });
+    }
+    if (session.openAiTransferInProgress) {
+        throw Object.assign(new Error("transfer already in progress"), { statusCode: 409 });
+    }
+
+    const normalizedTarget = normalizeOpenAiTransferTarget(target);
+    if (!normalizedTarget || (!normalizedTarget.endsWith(".global") && !/^\d{3,18}$/.test(normalizedTarget))) {
+        throw Object.assign(new Error(`invalid transfer target: ${target}`), { statusCode: 400 });
+    }
+
+    const serviceId = session.serviceId || "secnum";
+    const parsedTo = parseAddress(normalizedTarget, serviceId);
+    const parsedFrom = parseAddress(session.callerEns, serviceId);
+    const destination = await resolveDestination(parsedTo, parsedFrom, serviceId);
+    if (!destination || destination.route === "reject") {
+        throw Object.assign(
+            new Error(destination?.reason || `transfer target rejected: ${normalizedTarget}`),
+            { statusCode: 400 },
+        );
+    }
+    if (destination.route === "openai-sip" || destination.route === "ivr") {
+        throw Object.assign(
+            new Error(`unsupported transfer route: ${destination.route}`),
+            { statusCode: 400 },
+        );
+    }
+
+    console.log(
+        `[${sessionId}] OpenAI transfer requested target=${normalizedTarget} ` +
+        `route=${destination.route} label=${label || ""} reason=${reason} ` +
+        `openAiCallId=${openAiCallId || ""} sipCallId=${sipCallId || ""}`,
+    );
+
+    session.openAiTransferInProgress = {
+        target: normalizedTarget,
+        label,
+        reason,
+        requestedAt: Date.now(),
+        openAiCallId,
+        sipCallId,
+    };
+
+    try {
+        session.phase = "in-call";
+        const routeResult = await routeCall(sessionId, session, destination, parsedFrom);
+        if (destination.route === "webrtc-multiring") {
+            bridgeApi.startPendingMultiBridge(sessionId);
+        }
+        await openAiSipGatewayApi.closeOpenAiSipSession(sessionId);
+        if (routeResult === "sbc") {
+            startMediaRelay(sessionId);
+        }
+        console.log(
+            `[${sessionId}] OpenAI transfer committed target=${normalizedTarget} ` +
+            `route=${destination.route} routeResult=${routeResult || ""}`,
+        );
+        return {
+            route: destination.route,
+            routeResult,
+            target: normalizedTarget,
+            label,
+            reason,
+        };
+    } catch (err) {
+        console.warn(
+            `[${sessionId}] OpenAI transfer failed target=${normalizedTarget} ` +
+            `route=${destination.route} err=${err.message}`,
+        );
+        throw err;
+    } finally {
+        session.openAiTransferInProgress = null;
     }
 }
 
