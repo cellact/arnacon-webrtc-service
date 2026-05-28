@@ -240,6 +240,23 @@ function createCallFlowApi({
         return null;
     }
 
+    async function answerSalesTriggerOfferInactive(sessionId, session, payload) {
+        const pc = session.peerConnection;
+        await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp, "offer"));
+        for (const t of pc.getTransceivers()) {
+            if (t.kind !== "audio") continue;
+            t.setDirection("inactive");
+            if (t.sender && typeof t.sender.replaceTrack === "function") {
+                try { await t.sender.replaceTrack(null); } catch (_) {}
+            }
+            break;
+        }
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        logSdp(sessionId, "OPENAI SALES TRIGGER INACTIVE ANSWER SDP", answer.sdp);
+        sendAnswer(sessionId, answer.sdp);
+    }
+
     function storeIvrNegotiatedAudio(session, sessionId, answerSdp) {
         session.ivrLastAnswerSdp = answerSdp;
         const ssrcMatch = answerSdp.match(/a=ssrc:(\d+)/);
@@ -289,7 +306,17 @@ function createCallFlowApi({
             ) {
                 logger.log(`[${sessionId}] OpenAI sales-agent trigger accepted`);
                 session.openAiSalesAgentTriggerHandled = true;
+                try {
+                    await answerSalesTriggerOfferInactive(sessionId, session, payload);
+                } catch (err) {
+                    logger.warn(`[${sessionId}] OpenAI sales-agent inactive answer failed: ${err.message}`);
+                }
                 sendAck(sessionId);
+                sendDataChannelMessage(sessionId, {
+                    msgType: "call",
+                    action: "reject",
+                    reason: "openai-sales-agent-triggered",
+                });
                 sendDataChannelMessage(sessionId, {
                     msgType: "call",
                     action: "end",
