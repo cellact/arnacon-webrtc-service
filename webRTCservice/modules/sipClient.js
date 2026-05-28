@@ -71,31 +71,42 @@ function createSipClient({
             sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } },
             extraHeaders,
         });
-        const sipConnection = { userAgent, registerer, inviter };
+        const sipConnection = { userAgent, registerer, inviter, inviteTimer: null, inviteDone: false };
         session.sipConnection = sipConnection;
 
         const SIP_INVITE_TIMEOUT = 30000;
         try {
             await new Promise((resolve, reject) => {
-                const timer = setTimeout(() => {
-                    try { inviter.cancel(); } catch (_) {}
-                    reject(new Error("SIP INVITE timed out (no answer from SBC)"));
+                const finish = (fn, value) => {
+                    if (sipConnection.inviteDone) return;
+                    sipConnection.inviteDone = true;
+                    if (sipConnection.inviteTimer) {
+                        clearTimeout(sipConnection.inviteTimer);
+                        sipConnection.inviteTimer = null;
+                    }
+                    fn(value);
+                };
+                sipConnection.rejectInviteWait = (err) => finish(reject, err);
+                sipConnection.inviteTimer = setTimeout(() => {
+                    if (inviter.state !== SessionState.Terminated) {
+                        try {
+                            Promise.resolve(inviter.cancel()).catch(() => {});
+                        } catch (_) {}
+                    }
+                    finish(reject, new Error("SIP INVITE timed out (no answer from SBC)"));
                 }, SIP_INVITE_TIMEOUT);
 
                 inviter.stateChange.addListener((state) => {
                     logger.log(`[${sessionId}] SIP session state: ${state}`);
                     if (state === SessionState.Established) {
-                        clearTimeout(timer);
-                        resolve();
+                        finish(resolve);
                     } else if (state === SessionState.Terminated) {
-                        clearTimeout(timer);
-                        reject(new Error("SIP call terminated before established"));
+                        finish(reject, new Error("SIP call terminated before established"));
                     }
                 });
 
                 inviter.invite().catch((err) => {
-                    clearTimeout(timer);
-                    reject(err);
+                    finish(reject, err);
                 });
             });
         } catch (err) {
@@ -205,11 +216,18 @@ function createSipClient({
     async function closeSipConnectionResources(connection) {
         if (!connection) return;
         const { userAgent, registerer, inviter, invitation } = connection;
+        if (connection.inviteTimer) {
+            clearTimeout(connection.inviteTimer);
+            connection.inviteTimer = null;
+        }
+        if (!connection.inviteDone && typeof connection.rejectInviteWait === "function") {
+            connection.rejectInviteWait(new Error("SIP call cancelled before established"));
+        }
         const sipSession = inviter || invitation;
         if (sipSession) {
             if (sipSession.state === SessionState.Established) {
                 try { await sipSession.bye(); } catch (_) {}
-            } else if (sipSession.state !== SessionState.Terminated) {
+            } else if (sipSession.state !== SessionState.Terminated && sipSession.state !== "Terminating") {
                 try {
                     if (typeof sipSession.cancel === "function") await sipSession.cancel();
                     else if (typeof sipSession.reject === "function") await sipSession.reject();

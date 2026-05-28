@@ -1154,8 +1154,6 @@ async function transferOpenAiCallRequest({
     const transferState = session.openAiTransferInProgress;
 
     try {
-        await openAiSipGatewayApi.closeOpenAiSipSession(sessionId);
-        stopMediaRelay(sessionId);
         if (isSessionEnded(session)) {
             if (session.openAiTransferInProgress === transferState) {
                 session.openAiTransferInProgress = null;
@@ -1176,15 +1174,17 @@ async function transferOpenAiCallRequest({
         session.phase = "ringing";
         console.log(
             `[${sessionId}] OpenAI transfer accepted target=${normalizedTarget} ` +
-            `route=${destination.route}; starting destination dial`,
+            `route=${destination.route}; closing OpenAI and starting destination dial`,
         );
-        runOpenAiTransferDial({
-            sessionId,
-            transferState,
-            destination,
-            parsedFrom,
-        }).catch((err) => {
-            console.warn(`[${sessionId}] OpenAI transfer dial worker crashed: ${err.message}`);
+        setImmediate(() => {
+            runOpenAiTransferDial({
+                sessionId,
+                transferState,
+                destination,
+                parsedFrom,
+            }).catch((err) => {
+                console.warn(`[${sessionId}] OpenAI transfer dial worker crashed: ${err.message}`);
+            });
         });
         return {
             status: "dialing",
@@ -1215,6 +1215,19 @@ async function runOpenAiTransferDial({
     if (!initialSession || initialSession.openAiTransferInProgress !== transferState) return;
 
     try {
+        await openAiSipGatewayApi.closeOpenAiSipSession(sessionId);
+        stopMediaRelay(sessionId);
+        if (
+            isSessionEnded(initialSession) ||
+            !initialSession.peerConnection ||
+            initialSession.openAiTransferInProgress !== transferState
+        ) {
+            console.log(
+                `[${sessionId}] OpenAI transfer cancelled before destination dial ` +
+                `target=${transferState.target} route=${destination.route}`,
+            );
+            return;
+        }
         const routeResult = await routeCall(sessionId, initialSession, destination, parsedFrom);
         const session = sessions.get(sessionId);
         if (

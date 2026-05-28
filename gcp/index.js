@@ -454,12 +454,11 @@ async function sendTransferToolResult(state, toolCall, result) {
       },
     }));
   }
+  if (result.ok) return;
   state.websocket.send(JSON.stringify({
     type: "response.create",
     response: {
-      instructions: result.ok
-        ? "Tell the caller you are transferring them now."
-        : `Tell the caller the transfer failed: ${result.error || "unknown error"}`,
+      instructions: `Tell the caller the transfer failed: ${result.error || "unknown error"}`,
     },
   }));
 }
