@@ -84,10 +84,11 @@ function createSignalingHandlers({
                 if (s && s.phase === "in-call") {
                     enqueueSignaling(sessionId, "ice-restart", () => handleIceRestart(sessionId, payload));
                 } else if (s && s.phase === "post-call" && s.callEndInProgress && !s.endCallRenegDone) {
-                    logger.log(`[${sessionId}] Treating post-call offer as end-call renegotiation`);
-                    handleEndCallRenegotiation(sessionId, payload).catch((err) => {
-                        logger.error(`[${sessionId}] Immediate post-call offer teardown failed: ${err.message}`);
-                    });
+                    logger.log(`[${sessionId}] New offer supersedes pending end-call renegotiation`);
+                    s.callEndInProgress = false;
+                    s.endCallRenegDone = false;
+                    s.phase = "connected";
+                    enqueueSignaling(sessionId, "ring-after-teardown-superseded", () => handleRing(sessionId, payload));
                 } else if (s && s.phase === "post-call") {
                     logger.log(`[${sessionId}] Ignoring signaling offer on completed post-call session`);
                 } else {
