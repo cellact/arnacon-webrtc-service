@@ -1,5 +1,3 @@
-"use strict";
-
 function createSignalingHandlers({
     sessions,
     handleEndCallRenegotiation,
