@@ -86,13 +86,19 @@ function createSignalingHandlers({
                     s.callEndInProgress = false;
                     s.endCallRenegDone = false;
                     s.phase = "connected";
-                    enqueueSignaling(sessionId, "ring-after-teardown-superseded", () => handleRing(sessionId, payload));
+                    s.signalingQueue = Promise.resolve();
+                    handleRing(sessionId, payload).catch((err) => {
+                        logger.error(`[${sessionId}] Immediate ring-after-teardown-superseded failed: ${err.message}`);
+                    });
                 } else if (s && s.phase === "post-call") {
                     logger.log(`[${sessionId}] Treating post-call offer as new ring`);
                     s.callEndInProgress = false;
                     s.endCallRenegDone = false;
                     s.phase = "connected";
-                    enqueueSignaling(sessionId, "ring-after-post-call", () => handleRing(sessionId, payload));
+                    s.signalingQueue = Promise.resolve();
+                    handleRing(sessionId, payload).catch((err) => {
+                        logger.error(`[${sessionId}] Immediate ring-after-post-call failed: ${err.message}`);
+                    });
                 } else {
                     enqueueSignaling(sessionId, "ring", () => handleRing(sessionId, payload));
                 }
