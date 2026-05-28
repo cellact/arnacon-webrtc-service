@@ -31,8 +31,12 @@ function createCallRuntimeCore({
         if (!session.localAudioTrack) {
             const localTrack = new MediaStreamTrack({ kind: "audio" });
             session.localAudioTrack = localTrack;
-            audioT.sender.registerTrack(localTrack);
             logger.log(`[${sessionId}] Created & registered localAudioTrack`);
+        } else {
+            logger.log(`[${sessionId}] Reusing localAudioTrack on existing audio transceiver`);
+        }
+        if (audioT.sender && typeof audioT.sender.registerTrack === "function") {
+            audioT.sender.registerTrack(session.localAudioTrack);
         }
         audioT.setDirection("sendrecv");
         audioT.offerDirection = "sendrecv";
