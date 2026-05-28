@@ -51,7 +51,13 @@ function createSignalingHandlers({
             const payload = msg.payload;
 
             if (action === "end-call" && payload) {
-                if (sess && sess.phase === "ringing") {
+                if (
+                    sess &&
+                    (
+                        sess.phase === "ringing" ||
+                        (sess.phase === "post-call" && sess.callEndInProgress && !sess.endCallRenegDone)
+                    )
+                ) {
                     handleEndCallRenegotiation(sessionId, payload).catch((err) => {
                         logger.error(`[${sessionId}] Immediate end-call failed: ${err.message}`);
                     });
@@ -77,8 +83,13 @@ function createSignalingHandlers({
                 const s = sessions.get(sessionId);
                 if (s && s.phase === "in-call") {
                     enqueueSignaling(sessionId, "ice-restart", () => handleIceRestart(sessionId, payload));
+                } else if (s && s.phase === "post-call" && s.callEndInProgress && !s.endCallRenegDone) {
+                    logger.log(`[${sessionId}] Treating post-call offer as end-call renegotiation`);
+                    handleEndCallRenegotiation(sessionId, payload).catch((err) => {
+                        logger.error(`[${sessionId}] Immediate post-call offer teardown failed: ${err.message}`);
+                    });
                 } else if (s && s.phase === "post-call") {
-                    logger.log(`[${sessionId}] Ignoring signaling offer on post-call session`);
+                    logger.log(`[${sessionId}] Ignoring signaling offer on completed post-call session`);
                 } else {
                     enqueueSignaling(sessionId, "ring", () => handleRing(sessionId, payload));
                 }
