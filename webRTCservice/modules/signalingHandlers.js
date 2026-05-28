@@ -51,6 +51,12 @@ function createSignalingHandlers({
             const payload = msg.payload;
 
             if (action === "end-call" && payload) {
+                if (sess && sess.phase === "ringing") {
+                    handleEndCallRenegotiation(sessionId, payload).catch((err) => {
+                        logger.error(`[${sessionId}] Immediate end-call failed: ${err.message}`);
+                    });
+                    return;
+                }
                 enqueueSignaling(sessionId, "end-call", () => handleEndCallRenegotiation(sessionId, payload));
                 return;
             }
@@ -84,10 +90,22 @@ function createSignalingHandlers({
         if (msgType === "call") {
             const action = msg.action;
             if (action === "end") {
+                if (sess && sess.phase === "ringing") {
+                    handleCallEnd(sessionId, "client-initiated").catch((err) => {
+                        logger.error(`[${sessionId}] Immediate call-end failed: ${err.message}`);
+                    });
+                    return;
+                }
                 enqueueSignaling(sessionId, "call-end", () => handleCallEnd(sessionId, "client-initiated"));
                 return;
             }
             if (action === "reject") {
+                if (sess && sess.phase === "ringing") {
+                    handleCallEnd(sessionId, "client-reject").catch((err) => {
+                        logger.error(`[${sessionId}] Immediate call-reject failed: ${err.message}`);
+                    });
+                    return;
+                }
                 enqueueSignaling(sessionId, "call-reject", () => handleCallEnd(sessionId, "client-reject"));
                 return;
             }
