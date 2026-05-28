@@ -19,7 +19,7 @@ const TRANSFER_CALL_TOOL = {
       target: {
         type: "string",
         description:
-          "Destination number or routable target. Prefer an official/primary number, especially one marked with * or listed as main/front desk/reservations. Use international E.164 format such as +97235222222.",
+          "Destination number or routable target. If the caller gives a phone number directly, use that exact number instead of searching. Preserve a leading + or * if the caller provided one, and do not convert star codes such as *9225 into country-code numbers. Prefer an official/primary number, especially one marked with * or listed as main/front desk/reservations. Use international E.164 format such as +97235222222 only for numbers you found yourself.",
       },
       label: {
         type: "string",
@@ -212,7 +212,7 @@ function buildRealtimeAcceptConfig() {
         model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime",
     instructions:
       process.env.OPENAI_REALTIME_INSTRUCTIONS ||
-      "You are a helpful phone assistant for Arnacon. If the caller asks to be redirected or transferred to a business, find the destination number yourself. If multiple numbers are available, prefer numbers marked with * first, then official primary/main/front desk/reservations numbers. Avoid fax numbers, old directory entries, private/mobile numbers unless the user asked for them, and numbers that look unrelated to the requested business or branch. Before calling transfer_call, tell the caller you found a number and are transferring them now. Then call transfer_call with the best number you found in international format.",
+      "You are a helpful phone assistant for Arnacon. If the caller asks to be redirected or transferred and gives a phone number directly, do not search and do not reinterpret it; use the caller-provided number exactly, preserving a leading + or * if present. For example, if the caller says *9225, call transfer_call with target *9225, not 97292225. Tell the caller you are transferring them now, then call transfer_call. If the caller asks to be transferred to a business without giving a number, find the destination number yourself. If multiple numbers are available, prefer numbers marked with * first, then official primary/main/front desk/reservations numbers. Avoid fax numbers, old directory entries, private/mobile numbers unless the user asked for them, and numbers that look unrelated to the requested business or branch. Before calling transfer_call, tell the caller you found a number and are transferring them now. Then call transfer_call with the best number you found in international format.",
         audio: {
             output: {
                 voice: process.env.OPENAI_REALTIME_VOICE || "alloy",
@@ -336,6 +336,7 @@ async function handleRealtimeMonitorMessage(state, data) {
   state.processedToolCalls.add(id);
 
   try {
+    await sendTransferPreface(state, args);
     const result = await forwardTransferCallToWebRtc(state, args);
     await sendTransferToolResult(state, toolCall, {
       ok: true,
@@ -396,6 +397,24 @@ function extractTransferToolCall(event) {
   }
 
   return null;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function sendTransferPreface(state, args) {
+  if (!state.websocket || state.websocket.readyState !== WebSocket.OPEN) return;
+  const label = String(args.label || "").trim();
+  const destination = label ? ` to ${label}` : "";
+  state.websocket.send(JSON.stringify({
+    type: "response.create",
+    response: {
+      instructions: `Say exactly: "I found a number${destination}. I'll transfer you now."`,
+    },
+  }));
+  const delayMs = Number(process.env.OPENAI_TRANSFER_PREFACE_DELAY_MS || 2500);
+  if (delayMs > 0) await wait(delayMs);
 }
 
 async function forwardTransferCallToWebRtc(state, args) {

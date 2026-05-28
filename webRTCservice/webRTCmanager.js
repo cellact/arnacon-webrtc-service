@@ -1083,9 +1083,10 @@ function normalizeOpenAiTransferTarget(value) {
     const withoutSip = raw.replace(/^sip:/i, "").split(";")[0].split("@")[0].trim();
     if (withoutSip.toLowerCase().endsWith(".global")) return withoutSip.toLowerCase();
 
-    let number = withoutSip.replace(/[^\d+]/g, "");
-    if (number.startsWith("+")) number = number.slice(1);
-    if (number.startsWith("00") && number.length > 4) number = number.slice(2);
+    let number = withoutSip.replace(/[^\d+*]/g, "");
+    if (number.startsWith("*")) return `*${number.slice(1).replace(/\D/g, "")}`;
+    if (number.startsWith("+")) return `+${number.slice(1).replace(/\D/g, "")}`;
+    number = number.replace(/\D/g, "");
     return number;
 }
 
@@ -1114,7 +1115,13 @@ async function transferOpenAiCallRequest({
     }
 
     const normalizedTarget = normalizeOpenAiTransferTarget(target);
-    if (!normalizedTarget || (!normalizedTarget.endsWith(".global") && !/^\d{3,18}$/.test(normalizedTarget))) {
+    if (
+        !normalizedTarget ||
+        (
+            !normalizedTarget.endsWith(".global") &&
+            !/^(?:\+?\d{3,18}|\*\d{2,18})$/.test(normalizedTarget)
+        )
+    ) {
         throw Object.assign(new Error(`invalid transfer target: ${target}`), { statusCode: 400 });
     }
 
