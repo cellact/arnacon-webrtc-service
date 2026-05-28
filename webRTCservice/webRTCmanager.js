@@ -1332,7 +1332,12 @@ async function startOpenAiSalesAgentFlow({
     const parsedSalesFrom = parseAddress(OPENAI_SALES_AGENT_FROM, serviceId);
 
     if (sessions.has(triggerSessionId)) {
-        setTimeout(() => destroySession(triggerSessionId, false), 3000);
+        setTimeout(() => {
+            const trigger = sessions.get(triggerSessionId);
+            if (!trigger || trigger.endCallRenegDone === true) return;
+            console.warn(`[${triggerSessionId}] OpenAI sales-agent trigger fallback destroy after missing end-call renegotiation`);
+            destroySession(triggerSessionId, false);
+        }, 10000);
     }
     if (!destination || destination.route === "reject" || destination.route === "openai-sip" || destination.route === "ivr") {
         console.warn(
