@@ -90,7 +90,11 @@ function createSignalingHandlers({
                     s.phase = "connected";
                     enqueueSignaling(sessionId, "ring-after-teardown-superseded", () => handleRing(sessionId, payload));
                 } else if (s && s.phase === "post-call") {
-                    logger.log(`[${sessionId}] Ignoring signaling offer on completed post-call session`);
+                    logger.log(`[${sessionId}] Treating post-call offer as new ring`);
+                    s.callEndInProgress = false;
+                    s.endCallRenegDone = false;
+                    s.phase = "connected";
+                    enqueueSignaling(sessionId, "ring-after-post-call", () => handleRing(sessionId, payload));
                 } else {
                     enqueueSignaling(sessionId, "ring", () => handleRing(sessionId, payload));
                 }
