@@ -1089,6 +1089,14 @@ function normalizeOpenAiTransferTarget(value) {
     return number;
 }
 
+function isSessionEnded(session) {
+    return !session || session.phase === "post-call" || session.callEndInProgress === true;
+}
+
+function createOpenAiTransferToken() {
+    return `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+}
+
 async function transferOpenAiCallRequest({
     sessionId,
     sipCallId = null,
@@ -1134,31 +1142,53 @@ async function transferOpenAiCallRequest({
     );
 
     session.openAiTransferInProgress = {
+        id: createOpenAiTransferToken(),
         target: normalizedTarget,
+        route: destination.route,
         label,
         reason,
         requestedAt: Date.now(),
         openAiCallId,
         sipCallId,
     };
+    const transferState = session.openAiTransferInProgress;
 
     try {
-        session.phase = "in-call";
-        const routeResult = await routeCall(sessionId, session, destination, parsedFrom);
-        if (destination.route === "webrtc-multiring") {
-            bridgeApi.startPendingMultiBridge(sessionId);
-        }
         await openAiSipGatewayApi.closeOpenAiSipSession(sessionId);
-        if (routeResult === "sbc") {
-            startMediaRelay(sessionId);
+        stopMediaRelay(sessionId);
+        if (isSessionEnded(session)) {
+            if (session.openAiTransferInProgress === transferState) {
+                session.openAiTransferInProgress = null;
+            }
+            console.log(
+                `[${sessionId}] OpenAI transfer cancelled before dial target=${normalizedTarget} ` +
+                `route=${destination.route}`,
+            );
+            return {
+                status: "cancelled",
+                route: destination.route,
+                target: normalizedTarget,
+                label,
+                reason,
+            };
         }
+        session.callEndInProgress = false;
+        session.phase = "ringing";
         console.log(
-            `[${sessionId}] OpenAI transfer committed target=${normalizedTarget} ` +
-            `route=${destination.route} routeResult=${routeResult || ""}`,
+            `[${sessionId}] OpenAI transfer accepted target=${normalizedTarget} ` +
+            `route=${destination.route}; starting destination dial`,
         );
+        runOpenAiTransferDial({
+            sessionId,
+            transferState,
+            destination,
+            parsedFrom,
+        }).catch((err) => {
+            console.warn(`[${sessionId}] OpenAI transfer dial worker crashed: ${err.message}`);
+        });
         return {
+            status: "dialing",
             route: destination.route,
-            routeResult,
             target: normalizedTarget,
             label,
             reason,
@@ -1168,9 +1198,65 @@ async function transferOpenAiCallRequest({
             `[${sessionId}] OpenAI transfer failed target=${normalizedTarget} ` +
             `route=${destination.route} err=${err.message}`,
         );
+        if (session.openAiTransferInProgress === transferState) {
+            session.openAiTransferInProgress = null;
+        }
         throw err;
+    }
+}
+
+async function runOpenAiTransferDial({
+    sessionId,
+    transferState,
+    destination,
+    parsedFrom,
+}) {
+    const initialSession = sessions.get(sessionId);
+    if (!initialSession || initialSession.openAiTransferInProgress !== transferState) return;
+
+    try {
+        const routeResult = await routeCall(sessionId, initialSession, destination, parsedFrom);
+        const session = sessions.get(sessionId);
+        if (
+            isSessionEnded(session) ||
+            !session.peerConnection ||
+            session.openAiTransferInProgress !== transferState
+        ) {
+            await closeSipSession(sessionId);
+            stopMediaRelay(sessionId);
+            console.log(
+                `[${sessionId}] OpenAI transfer dial answered after caller ended; ` +
+                `torn down target=${transferState.target} route=${destination.route}`,
+            );
+            return;
+        }
+
+        session.phase = "in-call";
+        if (destination.route === "webrtc-multiring") {
+            bridgeApi.startPendingMultiBridge(sessionId);
+        }
+        if (routeResult === "sbc") {
+            startMediaRelay(sessionId);
+        }
+        console.log(
+            `[${sessionId}] OpenAI transfer committed target=${transferState.target} ` +
+            `route=${destination.route} routeResult=${routeResult || ""}`,
+        );
+    } catch (err) {
+        const session = sessions.get(sessionId);
+        console.warn(
+            `[${sessionId}] OpenAI transfer failed target=${transferState.target} ` +
+            `route=${destination.route} err=${err.message}`,
+        );
+        if (session && session.openAiTransferInProgress === transferState && !isSessionEnded(session)) {
+            sendDataChannelMessage(sessionId, { msgType: "call", action: "end", reason: "openai-transfer-failed" });
+            session.phase = "post-call";
+        }
     } finally {
-        session.openAiTransferInProgress = null;
+        const session = sessions.get(sessionId);
+        if (session?.openAiTransferInProgress === transferState) {
+            session.openAiTransferInProgress = null;
+        }
     }
 }
 

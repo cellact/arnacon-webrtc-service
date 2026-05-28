@@ -71,30 +71,43 @@ function createSipClient({
             sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } },
             extraHeaders,
         });
+        const sipConnection = { userAgent, registerer, inviter };
+        session.sipConnection = sipConnection;
 
         const SIP_INVITE_TIMEOUT = 30000;
-        await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                try { inviter.cancel(); } catch (_) {}
-                reject(new Error("SIP INVITE timed out (no answer from SBC)"));
-            }, SIP_INVITE_TIMEOUT);
+        try {
+            await new Promise((resolve, reject) => {
+                const timer = setTimeout(() => {
+                    try { inviter.cancel(); } catch (_) {}
+                    reject(new Error("SIP INVITE timed out (no answer from SBC)"));
+                }, SIP_INVITE_TIMEOUT);
 
-            inviter.stateChange.addListener((state) => {
-                logger.log(`[${sessionId}] SIP session state: ${state}`);
-                if (state === SessionState.Established) {
-                    clearTimeout(timer);
-                    resolve();
-                } else if (state === SessionState.Terminated) {
-                    clearTimeout(timer);
-                    reject(new Error("SIP call terminated before established"));
-                }
-            });
+                inviter.stateChange.addListener((state) => {
+                    logger.log(`[${sessionId}] SIP session state: ${state}`);
+                    if (state === SessionState.Established) {
+                        clearTimeout(timer);
+                        resolve();
+                    } else if (state === SessionState.Terminated) {
+                        clearTimeout(timer);
+                        reject(new Error("SIP call terminated before established"));
+                    }
+                });
 
-            inviter.invite().catch((err) => {
-                clearTimeout(timer);
-                reject(err);
+                inviter.invite().catch((err) => {
+                    clearTimeout(timer);
+                    reject(err);
+                });
             });
-        });
+        } catch (err) {
+            if (session.sipConnection === sipConnection) session.sipConnection = null;
+            try { await closeSipConnectionResources(sipConnection); } catch (_) {}
+            throw err;
+        }
+
+        if (session.phase === "post-call" || session.sipConnection !== sipConnection) {
+            try { await closeSipConnectionResources(sipConnection); } catch (_) {}
+            throw new Error("SIP call answered after caller ended session");
+        }
 
         attachSbcByeHandler(inviter, sessionId);
         const sdh = inviter.sessionDescriptionHandler;
@@ -102,7 +115,6 @@ function createSipClient({
         if (pc2) {
             setupPc2(session, pc2, sessionId);
         }
-        session.sipConnection = { userAgent, registerer, inviter };
         logger.log(`[${sessionId}] SIP INVITE answered — call active`);
     }
 
@@ -180,13 +192,19 @@ function createSipClient({
         logger.log(`[${sessionId}] Inbound call active — audio flowing via SBC`);
     }
 
-    async function closeSipSession(sessionId, sessionStore) {
-        const session = sessionStore.get(sessionId);
-        if (!session || !session.sipConnection) return;
-        const { userAgent, registerer, inviter, invitation } = session.sipConnection;
+    async function closeSipConnectionResources(connection) {
+        if (!connection) return;
+        const { userAgent, registerer, inviter, invitation } = connection;
         const sipSession = inviter || invitation;
-        if (sipSession && sipSession.state === SessionState.Established) {
-            try { await sipSession.bye(); } catch (_) {}
+        if (sipSession) {
+            if (sipSession.state === SessionState.Established) {
+                try { await sipSession.bye(); } catch (_) {}
+            } else if (sipSession.state !== SessionState.Terminated) {
+                try {
+                    if (typeof sipSession.cancel === "function") await sipSession.cancel();
+                    else if (typeof sipSession.reject === "function") await sipSession.reject();
+                } catch (_) {}
+            }
         }
         if (registerer) {
             try { await registerer.unregister(); } catch (_) {}
@@ -194,6 +212,14 @@ function createSipClient({
         if (userAgent) {
             try { await userAgent.stop(); } catch (_) {}
         }
+    }
+
+    async function closeSipSession(sessionId, sessionStore) {
+        const session = sessionStore.get(sessionId);
+        if (!session || !session.sipConnection) return;
+        const sipConnection = session.sipConnection;
+        await closeSipConnectionResources(sipConnection);
+        if (session.sipConnection !== sipConnection) return;
         session.sipConnection = null;
         session.sipPeerConnection = null;
         session.sipLocalAudioTrack = null;

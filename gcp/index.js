@@ -319,18 +319,20 @@ async function handleRealtimeMonitorMessage(state, data) {
 
   const id = toolCall.callId || toolCall.itemId || `${event.type}:${Date.now()}`;
   if (state.processedToolCalls.has(id)) return;
-  state.processedToolCalls.add(id);
 
   let args;
   try {
     args = JSON.parse(toolCall.arguments || "{}");
   } catch (error) {
+    state.processedToolCalls.add(id);
     await sendTransferToolResult(state, toolCall, {
       ok: false,
       error: `Invalid transfer_call arguments: ${error.message}`,
     });
     return;
   }
+  if (!String(args.target || args.number || "").trim()) return;
+  state.processedToolCalls.add(id);
 
   try {
     const result = await forwardTransferCallToWebRtc(state, args);
@@ -347,10 +349,34 @@ async function handleRealtimeMonitorMessage(state, data) {
 }
 
 function extractTransferToolCall(event) {
+  const isCompletedFunctionItem =
+    (event?.type === "conversation.item.done" || event?.type === "response.output_item.done") &&
+    event?.item?.type === "function_call" &&
+    event?.item?.status === "completed";
+
+  if (isCompletedFunctionItem && event.item.name === "transfer_call") {
+    return {
+      callId: event.item.call_id || null,
+      itemId: event.item.id || event.item_id || event.itemId || null,
+      arguments: event.item.arguments || "",
+    };
+  }
+
+  if (event?.type === "response.function_call_arguments.done" && event?.name === "transfer_call") {
+    return {
+      callId: event.call_id || null,
+      itemId: event.item_id || null,
+      arguments: event.arguments || "",
+    };
+  }
+
+  const responseOutputItem = event?.response?.output?.find?.(
+    (item) => item?.type === "function_call" &&
+      item?.status === "completed" &&
+      item?.name === "transfer_call"
+  );
   const candidates = [
-    event?.item,
-    event?.response?.output?.find?.((item) => item?.type === "function_call"),
-    event,
+    responseOutputItem,
   ].filter(Boolean);
 
   for (const item of candidates) {
@@ -365,14 +391,6 @@ function extractTransferToolCall(event) {
       callId: item.call_id || item.callId || event.call_id || event.callId || null,
       itemId: item.id || event.item_id || event.itemId || null,
       arguments: args,
-    };
-  }
-
-  if (event?.type === "response.function_call_arguments.done" && event?.name === "transfer_call") {
-    return {
-      callId: event.call_id || null,
-      itemId: event.item_id || null,
-      arguments: event.arguments || "",
     };
   }
 
@@ -440,7 +458,7 @@ async function sendTransferToolResult(state, toolCall, result) {
     type: "response.create",
     response: {
       instructions: result.ok
-        ? "Tell the caller the transfer is being connected now."
+        ? "Tell the caller you are transferring them now."
         : `Tell the caller the transfer failed: ${result.error || "unknown error"}`,
     },
   }));
