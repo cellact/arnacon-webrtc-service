@@ -6,6 +6,15 @@ const EVENT_HANDLERS = {
   "realtime.call.incoming": handleRealtimeCallIncoming,
 };
 const activeRealtimeCalls = new Map();
+const AI_MODE_SALES_AGENT = "sales-agent";
+const DEFAULT_REALTIME_INSTRUCTIONS =
+  "You are a helpful phone assistant for Arnacon. If the caller asks to be redirected or transferred and gives a phone number directly, do not search and do not reinterpret it; use the caller-provided number exactly, preserving a leading + or * if present. For example, if the caller says *9225, call transfer_call with target *9225, not 97292225. Tell the caller you are transferring them now, then call transfer_call. If the caller asks to be transferred to a business without giving a number, find the destination number yourself. If multiple numbers are available, prefer numbers marked with * first, then official primary/main/front desk/reservations numbers. Avoid fax numbers, old directory entries, private/mobile numbers unless the user asked for them, and numbers that look unrelated to the requested business or branch. Before calling transfer_call, tell the caller you found a number and are transferring them now. Then call transfer_call with the best number you found in international format.";
+const SALES_AGENT_REALTIME_INSTRUCTIONS =
+  process.env.OPENAI_SALES_AGENT_INSTRUCTIONS ||
+  "You are an Arnacon sales representative following up with a lead. Be warm, direct, and concise. The person answering did not call you in this moment; you are following up because they reached out to us before. Start by saying: \"Hi, I saw you reached out to us, I was wondering if you had any questions about us?\" Then listen, answer questions about Arnacon naturally, and keep the conversation focused on helping them understand the service. Do not offer call transfers in this mode.";
+const SALES_AGENT_GREETING =
+  process.env.OPENAI_SALES_AGENT_GREETING ||
+  "Say exactly: \"Hi, I saw you reached out to us, I was wondering if you had any questions about us?\"";
 
 const TRANSFER_CALL_TOOL = {
   type: "function",
@@ -132,11 +141,13 @@ async function handleRealtimeCallIncoming(event) {
     });
     return;
   }
-  await acceptRealtimeCall(callId, buildRealtimeAcceptConfig(event));
+  const mode = getOpenAiModeFromSipHeaders(preAccept.sipHeaders || {});
+  await acceptRealtimeCall(callId, buildRealtimeAcceptConfig({ mode }));
   startRealtimeCallMonitor(callId, {
     eventId: event.id,
     sipHeaders: preAccept.sipHeaders || {},
     sessionId: preAccept.sessionId || null,
+    mode,
   });
   await afterAcceptRealtimeCall(event);
 }
@@ -206,18 +217,36 @@ async function authorizeRealtimeCallWithWebRtcService(event, sipHeaders) {
   }
 }
 
-function buildRealtimeAcceptConfig() {
+function getOpenAiModeFromSipHeaders(sipHeaders = {}) {
+  const mode = String(sipHeaders["x-arnacon-ai-mode"] || "").trim().toLowerCase();
+  return mode === AI_MODE_SALES_AGENT ? AI_MODE_SALES_AGENT : "default";
+}
+
+function buildRealtimeAcceptConfig({ mode = "default" } = {}) {
+  if (mode === AI_MODE_SALES_AGENT) {
+    return {
+      type: "realtime",
+      model: process.env.OPENAI_SALES_AGENT_REALTIME_MODEL || process.env.OPENAI_REALTIME_MODEL || "gpt-realtime",
+      instructions: SALES_AGENT_REALTIME_INSTRUCTIONS,
+      audio: {
+        output: {
+          voice: process.env.OPENAI_SALES_AGENT_VOICE || process.env.OPENAI_REALTIME_VOICE || "alloy",
+        },
+      },
+    };
+  }
+
   return {
     type: "realtime",
-        model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime",
+    model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime",
     instructions:
       process.env.OPENAI_REALTIME_INSTRUCTIONS ||
-      "You are a helpful phone assistant for Arnacon. If the caller asks to be redirected or transferred and gives a phone number directly, do not search and do not reinterpret it; use the caller-provided number exactly, preserving a leading + or * if present. For example, if the caller says *9225, call transfer_call with target *9225, not 97292225. Tell the caller you are transferring them now, then call transfer_call. If the caller asks to be transferred to a business without giving a number, find the destination number yourself. If multiple numbers are available, prefer numbers marked with * first, then official primary/main/front desk/reservations numbers. Avoid fax numbers, old directory entries, private/mobile numbers unless the user asked for them, and numbers that look unrelated to the requested business or branch. Before calling transfer_call, tell the caller you found a number and are transferring them now. Then call transfer_call with the best number you found in international format.",
-        audio: {
-            output: {
-                voice: process.env.OPENAI_REALTIME_VOICE || "alloy",
-            },
-        },
+      DEFAULT_REALTIME_INSTRUCTIONS,
+    audio: {
+      output: {
+        voice: process.env.OPENAI_REALTIME_VOICE || "alloy",
+      },
+    },
     tools: [TRANSFER_CALL_TOOL],
     tool_choice: "auto",
   };
@@ -258,6 +287,7 @@ function startRealtimeCallMonitor(callId, context = {}) {
     sessionId: context.sessionId || null,
     sipHeaders: context.sipHeaders || {},
     sipCallId: context.sipHeaders?.["call-id"] || null,
+    mode: context.mode || getOpenAiModeFromSipHeaders(context.sipHeaders || {}),
     processedToolCalls: new Set(),
     websocket,
   };
@@ -268,12 +298,16 @@ function startRealtimeCallMonitor(callId, context = {}) {
       callId,
       sipCallId: state.sipCallId,
       sessionId: state.sessionId,
+      mode: state.mode,
     });
+    const instructions = state.mode === AI_MODE_SALES_AGENT
+      ? SALES_AGENT_GREETING
+      : "Say to the user: Thank you for calling, how can I help you?";
     websocket.send(
       JSON.stringify({
         type: "response.create",
         response: {
-          instructions: "Say to the user: Thank you for calling, how can I help you?",
+          instructions,
         },
       }),
     );
@@ -314,6 +348,8 @@ async function handleRealtimeMonitorMessage(state, data) {
   } catch {
     return;
   }
+
+  if (state.mode === AI_MODE_SALES_AGENT) return;
 
   const toolCall = extractTransferToolCall(event);
   if (!toolCall) return;

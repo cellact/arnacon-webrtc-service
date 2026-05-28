@@ -294,6 +294,8 @@ const OPENAI_SIP_CONFIG = {
     authTlsCertPath: process.env.OPENAI_SIP_AUTH_TLS_CERT || `${config.tlsCertPath}/fullchain.pem`,
     authTlsKeyPath: process.env.OPENAI_SIP_AUTH_TLS_KEY || `${config.tlsCertPath}/privkey.pem`,
 };
+const OPENAI_SALES_TRIGGER_CALLER = process.env.OPENAI_SALES_TRIGGER_CALLER || "972557012423";
+const OPENAI_SALES_AGENT_FROM = process.env.OPENAI_SALES_AGENT_FROM || "2005.secnum.global";
 
 // ROFL API config
 const ROFL_BASE_URL = config.roflBaseUrl;
@@ -471,6 +473,8 @@ const callFlowApi = createCallFlowApi({
     startPendingMultiBridge: (...args) => bridgeApi.startPendingMultiBridge(...args),
     shouldStartIvrForSession: (...args) => ivrRuntimeApi.shouldStartForSession(...args),
     startIvrForSession: (...args) => ivrRuntimeApi.startIvr(...args),
+    shouldStartOpenAiSalesAgent: (...args) => shouldStartOpenAiSalesAgent(...args),
+    startOpenAiSalesAgentFlow: (...args) => startOpenAiSalesAgentFlow(...args),
     finishMinuteCounter: (session) => minuteCounterApi.finish(session),
     logger: console,
 });
@@ -1096,6 +1100,327 @@ function isSessionEnded(session) {
 
 function createOpenAiTransferToken() {
     return `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+}
+
+function getIdentityLabel(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const withoutSip = raw.replace(/^sip:/i, "").split(";")[0].split("@")[0].trim();
+    const dotPos = withoutSip.indexOf(".");
+    return (dotPos > 0 ? withoutSip.slice(0, dotPos) : withoutSip).replace(/^\+/, "");
+}
+
+function shouldStartOpenAiSalesAgent(session, payload, parsedFrom) {
+    if (!session || session.openAiSalesAgentTriggerHandled) return false;
+    const trigger = String(OPENAI_SALES_TRIGGER_CALLER || "").replace(/^\+/, "");
+    if (!trigger) return false;
+    const candidates = [
+        parsedFrom?.value,
+        parsedFrom?.full,
+        session.callerEns,
+        payload?.from,
+    ].map(getIdentityLabel).filter(Boolean);
+    return candidates.includes(trigger);
+}
+
+function getAudioReceiverTracksFromPeerConnection(pc) {
+    const out = [];
+    const seen = new Set();
+    const addTrack = (track) => {
+        if (!track || track.kind !== "audio" || seen.has(track)) return;
+        seen.add(track);
+        out.push(track);
+    };
+    if (pc?.getReceivers) {
+        for (const receiver of pc.getReceivers()) {
+            addTrack(receiver?.track);
+        }
+    }
+    if (pc?.getTransceivers) {
+        for (const transceiver of pc.getTransceivers()) {
+            if (transceiver?.kind !== "audio") continue;
+            if (Array.isArray(transceiver.receiver?.tracks)) {
+                for (const track of transceiver.receiver.tracks) addTrack(track);
+            } else {
+                addTrack(transceiver.receiver?.track);
+            }
+        }
+    }
+    return out;
+}
+
+function parsePrimaryAudioPayloadType(sdp) {
+    const audioSection = String(sdp || "").match(/m=audio[^\r\n]*[\s\S]*?(?=\r?\nm=|$)/m)?.[0] || "";
+    const mLine = audioSection.match(/^m=audio[^\r\n]*/m)?.[0] || "";
+    const pt = Number(mLine.split(/\s+/).slice(3)[0]);
+    return Number.isFinite(pt) ? pt : null;
+}
+
+function payloadTypeFromPolicy(policy) {
+    if (policy === "pcmu") return 0;
+    if (policy === "pcma") return 8;
+    return null;
+}
+
+function deriveSalesTargetPayloadType(session, source) {
+    if (source === "sbc") {
+        return (
+            parsePrimaryAudioPayloadType(session?.sipPeerConnection?.remoteDescription?.sdp) ??
+            parsePrimaryAudioPayloadType(session?.sipPeerConnection?.localDescription?.sdp)
+        );
+    }
+    return (
+        payloadTypeFromPolicy(session?.mediaCodecPolicy) ??
+        parsePrimaryAudioPayloadType(session?.peerConnection?.localDescription?.sdp)
+    );
+}
+
+function muLawToLinear(value) {
+    const u = (~value) & 0xff;
+    let sample = ((u & 0x0f) << 3) + 0x84;
+    sample <<= (u & 0x70) >> 4;
+    return (u & 0x80) ? (0x84 - sample) : (sample - 0x84);
+}
+
+function linearToMuLaw(sample) {
+    const sign = sample < 0 ? 0x80 : 0;
+    let magnitude = Math.min(32635, Math.abs(sample)) + 0x84;
+    let exponent = 7;
+    for (let mask = 0x4000; exponent > 0 && !(magnitude & mask); mask >>= 1) exponent -= 1;
+    const mantissa = (magnitude >> (exponent + 3)) & 0x0f;
+    return (~(sign | (exponent << 4) | mantissa)) & 0xff;
+}
+
+function aLawToLinear(value) {
+    const a = value ^ 0x55;
+    let sample = (a & 0x0f) << 4;
+    const segment = (a & 0x70) >> 4;
+    if (segment === 0) sample += 8;
+    else if (segment === 1) sample += 0x108;
+    else {
+        sample += 0x108;
+        sample <<= segment - 1;
+    }
+    return (a & 0x80) ? sample : -sample;
+}
+
+function linearToALaw(sample) {
+    const sign = sample < 0 ? 0x00 : 0x80;
+    let magnitude = Math.min(32635, Math.abs(sample));
+    let encoded;
+    if (magnitude < 256) {
+        encoded = sign | (magnitude >> 4);
+    } else {
+        let exponent = 7;
+        for (let mask = 0x4000; exponent > 0 && !(magnitude & mask); mask >>= 1) exponent -= 1;
+        encoded = sign | (exponent << 4) | ((magnitude >> (exponent + 3)) & 0x0f);
+    }
+    return encoded ^ 0x55;
+}
+
+function transcodeG711Payload(payload, fromPt, toPt) {
+    if (!payload || fromPt === toPt) return payload;
+    if (!((fromPt === 0 && toPt === 8) || (fromPt === 8 && toPt === 0))) return payload;
+    const source = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
+    const converted = Buffer.allocUnsafe(source.length);
+    if (fromPt === 0) {
+        for (let i = 0; i < source.length; i += 1) converted[i] = linearToALaw(muLawToLinear(source[i]));
+    } else {
+        for (let i = 0; i < source.length; i += 1) converted[i] = linearToMuLaw(aLawToLinear(source[i]));
+    }
+    return converted;
+}
+
+function adaptSalesRtpPacket(rtp, targetPt) {
+    const sourcePt = Number(rtp?.header?.payloadType);
+    if (!rtp || !rtp.header || !Number.isFinite(sourcePt) || !Number.isFinite(targetPt)) return rtp;
+    if (sourcePt === targetPt) return rtp;
+    const convertedPayload = transcodeG711Payload(rtp.payload, sourcePt, targetPt);
+    if (convertedPayload === rtp.payload && !((sourcePt === 0 && targetPt === 8) || (sourcePt === 8 && targetPt === 0))) {
+        return rtp;
+    }
+    const packet = Object.assign(Object.create(Object.getPrototypeOf(rtp)), rtp);
+    packet.header = Object.assign(Object.create(Object.getPrototypeOf(rtp.header)), rtp.header);
+    packet.header.payloadType = targetPt;
+    packet.payload = convertedPayload;
+    return packet;
+}
+
+function createOpenAiSalesMediaAdapter(targetSessionId, { source = "webrtc" } = {}) {
+    let openAiSourceNotified = false;
+    return {
+        writeOpenAiRtp(packet) {
+            const targetSession = sessions.get(targetSessionId);
+            const targetTrack = source === "sbc" ? targetSession?.sipLocalAudioTrack : targetSession?.localAudioTrack;
+            if (!targetTrack || !packet?.header) return;
+            const targetPt = deriveSalesTargetPayloadType(targetSession, source);
+            const outgoing = adaptSalesRtpPacket(packet, targetPt);
+            if (!openAiSourceNotified) {
+                openAiSourceNotified = true;
+                targetTrack.onSourceChanged.execute({
+                    sequenceNumber: outgoing.header.sequenceNumber,
+                    timestamp: outgoing.header.timestamp,
+                });
+            }
+            targetTrack.writeRtp(outgoing);
+        },
+        subscribeSourceRtp(forwardRtp) {
+            const targetSession = sessions.get(targetSessionId);
+            const pc = source === "sbc" ? targetSession?.sipPeerConnection : targetSession?.peerConnection;
+            const openAiPayloadType = 0;
+            const disposers = [];
+            const subscribed = new Set();
+
+            const subscribeTrack = (track) => {
+                if (!track || track.kind !== "audio" || !track.onReceiveRtp?.subscribe || subscribed.has(track)) return;
+                subscribed.add(track);
+                const sub = track.onReceiveRtp.subscribe((rtp) => forwardRtp(adaptSalesRtpPacket(rtp, openAiPayloadType)));
+                if (sub?.unSubscribe) disposers.push(() => sub.unSubscribe());
+            };
+
+            for (const track of getAudioReceiverTracksFromPeerConnection(pc)) {
+                subscribeTrack(track);
+            }
+
+            const onTrackSub = pc?.onTrack?.subscribe?.((track) => subscribeTrack(track));
+            if (onTrackSub?.unSubscribe) disposers.push(() => onTrackSub.unSubscribe());
+
+            console.log(
+                `[${targetSessionId}] OpenAI sales media adapter attached source=${source} ` +
+                `tracks=${subscribed.size}`,
+            );
+            return () => {
+                for (const dispose of disposers) {
+                    try { dispose(); } catch (_) {}
+                }
+            };
+        },
+    };
+}
+
+async function endOpenAiSalesTarget(salesSessionId, targetSessionId, reason = "openai-sales-ended") {
+    const target = sessions.get(targetSessionId);
+    if (target && target.phase !== "post-call") {
+        try {
+            sendDataChannelMessage(targetSessionId, { msgType: "call", action: "end", reason });
+        } catch (_) {}
+        target.phase = "post-call";
+    }
+    if (targetSessionId !== salesSessionId) {
+        destroySession(targetSessionId, false);
+    }
+    const sales = sessions.get(salesSessionId);
+    if (sales) {
+        sales.phase = "post-call";
+        if (targetSessionId === salesSessionId) {
+            await sipClientApi.closeSipSession(salesSessionId, sessionStore).catch(() => {});
+        }
+        destroySession(salesSessionId, false);
+    }
+}
+
+async function startOpenAiSalesAgentFlow({
+    triggerSessionId,
+    triggerSession,
+    payload,
+    parsedTo,
+    destination,
+} = {}) {
+    const serviceId = triggerSession?.serviceId || "secnum";
+    const targetIdentity = payload?.to || triggerSession?.toIdentity || parsedTo?.full || parsedTo?.value || "";
+    const salesSessionId = `${triggerSessionId}-openai-sales-${Date.now()}`;
+    const parsedSalesFrom = parseAddress(OPENAI_SALES_AGENT_FROM, serviceId);
+
+    if (sessions.has(triggerSessionId)) {
+        setTimeout(() => destroySession(triggerSessionId, false), 250);
+    }
+    if (!destination || destination.route === "reject" || destination.route === "openai-sip" || destination.route === "ivr") {
+        console.warn(
+            `[${triggerSessionId}] OpenAI sales-agent target rejected ` +
+            `target=${targetIdentity} route=${destination?.route || "none"}`,
+        );
+        return;
+    }
+
+    const salesSession = createSession(salesSessionId, OPENAI_SALES_AGENT_FROM, targetIdentity);
+    salesSession.serviceId = serviceId;
+    salesSession.phase = "ringing";
+    salesSession.mediaCodecPolicy = "pcmu";
+    salesSession.openAiSalesAgent = {
+        triggerSessionId,
+        targetIdentity,
+        route: destination.route,
+        startedAt: Date.now(),
+    };
+
+    let targetSessionId = salesSessionId;
+    let mediaSource = "sbc";
+    try {
+        console.log(
+            `[${salesSessionId}] OpenAI sales-agent dialing target=${targetIdentity} ` +
+            `route=${destination.route} from=${OPENAI_SALES_AGENT_FROM}`,
+        );
+        if (destination.route === "webrtc") {
+            targetSessionId = await notifyAndBridge(salesSessionId, destination);
+            mediaSource = "webrtc";
+        } else if (destination.route === "webrtc-multiring") {
+            targetSessionId = await notifyAndBridgeMulti(salesSessionId, destination.targets || []);
+            bridgeApi.startPendingMultiBridge(salesSessionId);
+            mediaSource = "webrtc";
+        } else if (destination.route === "sbc") {
+            await routeCall(salesSessionId, salesSession, destination, parsedSalesFrom);
+            mediaSource = "sbc";
+        } else {
+            throw new Error(`unsupported OpenAI sales-agent route: ${destination.route}`);
+        }
+
+        const currentSalesSession = sessions.get(salesSessionId);
+        const targetSession = sessions.get(targetSessionId);
+        if (!currentSalesSession || !targetSession) {
+            throw new Error("sales-agent callee session disappeared before OpenAI attach");
+        }
+        currentSalesSession.phase = "in-call";
+        targetSession.phase = "in-call";
+
+        const sipSession = currentSalesSession.sipConnection?.inviter || currentSalesSession.sipConnection?.invitation || null;
+        if (mediaSource === "sbc" && sipSession?.stateChange?.addListener) {
+            sipSession.stateChange.addListener((state) => {
+                if (state !== SessionState.Terminated) return;
+                openAiSipGatewayApi.closeOpenAiSipSession(salesSessionId).catch(() => {});
+            });
+        }
+
+        await openOpenAiSipSession(salesSessionId, {
+            callerEns: OPENAI_SALES_AGENT_FROM,
+            mode: "sales-agent",
+            headers: {
+                "X-Arnacon-AI-Mode": "sales-agent",
+                "X-Arnacon-Session-Id": salesSessionId,
+                "X-Arnacon-Trigger-Session-Id": triggerSessionId,
+                "X-Arnacon-Original-To": targetIdentity,
+            },
+            mediaAdapter: createOpenAiSalesMediaAdapter(targetSessionId, { source: mediaSource }),
+            onRemoteBye: (reason) => endOpenAiSalesTarget(salesSessionId, targetSessionId, reason),
+        });
+        console.log(
+            `[${salesSessionId}] OpenAI sales-agent active targetSessionId=${targetSessionId} ` +
+            `source=${mediaSource}`,
+        );
+    } catch (err) {
+        console.warn(`[${salesSessionId}] OpenAI sales-agent failed: ${err.message}`);
+        await closeSipSession(salesSessionId).catch(() => {});
+        if (targetSessionId && targetSessionId !== salesSessionId) {
+            try {
+                sendDataChannelMessage(targetSessionId, {
+                    msgType: "call",
+                    action: "end",
+                    reason: "openai-sales-agent-failed",
+                });
+            } catch (_) {}
+            destroySession(targetSessionId, false);
+        }
+        destroySession(salesSessionId, false);
+    }
 }
 
 async function transferOpenAiCallRequest({

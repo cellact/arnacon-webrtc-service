@@ -30,6 +30,8 @@ function createCallFlowApi({
     startPendingMultiBridge = null,
     shouldStartIvrForSession = null,
     startIvrForSession = null,
+    shouldStartOpenAiSalesAgent = null,
+    startOpenAiSalesAgentFlow = null,
     finishMinuteCounter = null,
     logger = console,
 }) {
@@ -279,6 +281,35 @@ function createCallFlowApi({
             destination = await resolveDestination(parsedTo, parsedFrom, serviceId);
             if (destination.route === "reject") {
                 sendDataChannelMessage(sessionId, { msgType: "call", action: "end" });
+                return;
+            }
+            if (
+                typeof shouldStartOpenAiSalesAgent === "function" &&
+                shouldStartOpenAiSalesAgent(session, payload, parsedFrom, parsedTo, destination)
+            ) {
+                logger.log(`[${sessionId}] OpenAI sales-agent trigger accepted`);
+                session.openAiSalesAgentTriggerHandled = true;
+                sendAck(sessionId);
+                sendDataChannelMessage(sessionId, {
+                    msgType: "call",
+                    action: "end",
+                    reason: "openai-sales-agent-triggered",
+                });
+                session.phase = "post-call";
+                if (typeof startOpenAiSalesAgentFlow === "function") {
+                    setImmediate(() => {
+                        startOpenAiSalesAgentFlow({
+                            triggerSessionId: sessionId,
+                            triggerSession: session,
+                            payload,
+                            parsedFrom,
+                            parsedTo,
+                            destination,
+                        }).catch((err) => {
+                            logger.error(`[${sessionId}] OpenAI sales-agent flow failed: ${err.message}`);
+                        });
+                    });
+                }
                 return;
             }
         }

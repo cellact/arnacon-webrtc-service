@@ -163,6 +163,19 @@ function getHeader(headers, name) {
     return "";
 }
 
+function formatSipExtraHeaders(headers) {
+    if (!headers || typeof headers !== "object") return [];
+    const out = [];
+    for (const [rawName, rawValue] of Object.entries(headers)) {
+        const name = String(rawName || "").trim();
+        const value = String(rawValue || "").trim();
+        if (!name || !value) continue;
+        if (!/^[A-Za-z0-9-]+$/.test(name)) continue;
+        out.push([name, value.replace(/[\r\n]/g, " ")]);
+    }
+    return out;
+}
+
 function extractCallIdFromAuthRequest(body = {}) {
     return (
         body.sipCallId ||
@@ -328,6 +341,19 @@ function createOpenAiSipGateway({
             session.phase = "post-call";
         }
         cleanupCall(sessionId);
+    }
+
+    async function terminateOpenAiCallFromRemote(call, reason) {
+        if (typeof call?.onRemoteBye === "function") {
+            try {
+                await call.onRemoteBye(reason);
+            } catch (err) {
+                logger.warn(`[${call.sessionId}] OpenAI-SIP remote BYE handler failed: ${err.message}`);
+            }
+            cleanupCall(call.sessionId);
+            return;
+        }
+        terminateFromRemote(call.sessionId, reason);
     }
 
     function authorizeIncomingOpenAiCall(body = {}) {
@@ -501,6 +527,11 @@ function createOpenAiSipGateway({
     }
 
     function startRtpBridge(call, remoteMedia) {
+        if (call.mediaAdapter) {
+            startAdapterRtpBridge(call, remoteMedia);
+            return;
+        }
+
         const session = sessions.get(call.sessionId);
         const pc = session?.peerConnection;
         if (!session || !pc) throw new Error("OpenAI SIP RTP bridge missing caller peer connection");
@@ -550,6 +581,40 @@ function createOpenAiSipGateway({
         }, 2000);
     }
 
+    function startAdapterRtpBridge(call, remoteMedia) {
+        const adapter = call.mediaAdapter;
+        let openAiToTarget = 0;
+        let targetToOpenAi = 0;
+
+        call.rtpSocket.on("message", (buffer) => {
+            const packet = deserializeRtpPacket(buffer);
+            if (!packet || typeof adapter.writeOpenAiRtp !== "function") return;
+            adapter.writeOpenAiRtp(packet, remoteMedia);
+            openAiToTarget += 1;
+        });
+
+        if (typeof adapter.subscribeSourceRtp === "function") {
+            const unsubscribe = adapter.subscribeSourceRtp((rtp) => {
+                const outboundPayloadType = Number.isFinite(remoteMedia.payloadType)
+                    ? remoteMedia.payloadType
+                    : offeredPayloadType;
+                const raw = serializePlainRtp(rtp, outboundPayloadType);
+                if (!raw) return;
+                targetToOpenAi += 1;
+                call.rtpSocket.send(raw, remoteMedia.port, remoteMedia.ip);
+            }, remoteMedia);
+            call.rtpUnsubscribe = typeof unsubscribe === "function" ? unsubscribe : null;
+        }
+
+        call.statsTimer = setInterval(() => {
+            logger.log(
+                `[${call.sessionId}] OpenAI-SIP RTP-STATS mode=${call.mode || "default"} ` +
+                `target_to_openai=${targetToOpenAi} openai_to_target=${openAiToTarget} ` +
+                `remote=${remoteMedia.ip}:${remoteMedia.port} pt=${remoteMedia.payloadType}`
+            );
+        }, 2000);
+    }
+
     async function openOpenAiSipSession(sessionId, options = {}) {
         if (!kamailioHost) throw new Error("OpenAI SIP route missing kamailioHost");
         const session = sessions.get(sessionId);
@@ -583,6 +648,9 @@ function createOpenAiSipGateway({
             byeSent: false,
             rtpUnsubscribe: null,
             statsTimer: null,
+            mode: options.mode || "default",
+            mediaAdapter: options.mediaAdapter || null,
+            onRemoteBye: options.onRemoteBye || null,
         };
 
         activeCalls.set(sessionId, call);
@@ -595,6 +663,7 @@ function createOpenAiSipGateway({
             payloadType: offeredPayloadType,
         });
 
+        const extraHeaders = formatSipExtraHeaders(options.headers);
         const invite = sipMessage(`INVITE sip:${targetUser}@${kamailioDomain} SIP/2.0`, [
             ["Via", `SIP/2.0/UDP ${contactHost}:${localSipPort};branch=z9hG4bK${randomToken()};rport`],
             ["Max-Forwards", "70"],
@@ -605,6 +674,7 @@ function createOpenAiSipGateway({
             ["Contact", call.contactHeader],
             ["Allow", "INVITE, ACK, BYE, CANCEL, OPTIONS"],
             ["User-Agent", "Arnacon-WebRTC-Service"],
+            ...extraHeaders,
             ["Content-Type", "application/sdp"],
         ], sdp);
 
@@ -629,7 +699,7 @@ function createOpenAiSipGateway({
 
                 if (method === "BYE") {
                     await sendSipOk(call, message).catch(() => {});
-                    terminateFromRemote(sessionId, "openai-sip-bye");
+                    await terminateOpenAiCallFromRemote(call, "openai-sip-bye");
                     return;
                 }
 
