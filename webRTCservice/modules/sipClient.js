@@ -105,6 +105,9 @@ function createSipClient({
         }
 
         if (session.phase === "post-call" || session.sipConnection !== sipConnection) {
+            if (session.sipConnection === sipConnection) session.sipConnection = null;
+            session.sipPeerConnection = null;
+            session.sipLocalAudioTrack = null;
             try { await closeSipConnectionResources(sipConnection); } catch (_) {}
             throw new Error("SIP call answered after caller ended session");
         }
@@ -114,6 +117,13 @@ function createSipClient({
         const pc2 = sdh?.peerConnection || null;
         if (pc2) {
             setupPc2(session, pc2, sessionId);
+        }
+        if (session.phase === "post-call" || session.sipConnection !== sipConnection) {
+            if (session.sipConnection === sipConnection) session.sipConnection = null;
+            session.sipPeerConnection = null;
+            session.sipLocalAudioTrack = null;
+            try { await closeSipConnectionResources(sipConnection); } catch (_) {}
+            throw new Error("SIP call answered after caller ended session");
         }
         logger.log(`[${sessionId}] SIP INVITE answered — call active`);
     }
