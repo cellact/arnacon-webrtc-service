@@ -1332,7 +1332,7 @@ async function startOpenAiSalesAgentFlow({
     const parsedSalesFrom = parseAddress(OPENAI_SALES_AGENT_FROM, serviceId);
 
     if (sessions.has(triggerSessionId)) {
-        setTimeout(() => destroySession(triggerSessionId, false), 1500);
+        setTimeout(() => destroySession(triggerSessionId, false), 3000);
     }
     if (!destination || destination.route === "reject" || destination.route === "openai-sip" || destination.route === "ivr") {
         console.warn(

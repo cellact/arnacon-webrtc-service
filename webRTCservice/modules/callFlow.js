@@ -322,6 +322,12 @@ function createCallFlowApi({
                     action: "end",
                     reason: "openai-sales-agent-triggered",
                 });
+                sendDataChannelMessage(sessionId, {
+                    msgType: "session",
+                    action: "destroyed",
+                    sessionId,
+                    reason: "openai-sales-agent-triggered",
+                });
                 session.phase = "post-call";
                 if (typeof startOpenAiSalesAgentFlow === "function") {
                     setImmediate(() => {
