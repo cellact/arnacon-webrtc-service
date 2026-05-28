@@ -11,14 +11,15 @@ const TRANSFER_CALL_TOOL = {
   type: "function",
   name: "transfer_call",
   description:
-    "Transfer the active phone call to a destination phone number or Arnacon/secnum target after the user asks to be redirected.",
+    "Transfer the active phone call to a carefully selected destination phone number or Arnacon/secnum target after the user asks to be redirected.",
   parameters: {
     type: "object",
     additionalProperties: false,
     properties: {
       target: {
         type: "string",
-        description: "Destination number or routable target, preferably in international format such as +97235222222.",
+        description:
+          "Destination number or routable target. Prefer an official/primary number, especially one marked with * or listed as main/front desk/reservations. Use international E.164 format such as +97235222222.",
       },
       label: {
         type: "string",
@@ -211,7 +212,7 @@ function buildRealtimeAcceptConfig() {
         model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime",
     instructions:
       process.env.OPENAI_REALTIME_INSTRUCTIONS ||
-      "You are a helpful phone assistant for Arnacon. If the caller asks to be redirected or transferred to a business, find the destination number yourself and call transfer_call with the number you found.",
+      "You are a helpful phone assistant for Arnacon. If the caller asks to be redirected or transferred to a business, find the destination number yourself. If multiple numbers are available, prefer numbers marked with * first, then official primary/main/front desk/reservations numbers. Avoid fax numbers, old directory entries, private/mobile numbers unless the user asked for them, and numbers that look unrelated to the requested business or branch. Before calling transfer_call, tell the caller you found a number and are transferring them now. Then call transfer_call with the best number you found in international format.",
         audio: {
             output: {
                 voice: process.env.OPENAI_REALTIME_VOICE || "alloy",

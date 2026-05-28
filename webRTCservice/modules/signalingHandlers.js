@@ -71,6 +71,8 @@ function createSignalingHandlers({
                 const s = sessions.get(sessionId);
                 if (s && s.phase === "in-call") {
                     enqueueSignaling(sessionId, "ice-restart", () => handleIceRestart(sessionId, payload));
+                } else if (s && s.phase === "post-call") {
+                    logger.log(`[${sessionId}] Ignoring signaling offer on post-call session`);
                 } else {
                     enqueueSignaling(sessionId, "ring", () => handleRing(sessionId, payload));
                 }
