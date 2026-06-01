@@ -1,5 +1,4 @@
 const { buildEndCallAnswerPayload } = require("../../participants/signaling/SignalingEnvelope");
-
 function splitSdpSections(sdp) {
     const normalized = String(sdp || "").replace(/\r?\n/g, "\r\n");
     const parts = normalized.split(/\r\n(?=m=)/);
