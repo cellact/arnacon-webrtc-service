@@ -42,7 +42,7 @@ class SignalingMessageRouter {
             logger,
         });
         this.dcHandlers = {
-            signaling: (sessionId, msg, sess) => this.handleSignaling(sessionId, msg, sess),
+            signaling: (sessionId, msg, sess, phase, meta) => this.handleSignaling(sessionId, msg, sess, meta),
             call: (sessionId, msg, sess, phase, meta) => this.handleCallMessage(sessionId, msg, sess, meta),
             data: (sessionId, msg, sess, phase) => this.handleData(sessionId, msg, phase),
         };
@@ -76,7 +76,7 @@ class SignalingMessageRouter {
         );
     }
 
-    handleSignaling(sessionId, msg, sess) {
+    handleSignaling(sessionId, msg, sess, meta = {}) {
         const action = msg.action;
         const payload = msg.payload;
 

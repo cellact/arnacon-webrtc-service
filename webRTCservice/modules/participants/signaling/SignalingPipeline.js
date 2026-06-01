@@ -1,3 +1,18 @@
+function authIdentityLabel(identity) {
+    if (!identity || typeof identity !== "string") return identity;
+    const trimmed = identity.trim();
+    const atPos = trimmed.indexOf("@");
+    if (atPos > 0) return trimmed.slice(0, atPos);
+    const dotPos = trimmed.indexOf(".");
+    if (dotPos > 0) return trimmed.slice(0, dotPos);
+    return trimmed;
+}
+
+function authNormalizeSessionId(sessionId) {
+    if (!sessionId || typeof sessionId !== "string") return sessionId;
+    return sessionId.split("|").map(authIdentityLabel).join("|");
+}
+
 class SignalingAuthVerifier {
     constructor({ blockchainGateway, sessions }) {
         if (!blockchainGateway) throw new Error("SignalingAuthVerifier requires blockchainGateway");
@@ -5,10 +20,31 @@ class SignalingAuthVerifier {
         this.sessions = sessions;
     }
 
+    resolveSession(payload = {}) {
+        const candidates = new Set();
+        if (payload.sessionId) {
+            const normalizedSessionId = authNormalizeSessionId(payload.sessionId);
+            candidates.add(normalizedSessionId);
+            const parts = normalizedSessionId.split("|");
+            if (parts.length === 2) candidates.add(`${parts[1]}|${parts[0]}`);
+        }
+        const fromLabel = authIdentityLabel(payload.from);
+        const toLabel = authIdentityLabel(payload.to);
+        if (fromLabel && toLabel) {
+            candidates.add(`${fromLabel}|${toLabel}`);
+            candidates.add(`${toLabel}|${fromLabel}`);
+        }
+        for (const candidate of candidates) {
+            const session = this.sessions.get(candidate);
+            if (session) return session;
+        }
+        return null;
+    }
+
     verify(payload = {}, signalingPlan = {}) {
         const type = payload.type || "offer";
         if (type === "offer") return this.blockchainGateway.verifyInitialOfferSignature(payload, signalingPlan);
-        if (type === "answer") return this.blockchainGateway.verifyAnswerSignature(payload, this.sessions.get(payload.sessionId), signalingPlan);
+        if (type === "answer") return this.blockchainGateway.verifyAnswerSignature(payload, this.resolveSession(payload), signalingPlan);
         if (type === "ice-batch" || type === "cancel") {
             return this.blockchainGateway.verifyParticipantSignature(payload, signalingPlan);
         }
