@@ -757,7 +757,7 @@ const peerConnectionApi = createPeerConnectionFactory({
     iceServers: ICE_SERVERS,
     onDataChannelOpen: (sessionId) => onDataChannelOpen(sessionId),
     onPeerConnected: (sessionId) => onPeerConnected(sessionId),
-    onDataChannelMessage: (sessionId, raw) => signalingHandlersApi.onDataChannelMessage(sessionId, raw),
+    onDataChannelMessage: (sessionId, raw, meta = {}) => signalingHandlersApi.onDataChannelMessage(sessionId, raw, meta),
     onInboundRtp: (sessionId, rtp) => ivrAudioPlaybackApi.onInboundRtp(sessionId, rtp),
     onSessionDestroyRequested: (sessionId, event) => callEngine.dispatch(sessionId, {
         type: CallEvents.SessionDestroyRequested,
@@ -1099,8 +1099,8 @@ function enqueueSignaling(sessionId, label, fn) {
  * Routes to the appropriate handler based on message type.
  * SDP-touching operations are serialized via enqueueSignaling.
  */
-function onDataChannelMessage(sessionId, rawMessage) {
-    return signalingHandlersApi.onDataChannelMessage(sessionId, rawMessage);
+function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
+    return signalingHandlersApi.onDataChannelMessage(sessionId, rawMessage, meta);
 }
 
 
