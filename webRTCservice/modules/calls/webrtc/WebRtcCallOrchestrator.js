@@ -125,6 +125,25 @@ class WebRtcCallOrchestrator {
         };
     }
 
+    cancelPendingBridgeForSession(sessionId, reason = "webrtc-pickup-cancelled") {
+        let cancelled = false;
+        for (const [walletKey, rawList] of Array.from(this.pendingBridgeRegistry.entries())) {
+            const list = Array.isArray(rawList) ? rawList : [rawList];
+            const nextList = [];
+            for (const entry of list) {
+                if (entry?.callerSessionId === sessionId || entry?.legSessionId === sessionId) {
+                    if (entry.timer) clearTimeout(entry.timer);
+                    if (typeof entry.reject === "function") entry.reject(new Error(reason));
+                    cancelled = true;
+                } else {
+                    nextList.push(entry);
+                }
+            }
+            this.pendingBridgeRegistry.setList(walletKey, nextList);
+        }
+        return cancelled;
+    }
+
     async notifyAndBridge(callerSessionId, destination) {
         const {
             legSession,
@@ -144,7 +163,18 @@ class WebRtcCallOrchestrator {
             this.closeSessionNow(legSessionId, "webrtc-notification-failed");
             throw err;
         }
-        const calleeSessionId = await pickup.promise;
+        let calleeSessionId;
+        try {
+            calleeSessionId = await pickup.promise;
+        } catch (err) {
+            const session = this.sessions.get(callerSessionId);
+            if (!session || session.callEndInProgress || session.phase === "post-call" || session.phase === "cancelled") {
+                this.logger.log(`[${callerSessionId}] WebRTC pickup wait cancelled after call end: ${err.message}`);
+                return null;
+            }
+            throw err;
+        }
+        if (!calleeSessionId) return null;
         this.startBridgeRtp(callerSessionId, calleeSessionId);
         this.logger.log(`[Bridge] WebRTC callee connected callerSessionId=${callerSessionId} calleeSessionId=${calleeSessionId}`);
         return calleeSessionId;

@@ -529,6 +529,7 @@ const { routeStrategyRegistry } = createRouteStrategies({
     notifyAndBridge: (...args) => notifyAndBridge(...args),
     notifyAndBridgeMulti: (...args) => notifyAndBridgeMulti(...args),
     startPendingMultiBridge: (...args) => bridgeApi.startPendingMultiBridge(...args),
+    cancelPendingBridge: (...args) => bridgeApi.cancelPendingBridgeForSession(...args),
     destroyRuntimeSession: (...args) => callRuntime.destroyRuntimeSession(...args),
     startIvrSession: (...args) => ivrFeatureApi.start(...args),
     stopIvrSession: (...args) => ivrFeatureApi.stop(...args),

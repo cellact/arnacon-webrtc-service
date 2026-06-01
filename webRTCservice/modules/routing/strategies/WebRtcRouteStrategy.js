@@ -26,6 +26,9 @@ class WebRtcRouteStrategy extends RouteStrategy {
     }
 
     async end(context, event) {
+        if (typeof this.webRtcBridgePort.cancelPendingBridge === "function") {
+            this.webRtcBridgePort.cancelPendingBridge(context.sessionId, event.reason || "webrtc-end");
+        }
         const mediaSession = context.resources?.mediaSession?.();
         if (mediaSession?.getGraph?.()) {
             await mediaSession.stop(event.reason || "webrtc-end");
@@ -36,6 +39,9 @@ class WebRtcRouteStrategy extends RouteStrategy {
     }
 
     async cancel(context, event) {
+        if (typeof this.webRtcBridgePort.cancelPendingBridge === "function") {
+            this.webRtcBridgePort.cancelPendingBridge(context.sessionId, event.reason || "webrtc-end");
+        }
         if (typeof this.webRtcBridgePort.stopSession === "function") {
             return this.webRtcBridgePort.stopSession(context.sessionId, event.reason || "webrtc-end");
         }
@@ -43,6 +49,9 @@ class WebRtcRouteStrategy extends RouteStrategy {
     }
 
     async fail(context, event) {
+        if (typeof this.webRtcBridgePort.cancelPendingBridge === "function") {
+            this.webRtcBridgePort.cancelPendingBridge(context.sessionId, event.reason || "webrtc-failed");
+        }
         if (typeof this.webRtcBridgePort.stopSession === "function") {
             return this.webRtcBridgePort.stopSession(context.sessionId, event.reason || "webrtc-failed");
         }

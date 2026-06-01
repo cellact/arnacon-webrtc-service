@@ -20,6 +20,7 @@ function createRouteStrategies({
     notifyAndBridge,
     notifyAndBridgeMulti,
     startPendingMultiBridge,
+    cancelPendingBridge,
     destroyRuntimeSession,
     startIvrSession,
     stopIvrSession,
@@ -70,6 +71,7 @@ function createRouteStrategies({
         notifyAndBridge,
         notifyAndBridgeMulti,
         startPendingMultiBridge,
+        cancelPendingBridge,
         stopMedia: stopMediaRelay,
         stopSession: (sessionId, reason) => destroyRuntimeSession(sessionId, { source: "webrtc", reason }),
     };
