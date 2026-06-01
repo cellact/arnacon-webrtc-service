@@ -1,5 +1,15 @@
 const { buildOfferPayload, serializeNotifyPayload } = require("../../participants/signaling/SignalingEnvelope");
 
+function identityLabel(identity) {
+    if (!identity || typeof identity !== "string") return identity;
+    const trimmed = identity.trim();
+    const atPos = trimmed.indexOf("@");
+    if (atPos > 0) return trimmed.slice(0, atPos);
+    const dotPos = trimmed.indexOf(".");
+    if (dotPos > 0) return trimmed.slice(0, dotPos);
+    return trimmed;
+}
+
 function createInboundCallFlow({
     createSession,
     resolveInboundTarget,
@@ -31,9 +41,15 @@ function createInboundCallFlow({
         const destination = inboundDecision;
         const calleeEns = destination.ensName || destination.wallet;
         const calleeWalletKey = destination.wallet.toLowerCase();
-        const sessionId = `inbound-${callId}-${Date.now()}`;
         const gatewayIdentity = String(from || "").replace(/^\+/, "");
+        const calleeLabel = identityLabel(calleeEns || to);
+        const sessionId = `${gatewayIdentity}|${calleeLabel}`;
 
+        if (callRuntime && callRuntime.getSession(sessionId)) {
+            await callRuntime.destroyRuntimeSession(sessionId, { source: "inbound", reason: "duplicate-inbound-session" });
+        } else if (destroySession && !callRuntime) {
+            destroySession(sessionId);
+        }
         const session = createSession(sessionId, gatewayIdentity, calleeEns);
         if (serviceId) {
             session.serviceId = serviceId;
