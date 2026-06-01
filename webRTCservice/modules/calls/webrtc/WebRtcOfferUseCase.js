@@ -22,6 +22,21 @@ function createOfferFlow({
         return addr;
     }
 
+    function identityLabel(identity) {
+        if (!identity || typeof identity !== "string") return identity;
+        const trimmed = identity.trim();
+        const atPos = trimmed.indexOf("@");
+        if (atPos > 0) return trimmed.slice(0, atPos);
+        const dotPos = trimmed.indexOf(".");
+        if (dotPos > 0) return trimmed.slice(0, dotPos);
+        return trimmed;
+    }
+
+    function normalizeSessionId(sessionId) {
+        if (!sessionId || typeof sessionId !== "string") return sessionId;
+        return sessionId.split("|").map(identityLabel).join("|");
+    }
+
     function assertAllowedInitialOfferFrom(from, sessionId, serviceId = null) {
         const parsedFrom = parseAddress(normalizeAddress(from || ""), serviceId);
         const isAllowed = parsedFrom.type === "ens" || parsedFrom.type === "email";
@@ -38,9 +53,11 @@ function createOfferFlow({
         const serviceId = offer.serviceId || null;
         const from = normalizeAddress(offer.from, serviceId);
         const to = normalizeAddress(offer.to, serviceId);
-        const { sessionId, sdp, candidates, callNonce, type } = offer;
+        const { sdp, candidates, callNonce, type } = offer;
+        const sessionId = normalizeSessionId(offer.sessionId);
         offer.from = from;
         offer.to = to;
+        offer.sessionId = sessionId;
 
         if (type === "ice-batch") {
             const session = sessions.get(sessionId);

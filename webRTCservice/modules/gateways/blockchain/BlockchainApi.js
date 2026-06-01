@@ -342,14 +342,23 @@ function createBlockchainApi({
         if (!xdata) throw createHttpError(401, "Missing required field: xdata");
         if (!xsign) throw createHttpError(401, "Missing required field: xsign");
 
-        const expectedIdentity = normalizeEnsDomain(session.toIdentity || "");
+        const offeredFrom = normalizeEnsDomain(offer.from || "");
+        let expectedIdentity = normalizeEnsDomain(session.outboundWebrtc?.toIdentity || session.toIdentity || "");
+        if (session.outboundWebrtcLegs?.values && offeredFrom) {
+            for (const leg of session.outboundWebrtcLegs.values()) {
+                const legIdentity = normalizeEnsDomain(leg.toIdentity || "");
+                if (legIdentity && legIdentity === offeredFrom) {
+                    expectedIdentity = legIdentity;
+                    break;
+                }
+            }
+        }
         if (!expectedIdentity) {
             throw createHttpError(401, "Unable to verify answer signer: missing session toIdentity");
         }
 
-        const from = normalizeEnsDomain(offer.from || "");
-        if (from && from !== expectedIdentity) {
-            throw createHttpError(403, `Answer 'from' mismatch: expected ${expectedIdentity}, got ${from}`);
+        if (offeredFrom && offeredFrom !== expectedIdentity) {
+            throw createHttpError(403, `Answer 'from' mismatch: expected ${expectedIdentity}, got ${offeredFrom}`);
         }
 
         const expectedSigner = await resolveExpectedSigner(expectedIdentity);

@@ -2,6 +2,16 @@ const { routeToCodecPolicy, labelForPolicy } = require("../../media/negotiation/
 const { narrowAudioOfferForCodecPolicy } = require("../../media/negotiation/SdpCodecNegotiator");
 const { buildCallAck, buildCallEnd } = require("../../participants/signaling/SignalingEnvelope");
 
+function identityLabel(identity) {
+    if (!identity || typeof identity !== "string") return identity;
+    const trimmed = identity.trim();
+    const atPos = trimmed.indexOf("@");
+    if (atPos > 0) return trimmed.slice(0, atPos);
+    const dotPos = trimmed.indexOf(".");
+    if (dotPos > 0) return trimmed.slice(0, dotPos);
+    return trimmed;
+}
+
 class StartCallUseCase {
     constructor({
         sessions,
@@ -135,15 +145,19 @@ class StartCallUseCase {
         const relayCandidates = this.getRelayCandidates(gatheredCandidates);
         const offerSdp = this.embedCandidatesInSdp(baseOfferSdp, candidatesToEmbed);
         this.logSdp(sessionId, "RING OFFER SDP (to callee)", offerSdp);
+        const fromLabel = identityLabel(target.callerEns || session.callerEns);
         const message = {
             msgType: "signaling",
             payload: {
                 type: "offer",
-                from: target.callerEns || session.callerEns,
+                from: fromLabel,
                 to: target.toIdentity || session.toIdentity,
                 sessionId,
                 sdp: offerSdp,
                 candidates: relayCandidates,
+                label: fromLabel,
+                ...(session.lastRingOfferPayload?.xdata ? { xdata: session.lastRingOfferPayload.xdata } : {}),
+                ...(session.lastRingOfferPayload?.xsign ? { xsign: session.lastRingOfferPayload.xsign } : {}),
             },
         };
         if (target !== session) {

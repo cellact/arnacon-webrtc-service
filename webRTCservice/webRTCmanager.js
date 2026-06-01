@@ -886,14 +886,10 @@ const callSdpUseCases = new CallSdpUseCases({
     callRuntime,
     logger: console,
 });
-// TEMPORARY:
-// For test flows where clients do not yet send xdata/xsign on /notify,
-// keep notify signature enforcement disabled by default.
-// Set ENFORCE_NOTIFY_SIGNATURES=true to re-enable strict verification.
 const enforceNotifySignatures =
-    String(process.env.ENFORCE_NOTIFY_SIGNATURES || "false").toLowerCase() === "true";
+    String(process.env.ENFORCE_NOTIFY_SIGNATURES || "true").toLowerCase() !== "false";
 if (!enforceNotifySignatures) {
-    console.warn("[SECURITY] /notify signature verification is temporarily DISABLED");
+    console.warn("[SECURITY] /notify signature verification is DISABLED by ENFORCE_NOTIFY_SIGNATURES=false");
 }
 const signalingPipelineApi = createSignalingPipeline({
     onIncomingOffer: (...args) => onIncomingOffer(...args),

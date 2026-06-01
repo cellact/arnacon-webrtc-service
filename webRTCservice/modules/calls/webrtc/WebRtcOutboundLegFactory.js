@@ -76,6 +76,8 @@ class WebRtcOutboundLegFactory {
         const calleeEns = destination.ensName || calleeWallet;
         const callerEns = callerSession.callerEns;
         const callerNumberLabel = getCallerNumberLabel(callerEns);
+        const calleeNumberLabel = getCallerNumberLabel(calleeEns);
+        const signalingSessionId = `${callerNumberLabel}|${calleeNumberLabel}`;
         const walletKey = String(calleeWallet || "").toLowerCase();
         if (!calleeWallet || !calleeEns) {
             throw new Error("WebRTC destination missing callee wallet/ENS");
@@ -140,21 +142,23 @@ class WebRtcOutboundLegFactory {
         const sourceOffer = callerSession.lastRingOfferPayload || null;
 
         const callPayload = serializeNotifyPayload(buildOfferPayload({
-            from: callerEns,
+            from: callerNumberLabel,
             to: calleeEns,
-            sessionId: callerSessionId,
+            sessionId: signalingSessionId,
             sdp: offerSdp,
             candidates: relayCandidates,
             callNonce: sourceOffer?.callNonce || callerSession.callNonce || null,
             isCall: true,
             extra: {
+                ...(sourceOffer?.xdata ? { xdata: sourceOffer.xdata } : {}),
+                ...(sourceOffer?.xsign ? { xsign: sourceOffer.xsign } : {}),
                 label: callerNumberLabel || undefined,
                 ...(options.payload || {}),
             },
         }));
         this.logger.log(
-            `[${callerSessionId}] outbound WebRTC invite payload from=${callerEns} ` +
-            `to=${calleeEns}`
+            `[${callerSessionId}] outbound WebRTC invite payload from=${callerNumberLabel} ` +
+            `to=${calleeEns} sessionId=${signalingSessionId}`
         );
 
         return {
