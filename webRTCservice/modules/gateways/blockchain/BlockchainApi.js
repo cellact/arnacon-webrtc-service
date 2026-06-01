@@ -226,6 +226,21 @@ function createBlockchainApi({
         return providerPolicy.normalizeEnsDomain(ens);
     }
 
+    function identityLabel(identity) {
+        if (!identity || typeof identity !== "string") return identity;
+        const trimmed = identity.trim();
+        const atPos = trimmed.indexOf("@");
+        if (atPos > 0) return trimmed.slice(0, atPos);
+        const dotPos = trimmed.indexOf(".");
+        if (dotPos > 0) return trimmed.slice(0, dotPos);
+        return trimmed;
+    }
+
+    function sameIdentityLabel(left, right) {
+        return identityLabel(String(left || "").toLowerCase()) ===
+            identityLabel(String(right || "").toLowerCase());
+    }
+
     function namehash(name) {
         if (!name) return "0x0000000000000000000000000000000000000000000000000000000000000000";
         const labels = name.split(".");
@@ -379,11 +394,12 @@ function createBlockchainApi({
             throw createHttpError(401, "Unable to verify answer signer: missing session toIdentity");
         }
 
-        if (offeredFrom && offeredFrom !== expectedIdentity) {
+        if (offeredFrom && !sameIdentityLabel(offeredFrom, expectedIdentity)) {
             throw createHttpError(403, `Answer 'from' mismatch: expected ${expectedIdentity}, got ${offeredFrom}`);
         }
 
-        const expectedSigner = await resolveExpectedSigner(expectedIdentity);
+        const verificationIdentity = offeredFrom || expectedIdentity;
+        const expectedSigner = await resolveExpectedSigner(verificationIdentity);
         let recoveredSigner;
         try {
             recoveredSigner = ethers.utils.getAddress(
@@ -395,10 +411,10 @@ function createBlockchainApi({
         if (recoveredSigner !== expectedSigner) {
             throw createHttpError(
                 403,
-                `Answer xsign signer mismatch for ${expectedIdentity}: expected ${expectedSigner}, got ${recoveredSigner}`,
+                `Answer xsign signer mismatch for ${verificationIdentity}: expected ${expectedSigner}, got ${recoveredSigner}`,
             );
         }
-        logger.log(`[${sessionId || "no-session"}] Answer signature verified for ${expectedIdentity} (${recoveredSigner})`);
+        logger.log(`[${sessionId || "no-session"}] Answer signature verified for ${verificationIdentity} (${recoveredSigner})`);
     }
 
     function getRpcForNetwork(networkName) {
