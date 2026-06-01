@@ -716,6 +716,7 @@ const verifiedNotifyAnswerHandler = new VerifiedNotifyAnswerHandler({
     startCallUseCase,
     destroySession: (...args) => destroySession(...args),
     getSessionKind: (session) => callRuntime.getSessionKind(session),
+    callRuntime,
     logger: console,
 });
 const renegotiateCallUseCase = new RenegotiateCallUseCase({
@@ -1026,8 +1027,8 @@ async function handleInboundAnswer(sessionId, answerSdp, candidates) {
  * Creates PC1 — the client-facing WebRTC PeerConnection.
  * Initially data-channel only. Audio tracks are added later during Phase 2 renegotiation.
  */
-function createPeerConnection(sessionId) {
-    return peerConnectionApi.createPeerConnection(sessionId);
+function createPeerConnection(...args) {
+    return peerConnectionApi.createPeerConnection(...args);
 }
 
 /**

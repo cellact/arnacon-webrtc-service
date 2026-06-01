@@ -37,6 +37,26 @@ function createOfferFlow({
         return sessionId.split("|").map(identityLabel).join("|");
     }
 
+    function relationSessionCandidates(from, to, sessionId) {
+        const fromLabel = identityLabel(from);
+        const toLabel = identityLabel(to);
+        const candidates = new Set();
+        if (sessionId) candidates.add(normalizeSessionId(sessionId));
+        if (fromLabel && toLabel) {
+            candidates.add(`${fromLabel}|${toLabel}`);
+            candidates.add(`${toLabel}|${fromLabel}`);
+            candidates.add(stableKey(from, to));
+        }
+        return candidates;
+    }
+
+    function resolveExistingSessionId(from, to, sessionId) {
+        for (const candidate of relationSessionCandidates(from, to, sessionId)) {
+            if (sessions.has(candidate)) return candidate;
+        }
+        return normalizeSessionId(sessionId);
+    }
+
     function assertAllowedInitialOfferFrom(from, sessionId, serviceId = null) {
         const parsedFrom = parseAddress(normalizeAddress(from || ""), serviceId);
         const isAllowed = parsedFrom.type === "ens" || parsedFrom.type === "email";
@@ -54,12 +74,14 @@ function createOfferFlow({
         const from = normalizeAddress(offer.from, serviceId);
         const to = normalizeAddress(offer.to, serviceId);
         const { sdp, candidates, callNonce, type } = offer;
-        const sessionId = normalizeSessionId(offer.sessionId);
+        let sessionId = normalizeSessionId(offer.sessionId);
         offer.from = from;
         offer.to = to;
         offer.sessionId = sessionId;
 
         if (type === "ice-batch") {
+            sessionId = resolveExistingSessionId(from, to, sessionId);
+            offer.sessionId = sessionId;
             const session = sessions.get(sessionId);
             if (!session || !session.peerConnection) {
                 return { ok: true, ignored: true, reason: "session-not-ready", type: "ice-batch", sessionId };
@@ -72,11 +94,15 @@ function createOfferFlow({
         }
 
         if (type === "cancel") {
+            sessionId = resolveExistingSessionId(from, to, sessionId);
+            offer.sessionId = sessionId;
             logger.log(`[${sessionId || "no-session"}] Ignoring HTTP cancel`);
             return { ok: true, ignored: true, type: "cancel", sessionId };
         }
 
         if (type === "answer") {
+            sessionId = resolveExistingSessionId(from, to, sessionId);
+            offer.sessionId = sessionId;
             const session = sessions.get(sessionId);
             if (session && callRuntime?.getSessionKind(session) === "gateway-inbound") {
                 if (session.inboundAnswerApplied) return;

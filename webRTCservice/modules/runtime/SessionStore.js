@@ -41,13 +41,29 @@ class SessionStore {
         return this.sessions.get(sid) || null;
     }
 
+    identityLabel(identity) {
+        if (!identity || typeof identity !== "string") return identity;
+        const trimmed = identity.trim();
+        const atPos = trimmed.indexOf("@");
+        if (atPos > 0) return trimmed.slice(0, atPos);
+        const dotPos = trimmed.indexOf(".");
+        if (dotPos > 0) return trimmed.slice(0, dotPos);
+        return trimmed;
+    }
+
+    normalizeSessionId(sessionId) {
+        if (!sessionId || typeof sessionId !== "string") return sessionId;
+        return sessionId.split("|").map((part) => this.identityLabel(part)).join("|");
+    }
+
     stableKey(a, b) {
-        return [a, b].sort().join("|");
+        return [this.identityLabel(a), this.identityLabel(b)].sort().join("|");
     }
 
     createSession(sessionId, callerEns, toIdentity, logger = console) {
+        const canonicalSessionId = this.normalizeSessionId(sessionId);
         const session = {
-            sessionId,
+            sessionId: canonicalSessionId,
             callerEns,
             toIdentity: toIdentity || null,
             phase: "handshake",
@@ -76,11 +92,11 @@ class SessionStore {
             },
             inboundRingSent: false,
         };
-        this.sessions.set(sessionId, session);
+        this.sessions.set(canonicalSessionId, session);
         if (callerEns && toIdentity) {
-            this.sessionsByUser.set(this.stableKey(callerEns, toIdentity), sessionId);
+            this.sessionsByUser.set(this.stableKey(callerEns, toIdentity), canonicalSessionId);
         }
-        logger.log(`[${sessionId}] Session created for ${callerEns}`);
+        logger.log(`[${canonicalSessionId}] Session created for ${callerEns}`);
         return session;
     }
 

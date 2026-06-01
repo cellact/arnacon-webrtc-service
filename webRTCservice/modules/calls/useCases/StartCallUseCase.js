@@ -107,7 +107,11 @@ class StartCallUseCase {
             return true;
         } catch (err) {
             session.outboundLegRingSent = false;
-            this.callRuntime.destroyRuntimeSession(sessionId, { source: "ring", reason: "outbound-leg-ring-failed" });
+            if (this.callRuntime) {
+                this.callRuntime.markFailed(sessionId, { source: "ring", reason: "outbound-leg-ring-failed", error: err });
+                this.callRuntime.notifyCallEnd(sessionId, { reason: "outbound-leg-ring-failed", source: "webrtc" });
+                await this.callRuntime.destroyRuntimeSession(sessionId, { source: "ring", reason: "outbound-leg-ring-failed" });
+            }
             throw err;
         }
     }

@@ -1,6 +1,16 @@
 const { exactG711PolicyFromAnswer } = require("../../media/negotiation/SdpCodecNegotiator");
 const { buildCallAck, buildCallEnd } = require("../../participants/signaling/SignalingEnvelope");
 
+function identityLabel(identity) {
+    if (!identity || typeof identity !== "string") return identity;
+    const trimmed = identity.trim();
+    const atPos = trimmed.indexOf("@");
+    if (atPos > 0) return trimmed.slice(0, atPos);
+    const dotPos = trimmed.indexOf(".");
+    if (dotPos > 0) return trimmed.slice(0, dotPos);
+    return trimmed;
+}
+
 class AnswerCallUseCase {
     constructor({
         sessions,
@@ -89,11 +99,11 @@ class AnswerCallUseCase {
         const session = this.sessions.get(sessionId);
         let target = session?.outboundWebrtc || session;
         if (session?.outboundWebrtcLegs && payload?.from) {
-            const from = String(payload.from).toLowerCase();
+            const from = identityLabel(String(payload.from).toLowerCase());
             for (const leg of session.outboundWebrtcLegs.values()) {
                 if (
-                    String(leg.toIdentity || "").toLowerCase() === from ||
-                    String(leg.walletAddress || "").toLowerCase() === from
+                    identityLabel(String(leg.toIdentity || "").toLowerCase()) === from ||
+                    identityLabel(String(leg.walletAddress || "").toLowerCase()) === from
                 ) {
                     target = leg;
                     session.outboundWebrtc = leg;
