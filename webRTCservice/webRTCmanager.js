@@ -717,6 +717,8 @@ const verifiedNotifyAnswerHandler = new VerifiedNotifyAnswerHandler({
     destroySession: (...args) => destroySession(...args),
     getSessionKind: (session) => callRuntime.getSessionKind(session),
     callRuntime,
+    RTCSessionDescription,
+    addIceCandidates: (...args) => addIceCandidates(...args),
     logger: console,
 });
 const renegotiateCallUseCase = new RenegotiateCallUseCase({

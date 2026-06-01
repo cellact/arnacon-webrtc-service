@@ -89,6 +89,7 @@ class AnswerCallUseCase {
             if (this.callRuntime) {
                 this.callRuntime.markFailed(sessionId, { source: "inbound-answer", reason: "inbound-sip-session-failed", error: new Error("Inbound SIP session failed") });
                 this.callRuntime.notifyCallEnd(sessionId, { reason: "inbound-sip-session-failed" });
+                this.callRuntime.notifyOwnedWebRtcLegsCallEnd(sessionId, { reason: "inbound-sip-session-failed" });
             } else {
                 this.sendDataChannelMessage(sessionId, buildCallEnd());
             }

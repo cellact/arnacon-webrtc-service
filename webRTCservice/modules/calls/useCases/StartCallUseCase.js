@@ -100,6 +100,7 @@ class StartCallUseCase {
         if (!session.outboundLegHttpAnswered) return false;
         if (session.outboundLegRingSent) return true;
         if (!session.outboundWebrtc.dataChannel) return false;
+        if (!session.outboundWebrtc.dataChannelOpen && session.outboundWebrtc.dataChannel.readyState !== "open") return false;
         session.outboundLegRingSent = true;
         try {
             await this.sendInboundRing(sessionId);
@@ -110,6 +111,7 @@ class StartCallUseCase {
             if (this.callRuntime) {
                 this.callRuntime.markFailed(sessionId, { source: "ring", reason: "outbound-leg-ring-failed", error: err });
                 this.callRuntime.notifyCallEnd(sessionId, { reason: "outbound-leg-ring-failed", source: "webrtc" });
+                this.callRuntime.notifyOwnedWebRtcLegsCallEnd(sessionId, { reason: "outbound-leg-ring-failed", source: "webrtc" });
                 await this.callRuntime.destroyRuntimeSession(sessionId, { source: "ring", reason: "outbound-leg-ring-failed" });
             }
             throw err;

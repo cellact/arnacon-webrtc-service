@@ -264,6 +264,30 @@ class CallRuntime {
         return true;
     }
 
+    notifyOwnedWebRtcLegsCallEnd(sessionId, event = {}) {
+        const session = this.sessions.get(sessionId);
+        if (!session) return false;
+        const message = JSON.stringify({
+            msgType: "call",
+            action: event.action || "end",
+            reason: event.reason,
+            source: event.source,
+        });
+        let sent = false;
+        const notifyLeg = (leg) => {
+            if (!leg?.dataChannel) return;
+            try {
+                leg.dataChannel.send(message);
+                sent = true;
+            } catch (_) {}
+        };
+        notifyLeg(session.outboundWebrtc);
+        if (session.outboundWebrtcLegs?.values) {
+            for (const leg of session.outboundWebrtcLegs.values()) notifyLeg(leg);
+        }
+        return sent;
+    }
+
     notifyCallAck(sessionId, event = {}) {
         if (typeof this.sendDataChannelMessage !== "function") return false;
         this.sendDataChannelMessage(sessionId, {
