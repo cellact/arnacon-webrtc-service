@@ -39,6 +39,29 @@ function keepInactiveAudioReusable(answerSection, offerSection) {
     return answerSection.replace(/^m=audio\s+0\s+/m, "m=audio 9 ");
 }
 
+function keepGeneratedInactiveAudioReusable(section) {
+    if (mediaKind(section) !== "audio") return section;
+    if (!/^a=inactive/m.test(section)) return section;
+    return section.replace(/^m=audio\s+0\s+/m, "m=audio 9 ");
+}
+
+function setBundleMids(sessionSection, mids) {
+    if (!mids.length) return sessionSection;
+    const bundle = `a=group:BUNDLE ${mids.join(" ")}`;
+    if (/^a=group:BUNDLE\s+/m.test(sessionSection)) {
+        return sessionSection.replace(/^a=group:BUNDLE\s+[^\r\n]+/m, bundle);
+    }
+    return `${sessionSection}${bundle}\r\n`;
+}
+
+function normalizeEndCallOfferSdp(offerSdp) {
+    const sdp = splitSdpSections(offerSdp);
+    const mids = sdp.media.map(mediaMid).filter(Boolean);
+    const session = setBundleMids(sdp.session, mids);
+    const media = sdp.media.map(keepGeneratedInactiveAudioReusable);
+    return [session, ...media].join("\r\n").replace(/\r\n{3,}/g, "\r\n\r\n");
+}
+
 function alignEndCallAnswerSdp(answerSdp, offerSdp) {
     const offer = splitSdpSections(offerSdp);
     const answer = splitSdpSections(answerSdp);
@@ -149,7 +172,8 @@ class RenegotiateCallUseCase {
         const pc = target.peerConnection;
         await this.setAudioInactive(pc);
         const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
+        const offerSdp = normalizeEndCallOfferSdp(offer.sdp);
+        await pc.setLocalDescription(new this.RTCSessionDescription(offerSdp, "offer"));
         target.endCallRenegOfferSent = true;
         const from = target === session
             ? identityLabel(session.outboundWebrtc?.toIdentity || session.toIdentity)
@@ -162,10 +186,10 @@ class RenegotiateCallUseCase {
             from,
             to,
             sessionId,
-            sdp: offer.sdp,
+            sdp: offerSdp,
         });
         if (sent) {
-            this.logSdp(sessionId, target === session ? "END-CALL OFFER SDP (to caller)" : "END-CALL OFFER SDP (to callee)", offer.sdp);
+            this.logSdp(sessionId, target === session ? "END-CALL OFFER SDP (to caller)" : "END-CALL OFFER SDP (to callee)", offerSdp);
         }
         return sent;
     }

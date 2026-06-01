@@ -73,7 +73,8 @@ class CallEngine {
     getStrategy(context, event = {}) {
         const route = event.route || event.destination?.route || context.session.routeDestination?.route ||
             (event.source === CallEventSources.OpenAi ? "openai-sip" : null) ||
-            (event.source === CallEventSources.Sip ? "sbc" : null);
+            (event.source === CallEventSources.Sip ? "sbc" : null) ||
+            (context.session.isGatewayCaller && context.session.inboundCall ? "sbc" : null);
         if (!route) return null;
         if (this.routeStrategies?.require) return this.routeStrategies.require(route);
         throw new Error(`No route strategy available for route: ${route || "unknown"}`);
@@ -122,6 +123,13 @@ class CallEngine {
         if (event.notifyOwnedWebRtcLegs !== false) this.runtime.notifyOwnedWebRtcLegsCallEnd(sessionId, event);
         if (event.propagateLinkedSession) this.runtime.propagateLinkedEvent(sessionId, event);
         if (strategy?.end) await strategy.end(context, event);
+        if (context.session.isGatewayCaller && context.session.inboundCall) {
+            await this.runtime.destroyRuntimeSession(sessionId, {
+                ...event,
+                source: event.source || CallEventSources.Client,
+                reason: event.reason || "gateway-inbound-ended",
+            });
+        }
         return { handled: true };
     }
 
