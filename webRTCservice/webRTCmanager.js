@@ -843,6 +843,15 @@ const inboundCallFlowApi = createInboundCallFlow({
     crypto,
     logger: console,
 });
+function relationIdentityLabel(identity) {
+    if (!identity || typeof identity !== "string") return identity;
+    const trimmed = identity.trim();
+    const atPos = trimmed.indexOf("@");
+    if (atPos > 0) return trimmed.slice(0, atPos);
+    const dotPos = trimmed.indexOf(".");
+    if (dotPos > 0) return trimmed.slice(0, dotPos);
+    return trimmed;
+}
 const offerFlowApi = createOfferFlow({
     sessions,
     sessionsByUser,
@@ -851,6 +860,22 @@ const offerFlowApi = createOfferFlow({
     destroySession: (...args) => destroySession(...args),
     handleHandshake: (...args) => handleHandshake(...args),
     handleInboundAnswer: (...args) => handleInboundAnswer(...args),
+    handleHttpReject: (sessionId, offer) => {
+        const session = sessions.get(sessionId);
+        const rejectedByOwnedWebRtcLeg = Boolean(
+            session?.outboundWebrtc &&
+            relationIdentityLabel(session.outboundWebrtc.toIdentity) === relationIdentityLabel(offer.from),
+        );
+        return callEngine.dispatch(sessionId, {
+            type: CallEvents.CallEndRequested,
+            source: CallEventSources.Client,
+            route: "webrtc",
+            reason: "client-reject",
+            notifyClient: rejectedByOwnedWebRtcLeg,
+            notifyOwnedWebRtcLegs: !rejectedByOwnedWebRtcLeg,
+            propagateLinkedSession: false,
+        });
+    },
     onVerifiedNotifyAnswer: (...args) => onVerifiedNotifyAnswer(...args),
     parseAddress: (...args) => parseAddress(...args),
     normalizeIdentity: (value, serviceId = null) => {

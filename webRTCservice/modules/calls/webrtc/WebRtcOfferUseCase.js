@@ -6,6 +6,7 @@ function createOfferFlow({
     destroySession,
     handleHandshake,
     handleInboundAnswer,
+    handleHttpReject = null,
     onVerifiedNotifyAnswer = null,
     parseAddress,
     addIceCandidates,
@@ -98,6 +99,16 @@ function createOfferFlow({
             offer.sessionId = sessionId;
             logger.log(`[${sessionId || "no-session"}] Ignoring HTTP cancel`);
             return { ok: true, ignored: true, type: "cancel", sessionId };
+        }
+
+        if (type === "reject") {
+            sessionId = resolveExistingSessionId(from, to, sessionId);
+            offer.sessionId = sessionId;
+            if (typeof handleHttpReject === "function") {
+                return handleHttpReject(sessionId, offer);
+            }
+            logger.warn(`[${sessionId || "no-session"}] HTTP reject received without handler`);
+            return { ok: true, ignored: true, type: "reject", sessionId };
         }
 
         if (type === "answer") {

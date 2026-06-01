@@ -44,7 +44,7 @@ class SignalingAuthVerifier {
         const type = payload.type || "offer";
         if (type === "offer") return this.blockchainGateway.verifyInitialOfferSignature(payload, signalingPlan);
         if (type === "answer") return this.blockchainGateway.verifyAnswerSignature(payload, this.resolveSession(payload), signalingPlan);
-        if (type === "ice-batch" || type === "cancel") {
+        if (type === "ice-batch" || type === "cancel" || type === "reject") {
             return this.blockchainGateway.verifyParticipantSignature(payload, signalingPlan);
         }
         throw new Error(`Unsupported HTTP signaling auth type: ${type}`);
@@ -147,6 +147,9 @@ function createSignalingPipeline({
             if (notifyType === "cancel") {
                 return { entryType: "notifyCancel", sessionMode: "join", routeMode: "inboundBridge" };
             }
+            if (notifyType === "reject") {
+                return { entryType: "notifyReject", sessionMode: "join", routeMode: "inboundBridge" };
+            }
             throw createHttpError(400, `Unsupported signaling type over HTTP: ${notifyType}`);
         }
         if (context.source === "inbound-call") {
@@ -160,7 +163,8 @@ function createSignalingPipeline({
             signalingPlan.entryType === "notifyOffer" ||
             signalingPlan.entryType === "notifyAnswer" ||
             signalingPlan.entryType === "notifyIceBatch" ||
-            signalingPlan.entryType === "notifyCancel"
+            signalingPlan.entryType === "notifyCancel" ||
+            signalingPlan.entryType === "notifyReject"
         ) {
             if (enforceNotifySignatures) {
                 if (authVerifier) await authVerifier.verify(context.payload, signalingPlan);
