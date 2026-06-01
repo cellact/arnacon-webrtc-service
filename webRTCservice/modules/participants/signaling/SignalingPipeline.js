@@ -97,6 +97,7 @@ function createSignalingPipeline({
 
     function normalizeSessionId(sessionId) {
         if (!sessionId || typeof sessionId !== "string") return sessionId;
+        if (!sessionId.includes("|")) return sessionId;
         return sessionId.split("|").map(identityLabel).join("|");
     }
 
