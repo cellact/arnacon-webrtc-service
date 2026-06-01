@@ -92,11 +92,15 @@ function createOfferFlow({
 
         assertAllowedInitialOfferFrom(from, sessionId, serviceId);
 
-        if (sessions.has(sessionId) && callRuntime) callRuntime.destroyRuntimeSession(sessionId, { source: "http", reason: "duplicate-offer-session" });
+        if (sessions.has(sessionId) && callRuntime) {
+            await callRuntime.destroyRuntimeSession(sessionId, { source: "http", reason: "duplicate-offer-session" });
+        }
         const key = stableKey(from, to);
         const existingId = sessionsByUser.get(key);
         if (existingId && existingId !== sessionId && sessions.has(existingId)) {
-            if (callRuntime) callRuntime.destroyRuntimeSession(existingId, { source: "http", reason: "duplicate-offer-user" });
+            if (callRuntime) {
+                await callRuntime.destroyRuntimeSession(existingId, { source: "http", reason: "duplicate-offer-user" });
+            }
         }
 
         const session = createSession(sessionId, from, to);
