@@ -166,6 +166,10 @@ class AnswerCallUseCase {
             this.logger.warn(`[${sessionId}] Route connected after session teardown; skipping answer commit`);
             return;
         }
+        if (this.callRuntime?.isTerminal?.(session)) {
+            this.logger.warn(`[${sessionId}] Route connected after call end; skipping answer commit`);
+            return;
+        }
         if (this.callRuntime) this.callRuntime.markInCall(sessionId, { source: "route", reason: "route-connected" });
         if (isInbound) this.sendAckAndAnswer(sessionId, answerSdp);
         else this.sendAnswer(sessionId, answerSdp);

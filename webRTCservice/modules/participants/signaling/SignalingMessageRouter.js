@@ -127,18 +127,14 @@ class SignalingMessageRouter {
             const s = this.sessions.get(sessionId);
             if (s && this.isInCall?.(s)) {
                 this.enqueueSignaling(sessionId, "ice-restart", () => this.handleIceRestart(sessionId, payload));
-            } else if (s && this.isEndRenegotiationPending?.(s)) {
-                this.logger.log(`[${sessionId}] New offer supersedes pending end-call renegotiation`);
-                this.resetPostCallForNewRing(s);
-                this.handleRing(sessionId, payload).catch((err) => {
-                    this.logger.error(`[${sessionId}] Immediate ring-after-teardown-superseded failed: ${err.message}`);
-                });
-            } else if (s && this.canAcceptNewRing?.(s)) {
-                this.logger.log(`[${sessionId}] Treating post-call offer as new ring`);
-                this.resetPostCallForNewRing(s);
-                this.handleRing(sessionId, payload).catch((err) => {
-                    this.logger.error(`[${sessionId}] Immediate ring-after-post-call failed: ${err.message}`);
-                });
+            } else if (
+                s &&
+                (
+                    this.isEndRenegotiationPending?.(s) ||
+                    this.canAcceptNewRing?.(s)
+                )
+            ) {
+                this.logger.log(`[${sessionId}] Ignoring late signaling offer during post-call teardown`);
             } else {
                 this.enqueueSignaling(sessionId, "ring", () => this.handleRing(sessionId, payload));
             }
