@@ -89,20 +89,35 @@ class WebRtcCallOrchestrator {
         }).catch(() => {});
     }
 
-    waitForWebrtcPickup(callerSessionId, legSessionId, walletKey, timeoutReason = "webrtc-pickup-timeout") {
+    createBridgeAttemptId(callerSessionId) {
+        return `${callerSessionId}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+    }
+
+    waitForWebrtcPickup(callerSessionId, legSessionId, walletKey, attemptId, timeoutReason = "webrtc-pickup-timeout") {
         const BRIDGE_TIMEOUT = 60000;
         let timer = null;
         let rejectPickup = null;
         const promise = new Promise((resolve, reject) => {
             rejectPickup = reject;
             timer = setTimeout(() => {
-                this.pendingBridgeRegistry.remove(walletKey, (entry) => entry.kind === "webrtc" && entry.callerSessionId === callerSessionId);
+                const stillCurrent = this.pendingBridgeRegistry.getList(walletKey).some((entry) =>
+                    entry.kind === "webrtc" &&
+                    entry.callerSessionId === callerSessionId &&
+                    entry.attemptId === attemptId
+                );
+                if (!stillCurrent) return;
+                this.pendingBridgeRegistry.remove(walletKey, (entry) =>
+                    entry.kind === "webrtc" &&
+                    entry.callerSessionId === callerSessionId &&
+                    entry.attemptId === attemptId
+                );
                 this.closeSessionNow(legSessionId, timeoutReason);
                 reject(new Error("Callee did not connect within timeout"));
             }, BRIDGE_TIMEOUT);
 
             this.pendingBridgeRegistry.add(walletKey, {
                 kind: "webrtc",
+                attemptId,
                 callerSessionId,
                 legSessionId,
                 resolve,
@@ -117,7 +132,11 @@ class WebRtcCallOrchestrator {
                     clearTimeout(timer);
                     timer = null;
                 }
-                this.pendingBridgeRegistry.remove(walletKey, (entry) => entry.kind === "webrtc" && entry.legSessionId === legSessionId);
+                this.pendingBridgeRegistry.remove(walletKey, (entry) =>
+                    entry.kind === "webrtc" &&
+                    entry.legSessionId === legSessionId &&
+                    entry.attemptId === attemptId
+                );
                 if (typeof rejectPickup === "function") {
                     rejectPickup(new Error(reason));
                 }
@@ -145,6 +164,7 @@ class WebRtcCallOrchestrator {
     }
 
     async notifyAndBridge(callerSessionId, destination) {
+        this.cancelPendingBridgeForSession(callerSessionId, "webrtc-pickup-replaced");
         const {
             legSession,
             legSessionId,
@@ -154,7 +174,9 @@ class WebRtcCallOrchestrator {
             callPayload,
         } = await this.outboundLegFactory.create(callerSessionId, destination, { kind: "webrtc" });
 
-        const pickup = this.waitForWebrtcPickup(callerSessionId, legSessionId, walletKey);
+        const bridgeAttemptId = this.createBridgeAttemptId(callerSessionId);
+        legSession.bridgeAttemptId = bridgeAttemptId;
+        const pickup = this.waitForWebrtcPickup(callerSessionId, legSessionId, walletKey, bridgeAttemptId);
         try {
             legSession.lastNotificationResult = await this.sendNotification(callerEns, calleeEns, callPayload, this.notiTypeCall);
         } catch (err) {
