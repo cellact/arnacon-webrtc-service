@@ -141,7 +141,7 @@ class CallEngine {
         this.runtime.markPostCall(sessionId, {
             ...event,
             reason: event.reason || "end-call-renegotiated",
-            endCallRenegDone: true,
+            endCallRenegDone: result?.complete !== false,
         });
         return result;
     }

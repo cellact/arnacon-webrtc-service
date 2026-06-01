@@ -1278,12 +1278,13 @@ async function handleCallDtmf(sessionId, msg) {
 /**
  * Handles end-call renegotiation — client wants to drop audio but keep the data channel.
  */
-async function handleEndCallRenegotiation(sessionId, payload) {
+async function handleEndCallRenegotiation(sessionId, payload, options = {}) {
     return callEngine.dispatch(sessionId, {
         type: CallEvents.EndRenegotiationReceived,
         source: CallEventSources.Client,
         reason: "end-call-renegotiated",
         payload,
+        channelRole: options.channelRole || "caller-webrtc",
     });
 }
 

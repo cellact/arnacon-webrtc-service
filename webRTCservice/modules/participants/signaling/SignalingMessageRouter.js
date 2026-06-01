@@ -88,12 +88,12 @@ class SignalingMessageRouter {
                     this.isEndRenegotiationPending?.(sess)
                 )
             ) {
-                this.handleEndCallRenegotiation(sessionId, payload).catch((err) => {
+                this.handleEndCallRenegotiation(sessionId, payload, meta).catch((err) => {
                     this.logger.error(`[${sessionId}] Immediate end-call failed: ${err.message}`);
                 });
                 return;
             }
-            this.enqueueSignaling(sessionId, "end-call", () => this.handleEndCallRenegotiation(sessionId, payload));
+            this.enqueueSignaling(sessionId, "end-call", () => this.handleEndCallRenegotiation(sessionId, payload, meta));
             return;
         }
 

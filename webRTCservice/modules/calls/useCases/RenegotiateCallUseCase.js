@@ -1,4 +1,15 @@
 const { buildEndCallAnswerPayload } = require("../../participants/signaling/SignalingEnvelope");
+
+function identityLabel(identity) {
+    if (!identity || typeof identity !== "string") return identity;
+    const trimmed = identity.trim();
+    const atPos = trimmed.indexOf("@");
+    if (atPos > 0) return trimmed.slice(0, atPos);
+    const dotPos = trimmed.indexOf(".");
+    if (dotPos > 0) return trimmed.slice(0, dotPos);
+    return trimmed;
+}
+
 function splitSdpSections(sdp) {
     const normalized = String(sdp || "").replace(/\r?\n/g, "\r\n");
     const parts = normalized.split(/\r\n(?=m=)/);
@@ -82,40 +93,125 @@ class RenegotiateCallUseCase {
         await pc.setRemoteDescription(new this.RTCSessionDescription(payload.sdp, "answer"));
     }
 
-    async handleEndCallRenegotiation(sessionId, payload) {
-        const session = this.sessions.get(sessionId);
-        if (!session || !session.peerConnection) return;
-        const pc = session.peerConnection;
-        this.logSdp(sessionId, "END-CALL OFFER SDP (from client)", payload.sdp);
-        await pc.setRemoteDescription(new this.RTCSessionDescription(payload.sdp, "offer"));
-        for (const transceiver of pc.getTransceivers()) {
-            if (transceiver.kind === "audio") {
-                transceiver.setDirection("inactive");
-                if (transceiver.sender && typeof transceiver.sender.replaceTrack === "function") {
-                    try { await transceiver.sender.replaceTrack(null); } catch (_) {}
+    resolveRenegotiationTarget(session, payload = {}, options = {}) {
+        if (options.channelRole === "callee-webrtc") return session.outboundWebrtc || session;
+        if (session.outboundWebrtcLegs?.values && payload?.from) {
+            const from = identityLabel(String(payload.from).toLowerCase());
+            for (const leg of session.outboundWebrtcLegs.values()) {
+                if (
+                    identityLabel(String(leg.toIdentity || "").toLowerCase()) === from ||
+                    identityLabel(String(leg.walletAddress || "").toLowerCase()) === from
+                ) {
+                    return leg;
                 }
-                break;
             }
         }
+        return session;
+    }
+
+    getOppositeTarget(session, target) {
+        if (target === session) return session.outboundWebrtc || null;
+        return session;
+    }
+
+    sendEndCallSignaling(sessionId, session, target, payload) {
+        const message = {
+            msgType: "signaling",
+            action: "end-call",
+            payload,
+        };
+        if (target === session) {
+            this.sendDataChannelMessage(sessionId, message);
+            return true;
+        }
+        if (!target?.dataChannel || target.dataChannel.readyState !== "open") return false;
+        target.dataChannel.send(JSON.stringify(message));
+        return true;
+    }
+
+    async setAudioInactive(pc) {
+        for (const transceiver of pc.getTransceivers()) {
+            if (transceiver.kind !== "audio") continue;
+            transceiver.setDirection("inactive");
+            if (transceiver.sender && typeof transceiver.sender.replaceTrack === "function") {
+                try { await transceiver.sender.replaceTrack(null); } catch (_) {}
+            }
+            return true;
+        }
+        return false;
+    }
+
+    async sendEndCallOfferToTarget(sessionId, session, target) {
+        if (!target || !target.peerConnection) return false;
+        if (target.endCallRenegOfferSent) return true;
+        if (target !== session && (!target.dataChannel || target.dataChannel.readyState !== "open")) return false;
+
+        const pc = target.peerConnection;
+        await this.setAudioInactive(pc);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        target.endCallRenegOfferSent = true;
+        const from = target === session
+            ? identityLabel(session.outboundWebrtc?.toIdentity || session.toIdentity)
+            : identityLabel(session.callerEns);
+        const to = target === session
+            ? identityLabel(session.callerEns)
+            : (target.toIdentity || session.toIdentity);
+        const sent = this.sendEndCallSignaling(sessionId, session, target, {
+            type: "offer",
+            from,
+            to,
+            sessionId,
+            sdp: offer.sdp,
+        });
+        if (sent) {
+            this.logSdp(sessionId, target === session ? "END-CALL OFFER SDP (to caller)" : "END-CALL OFFER SDP (to callee)", offer.sdp);
+        }
+        return sent;
+    }
+
+    async handleEndCallAnswer(sessionId, target, payload) {
+        if (!target || !target.peerConnection) return { complete: true };
+        this.logSdp(sessionId, "END-CALL ANSWER SDP (from client)", payload.sdp);
+        await target.peerConnection.setRemoteDescription(new this.RTCSessionDescription(payload.sdp, "answer"));
+        target.endCallRenegOfferSent = false;
+        target.endCallRenegAnswered = true;
+        return { complete: true };
+    }
+
+    async handleEndCallRenegotiation(sessionId, payload, options = {}) {
+        const session = this.sessions.get(sessionId);
+        if (!session) return { complete: true };
+        const target = this.resolveRenegotiationTarget(session, payload, options);
+        if (payload?.type === "answer") {
+            return this.handleEndCallAnswer(sessionId, target, payload);
+        }
+        if (!target || !target.peerConnection) return { complete: true };
+        const pc = target.peerConnection;
+        this.logSdp(sessionId, "END-CALL OFFER SDP (from client)", payload.sdp);
+        await pc.setRemoteDescription(new this.RTCSessionDescription(payload.sdp, "offer"));
+        await this.setAudioInactive(pc);
         const answer = await pc.createAnswer();
         const answerSdp = alignEndCallAnswerSdp(answer.sdp, payload.sdp);
         await pc.setLocalDescription(new this.RTCSessionDescription(answerSdp, "answer"));
 
-        if (this.callRuntime) {
+        if (this.callRuntime && target === session) {
             await this.callRuntime.clearSipRouteState(sessionId, { reason: "end-call-renegotiated" });
         }
         this.logSdp(sessionId, "END-CALL ANSWER SDP (to client)", answerSdp);
-        this.sendDataChannelMessage(sessionId, buildEndCallAnswerPayload({
-            from: session.toIdentity,
-            to: session.callerEns,
+        this.sendEndCallSignaling(sessionId, session, target, buildEndCallAnswerPayload({
+            from: target === session ? identityLabel(session.toIdentity) : identityLabel(session.callerEns),
+            to: target === session ? identityLabel(session.callerEns) : (target.toIdentity || session.toIdentity),
             sessionId,
             sdp: answerSdp,
-        }));
+        }).payload);
+        const oppositeRenegStarted = await this.sendEndCallOfferToTarget(sessionId, session, this.getOppositeTarget(session, target));
         this.callRuntime.markPostCall(sessionId, {
             source: "client",
             reason: "end-call-renegotiated",
-            endCallRenegDone: true,
+            endCallRenegDone: !oppositeRenegStarted,
         });
+        return { complete: !oppositeRenegStarted };
     }
 }
 

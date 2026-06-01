@@ -166,7 +166,8 @@ function createCallEngineHandlers({
             if (event.answerKind === "outbound-webrtc-leg") return handleOutboundWebrtcLegAnswerDirect(sessionId, event.payload);
             return resolve(answerCallUseCase).handleInboundCalleeAnswer(sessionId, event.payload);
         },
-        onEndRenegotiationReceived: (sessionId, event) => resolve(renegotiateCallUseCase).handleEndCallRenegotiation(sessionId, event.payload),
+        onEndRenegotiationReceived: (sessionId, event) =>
+            resolve(renegotiateCallUseCase).handleEndCallRenegotiation(sessionId, event.payload, event),
     };
 }
 
