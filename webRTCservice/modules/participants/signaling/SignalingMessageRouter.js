@@ -105,7 +105,9 @@ class SignalingMessageRouter {
                 (this.getSessionKind?.(s) === "gateway-outbound-leg" || s.outboundWebrtc) &&
                 typeof this.handleOutboundWebrtcLegAnswer === "function"
             ) {
-                this.enqueueSignaling(sessionId, "outbound-webrtc-leg-answer", () => this.handleOutboundWebrtcLegAnswer(sessionId, payload));
+                this.handleOutboundWebrtcLegAnswer(sessionId, payload).catch((err) => {
+                    this.logger.error(`[${sessionId}] Immediate outbound WebRTC leg answer failed: ${err.message}`);
+                });
             } else if (s && this.getSessionKind?.(s) === "gateway-inbound") {
                 this.enqueueSignaling(sessionId, "inbound-answer", () => this.handleInboundCalleeAnswer(sessionId, payload));
             }
