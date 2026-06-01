@@ -168,7 +168,7 @@ class SignalingMessageRouter {
                 this.logger.log(`[${sessionId}] Ignoring duplicate call-end after post-call completion`);
                 return;
             }
-            if (sess && this.isRinging?.(sess)) {
+            if (sess && !this.isInCall?.(sess)) {
                 this.handleCallEnd(sessionId, "client-initiated", endOptions).catch((err) => {
                     this.logger.error(`[${sessionId}] Immediate call-end failed: ${err.message}`);
                 });
@@ -178,7 +178,7 @@ class SignalingMessageRouter {
             return;
         }
         if (action === "reject") {
-            if (sess && this.isRinging?.(sess)) {
+            if (sess && !this.isInCall?.(sess)) {
                 this.handleCallEnd(sessionId, "client-reject", endOptions).catch((err) => {
                     this.logger.error(`[${sessionId}] Immediate call-reject failed: ${err.message}`);
                 });
