@@ -7,7 +7,6 @@ function authIdentityLabel(identity) {
     if (dotPos > 0) return trimmed.slice(0, dotPos);
     return trimmed;
 }
-
 function authNormalizeSessionId(sessionId) {
     if (!sessionId || typeof sessionId !== "string") return sessionId;
     return sessionId.split("|").map(authIdentityLabel).join("|");
