@@ -100,7 +100,11 @@ class SignalingMessageRouter {
             const s = this.sessions.get(sessionId);
             if (s && s.pendingReoffer) {
                 this.enqueueSignaling(sessionId, "reoffer-answer", () => this.handleReofferAnswer(sessionId, payload));
-            } else if (s && this.getSessionKind?.(s) === "gateway-outbound-leg" && typeof this.handleOutboundWebrtcLegAnswer === "function") {
+            } else if (
+                s &&
+                (this.getSessionKind?.(s) === "gateway-outbound-leg" || s.outboundWebrtc) &&
+                typeof this.handleOutboundWebrtcLegAnswer === "function"
+            ) {
                 this.enqueueSignaling(sessionId, "outbound-webrtc-leg-answer", () => this.handleOutboundWebrtcLegAnswer(sessionId, payload));
             } else if (s && this.getSessionKind?.(s) === "gateway-inbound") {
                 this.enqueueSignaling(sessionId, "inbound-answer", () => this.handleInboundCalleeAnswer(sessionId, payload));

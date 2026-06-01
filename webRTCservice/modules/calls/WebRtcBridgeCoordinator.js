@@ -13,13 +13,17 @@ class WebRtcBridgeCoordinator {
 
     async connect(callerSessionId, calleeSessionId) {
         const callerSession = this.sessions.get(callerSessionId);
-        const calleeSession = this.sessions.get(calleeSessionId);
+        const calleeSession = callerSessionId === calleeSessionId
+            ? callerSession?.outboundWebrtc
+            : this.sessions.get(calleeSessionId) || callerSession?.outboundWebrtcLegs?.get(calleeSessionId);
         if (!callerSession || !calleeSession) return null;
 
         callerSession.bridgedWith = calleeSessionId;
         calleeSession.bridgedWith = callerSessionId;
-        callerSession.linkedSessionId = calleeSessionId;
-        calleeSession.linkedSessionId = callerSessionId;
+        if (callerSessionId !== calleeSessionId) {
+            callerSession.linkedSessionId = calleeSessionId;
+            calleeSession.linkedSessionId = callerSessionId;
+        }
 
         const graph = await this.mediaGraphFactory.webrtcToWebrtc(callerSession, calleeSession);
         callerSession.resources?.mediaSession?.().attachGraph(graph);

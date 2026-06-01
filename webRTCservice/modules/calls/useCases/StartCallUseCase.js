@@ -73,7 +73,7 @@ class StartCallUseCase {
             });
             return;
         }
-        if (sessionKind === "gateway-outbound-leg") {
+        if (sessionKind === "gateway-outbound-leg" || session.outboundWebrtc) {
             this.triggerOutboundWebrtcLegRing(sessionId, destroySession).catch((err) => {
                 this.logger.error(`[${sessionId}] Failed to send outbound WebRTC leg RING on DC open: ${err.message}`);
             });
@@ -86,10 +86,10 @@ class StartCallUseCase {
 
     async triggerOutboundWebrtcLegRing(sessionId, destroySession = null) {
         const session = this.sessions.get(sessionId);
-        if (!session || this.callRuntime?.getSessionKind(session) !== "gateway-outbound-leg") return false;
+        if (!session || !session.outboundWebrtc) return false;
         if (!session.outboundLegHttpAnswered) return false;
         if (session.outboundLegRingSent) return true;
-        if (!session.dataChannel) return false;
+        if (!session.outboundWebrtc.dataChannel) return false;
         session.outboundLegRingSent = true;
         try {
             await this.sendInboundRing(sessionId);
@@ -104,17 +104,19 @@ class StartCallUseCase {
 
     async sendInboundRing(sessionId) {
         const session = this.sessions.get(sessionId);
-        if (!session || !session.peerConnection) throw new Error("Session not found");
-        const pc = session.peerConnection;
-        if (!session.localAudioTrack) {
+        if (!session) throw new Error("Session not found");
+        const target = session.outboundWebrtc || session;
+        if (!target.peerConnection) throw new Error("Session peer connection not found");
+        const pc = target.peerConnection;
+        if (!target.localAudioTrack) {
             const localTrack = new this.MediaStreamTrack({ kind: "audio" });
-            session.localAudioTrack = localTrack;
+            target.localAudioTrack = localTrack;
             pc.addTrack(localTrack);
         } else {
             const audioT = pc.getTransceivers().find((t) => t.kind === "audio");
             if (audioT) audioT.setDirection("sendrecv");
         }
-        session.iceCandidates = [];
+        target.iceCandidates = [];
         const offer = await pc.createOffer();
         let baseOfferSdp = offer.sdp;
         if (session.mediaCodecPolicy) {
@@ -127,23 +129,29 @@ class StartCallUseCase {
         }
         await pc.setLocalDescription(offer);
         await this.waitForIceGathering(pc);
-        const gatheredCandidates = this.formatIceCandidates(session).filter(c => !c.candidate.toLowerCase().includes(" tcp "));
+        const gatheredCandidates = this.formatIceCandidates(target).filter(c => !c.candidate.toLowerCase().includes(" tcp "));
         const srflxAndRelay = gatheredCandidates.filter(c => c.candidate.includes("typ srflx") || c.candidate.includes("typ relay"));
         const candidatesToEmbed = srflxAndRelay.length > 0 ? srflxAndRelay : gatheredCandidates;
         const relayCandidates = this.getRelayCandidates(gatheredCandidates);
         const offerSdp = this.embedCandidatesInSdp(baseOfferSdp, candidatesToEmbed);
         this.logSdp(sessionId, "RING OFFER SDP (to callee)", offerSdp);
-        this.sendDataChannelMessage(sessionId, {
+        const message = {
             msgType: "signaling",
             payload: {
                 type: "offer",
-                from: session.callerEns,
-                to: session.toIdentity,
+                from: target.callerEns || session.callerEns,
+                to: target.toIdentity || session.toIdentity,
                 sessionId,
                 sdp: offerSdp,
                 candidates: relayCandidates,
             },
-        });
+        };
+        if (target !== session) {
+            target.dataChannel.send(JSON.stringify(message));
+            this.logger.log(`[${sessionId}] DC-OUT(callee): msgType=signaling action=offer phase=${session.phase || "?"} sdpLen=${offerSdp.length}`);
+        } else {
+            this.sendDataChannelMessage(sessionId, message);
+        }
         if (session.calleeWallet) {
             const pending = this.pendingInboundCalls.get(session.calleeWallet);
             if (pending) {

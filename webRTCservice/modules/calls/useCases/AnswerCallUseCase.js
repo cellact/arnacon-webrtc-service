@@ -87,12 +87,29 @@ class AnswerCallUseCase {
 
     async handleOutboundWebrtcLegAnswer(sessionId, payload) {
         const session = this.sessions.get(sessionId);
-        if (!session || !session.peerConnection) throw new Error("Session or PeerConnection not found");
-        const pc = session.peerConnection;
+        let target = session?.outboundWebrtc || session;
+        if (session?.outboundWebrtcLegs && payload?.from) {
+            const from = String(payload.from).toLowerCase();
+            for (const leg of session.outboundWebrtcLegs.values()) {
+                if (
+                    String(leg.toIdentity || "").toLowerCase() === from ||
+                    String(leg.walletAddress || "").toLowerCase() === from
+                ) {
+                    target = leg;
+                    session.outboundWebrtc = leg;
+                    break;
+                }
+            }
+        }
+        if (!target || !target.peerConnection) throw new Error("Session or PeerConnection not found");
+        const pc = target.peerConnection;
         if (this.callRuntime) this.callRuntime.markInCall(sessionId, { source: "webrtc-outbound-leg", reason: "callee-answered" });
         await pc.setRemoteDescription(new this.RTCSessionDescription(payload.sdp, "answer"));
-        this.sendDataChannelMessage(sessionId, buildCallAck({ ackFor: "answer" }));
+        const ack = buildCallAck({ ackFor: "answer" });
+        if (target !== session) target.dataChannel?.send(JSON.stringify(ack));
+        else this.sendDataChannelMessage(sessionId, ack);
         this.logger.log(`[${sessionId}] outbound WebRTC stage2: pickup answer received over data channel`);
+        return target;
     }
 
     async finalizeRing({

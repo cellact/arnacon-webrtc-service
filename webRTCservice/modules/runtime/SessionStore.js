@@ -124,6 +124,25 @@ class SessionStore {
             session.dataChannel = null;
         }
 
+        if (session.outboundWebrtc?.dataChannel) {
+            try { session.outboundWebrtc.dataChannel.close(); } catch (_) {}
+            session.outboundWebrtc.dataChannel = null;
+        }
+
+        if (session.outboundWebrtc?.peerConnection) {
+            const pc = session.outboundWebrtc.peerConnection;
+            session.outboundWebrtc.peerConnection = null;
+            try { pc.close(); } catch (_) {}
+        }
+
+        if (session.outboundWebrtcLegs?.values) {
+            for (const leg of session.outboundWebrtcLegs.values()) {
+                try { leg.dataChannel?.close(); } catch (_) {}
+                try { leg.peerConnection?.close(); } catch (_) {}
+            }
+            session.outboundWebrtcLegs.clear();
+        }
+
         if (session.peerConnection) {
             const pc = session.peerConnection;
             session.peerConnection = null;

@@ -11,9 +11,11 @@ function createPeerConnectionFactory({
     onSessionDestroyRequested,
     logger = console,
 }) {
-    function createPeerConnection(sessionId) {
-        const session = sessions.get(sessionId);
+    function createPeerConnection(sessionId, target = null, options = {}) {
+        const session = target || sessions.get(sessionId);
         if (!session) throw new Error("Session not found");
+        const pcLabel = options.label || "PC1";
+        const shouldRequestDestroy = options.destroyOnTerminalState !== false;
 
         const pc = new RTCPeerConnection({ iceServers });
         pc.onIceCandidate.subscribe((candidate) => {
@@ -30,19 +32,20 @@ function createPeerConnectionFactory({
             channel.onclose = () => logger.log(`[${sessionId}] Data channel closed`);
         });
         pc.connectionStateChange.subscribe((state) => {
-            logger.log(`[${sessionId}] PC1 connection state: ${state}`);
+            logger.log(`[${sessionId}] ${pcLabel} connection state: ${state}`);
             const s = sessions.get(sessionId);
-            if (!s || s.destroying) return;
-            if (s.peerConnection !== pc) return;
+            if (!s || s.destroying || session.destroying) return;
+            if (session.peerConnection !== pc) return;
             s.connectionState = state;
-            if (state === "failed" || state === "closed") {
+            session.connectionState = state;
+            if (shouldRequestDestroy && (state === "failed" || state === "closed")) {
                 onSessionDestroyRequested(sessionId, { source: "webrtc", reason: `peer-connection-${state}`, notify: true });
             } else if (state === "disconnected") {
                 if (!s.disconnectTimer) {
                     s.disconnectTimer = setTimeout(() => {
                         s.disconnectTimer = null;
                         const current = sessions.get(sessionId);
-                        if (current && current.peerConnection === pc && current.connectionState === "disconnected") {
+                        if (shouldRequestDestroy && current && session.peerConnection === pc && session.connectionState === "disconnected") {
                             onSessionDestroyRequested(sessionId, { source: "webrtc", reason: "peer-connection-disconnected", notify: true });
                         }
                     }, 5000);
@@ -58,7 +61,7 @@ function createPeerConnectionFactory({
             }
         });
         pc.onTrack.subscribe((track) => {
-            logger.log(`[${sessionId}] PC1 remote track received: ${track.kind}`);
+            logger.log(`[${sessionId}] ${pcLabel} remote track received: ${track.kind}`);
             session.remoteTracks.push(track);
             if (track.kind === "audio" && typeof onInboundRtp === "function" && track.onReceiveRtp?.subscribe) {
                 const sub = track.onReceiveRtp.subscribe((rtp) => {

@@ -15,7 +15,6 @@ function getCallerNumberLabel(identity) {
 class WebRtcOutboundLegFactory {
     constructor({
         sessions,
-        createSession,
         createPeerConnection,
         MediaStreamTrack,
         waitForIceGathering,
@@ -28,7 +27,6 @@ class WebRtcOutboundLegFactory {
     }) {
         Object.assign(this, {
             sessions,
-            createSession,
             createPeerConnection,
             MediaStreamTrack,
             waitForIceGathering,
@@ -41,8 +39,11 @@ class WebRtcOutboundLegFactory {
         });
     }
 
-    attachOutboundDataChannel(legSessionId, legSession) {
-        const pc = this.createPeerConnection(legSessionId);
+    attachOutboundDataChannel(sessionId, legSession) {
+        const pc = this.createPeerConnection(sessionId, legSession, {
+            label: "PC-callee",
+            destroyOnTerminalState: false,
+        });
         if (typeof pc.createDataChannel !== "function") return pc;
 
         const dc = pc.createDataChannel("chat");
@@ -50,16 +51,20 @@ class WebRtcOutboundLegFactory {
 
         legSession.dataChannel = dc;
         dc.onopen = () => {
+            legSession.dataChannelOpen = true;
             if (typeof this.onDataChannelOpen === "function") {
-                this.onDataChannelOpen(legSessionId);
+                this.onDataChannelOpen(sessionId);
             }
         };
         dc.onMessage.subscribe((msg) => {
             if (typeof this.onDataChannelMessage !== "function") return;
             const raw = typeof msg === "string" ? msg : Buffer.from(msg).toString("utf-8");
-            this.onDataChannelMessage(legSessionId, raw);
+            this.onDataChannelMessage(sessionId, raw);
         });
-        dc.onclose = () => this.logger.log(`[${legSessionId}] Data channel closed`);
+        dc.onclose = () => {
+            legSession.dataChannelOpen = false;
+            this.logger.log(`[${sessionId}] Callee data channel closed`);
+        };
         return pc;
     }
 
@@ -72,24 +77,39 @@ class WebRtcOutboundLegFactory {
         const callerEns = callerSession.callerEns;
         const callerNumberLabel = getCallerNumberLabel(callerEns);
         const walletKey = String(calleeWallet || "").toLowerCase();
-        const legSessionId = options.legSessionId || `${callerSessionId}-webrtc-${Date.now()}`;
         if (!calleeWallet || !calleeEns) {
             throw new Error("WebRTC destination missing callee wallet/ENS");
         }
 
-        const legSession = this.createSession(legSessionId, callerEns, calleeEns);
-        legSession.isGatewayCaller = true;
-        legSession.outboundWebrtcLeg = true;
-        legSession.outboundBridgeKind = options.kind || "single";
-        legSession.walletAddress = walletKey;
-        legSession.serviceId = callerSession.serviceId || null;
-        legSession.mediaCodecPolicy = callerSession.mediaCodecPolicy || null;
+        const legSession = {
+            sessionId: callerSessionId,
+            role: "callee-webrtc",
+            callerEns,
+            toIdentity: calleeEns,
+            outboundBridgeKind: options.kind || "single",
+            walletAddress: walletKey,
+            serviceId: callerSession.serviceId || null,
+            mediaCodecPolicy: callerSession.mediaCodecPolicy || null,
+            peerConnection: null,
+            dataChannel: null,
+            iceCandidates: [],
+            remoteTracks: [],
+            localAudioTrack: null,
+            connectionState: "new",
+            dataChannelOpen: false,
+        };
         if (options.multiRingGroupId) {
             legSession.multiRingGroupId = options.multiRingGroupId;
             legSession.multiRingLeg = true;
         }
+        if (options.kind === "multi") {
+            if (!callerSession.outboundWebrtcLegs) callerSession.outboundWebrtcLegs = new Map();
+            callerSession.outboundWebrtcLegs.set(walletKey, legSession);
+        } else {
+            callerSession.outboundWebrtc = legSession;
+        }
 
-        const pc = this.attachOutboundDataChannel(legSessionId, legSession);
+        const pc = this.attachOutboundDataChannel(callerSessionId, legSession);
         legSession.localAudioTrack = new this.MediaStreamTrack({ kind: "audio" });
         pc.addTrack(legSession.localAudioTrack);
         legSession.iceCandidates = [];
@@ -99,7 +119,7 @@ class WebRtcOutboundLegFactory {
         if (callerSession.mediaCodecPolicy) {
             const narrowedOfferSdp = narrowAudioOfferForCodecPolicy(baseOfferSdp, callerSession.mediaCodecPolicy);
             if (narrowedOfferSdp !== baseOfferSdp) {
-                this.logger.log(`[${legSessionId}] WebRTC leg inherited bridge codec policy=${callerSession.mediaCodecPolicy}`);
+                this.logger.log(`[${callerSessionId}] WebRTC callee leg inherited bridge codec policy=${callerSession.mediaCodecPolicy}`);
                 baseOfferSdp = narrowedOfferSdp;
                 offer.sdp = baseOfferSdp;
             }
@@ -120,12 +140,12 @@ class WebRtcOutboundLegFactory {
         const sourceOffer = callerSession.lastRingOfferPayload || null;
 
         const callPayload = serializeNotifyPayload(buildOfferPayload({
-            from: callerNumberLabel || callerEns,
+            from: callerEns,
             to: calleeEns,
-            sessionId: legSessionId,
+            sessionId: callerSessionId,
             sdp: offerSdp,
             candidates: relayCandidates,
-            callNonce: sourceOffer?.callNonce || null,
+            callNonce: sourceOffer?.callNonce || callerSession.callNonce || null,
             isCall: true,
             extra: {
                 label: callerNumberLabel || undefined,
@@ -133,14 +153,14 @@ class WebRtcOutboundLegFactory {
             },
         }));
         this.logger.log(
-            `[${legSessionId}] outbound WebRTC invite payload from=${callerNumberLabel || callerEns} ` +
-            `to=${calleeEns} callerEns=${callerEns}`
+            `[${callerSessionId}] outbound WebRTC invite payload from=${callerEns} ` +
+            `to=${calleeEns}`
         );
 
         return {
             callerSession,
             legSession,
-            legSessionId,
+            legSessionId: options.kind === "multi" ? walletKey : callerSessionId,
             walletKey,
             calleeEns,
             callerEns,

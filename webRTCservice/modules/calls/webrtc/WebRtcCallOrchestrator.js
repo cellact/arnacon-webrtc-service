@@ -9,7 +9,6 @@ class WebRtcCallOrchestrator {
         sessions,
         pendingBridges,
         pendingInboundCalls,
-        createSession,
         createPeerConnection,
         sendNotification,
         sendDataChannelMessage,
@@ -50,7 +49,6 @@ class WebRtcCallOrchestrator {
         this.pendingBridgeRegistry = new PendingBridgeRegistry({ pendingBridges });
         this.outboundLegFactory = new WebRtcOutboundLegFactory({
             sessions,
-            createSession,
             createPeerConnection,
             MediaStreamTrack,
             waitForIceGathering,
@@ -158,7 +156,9 @@ class WebRtcCallOrchestrator {
 
     startBridgeRtp(callerSessionId, calleeSessionId) {
         const callerSession = this.sessions.get(callerSessionId);
-        const calleeSession = this.sessions.get(calleeSessionId);
+        const calleeSession = callerSessionId === calleeSessionId
+            ? callerSession?.outboundWebrtc
+            : this.sessions.get(calleeSessionId) || callerSession?.outboundWebrtcLegs?.get(calleeSessionId);
         if (!callerSession || !calleeSession) return;
         this.webrtcBridgeCoordinator.connect(callerSessionId, calleeSessionId).catch((err) => {
             this.logger.error(`[Bridge][${callerSessionId}<->${calleeSessionId}] media bridge failed: ${err.message}`);

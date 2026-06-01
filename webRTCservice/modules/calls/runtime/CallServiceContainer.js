@@ -138,13 +138,13 @@ function createCallEngineHandlers({
     async function handleOutboundWebrtcLegAnswerDirect(sessionId, payload) {
         const session = callRuntime.sessions.get(sessionId);
         const sessionKind = callRuntime.getSessionKind(session);
-        if (!session || (sessionKind !== "gateway-outbound-leg" && sessionKind !== "multiring-leg")) return null;
+        if (!session || (sessionKind !== "gateway-outbound-leg" && sessionKind !== "multiring-leg" && !session.outboundWebrtc)) return null;
         const answerUseCase = resolve(answerCallUseCase);
         const bridge = resolve(bridgeApi);
-        await answerUseCase.handleOutboundWebrtcLegAnswer(sessionId, payload);
+        const answeredLeg = await answerUseCase.handleOutboundWebrtcLegAnswer(sessionId, payload);
         logger.log(`[Bridge] outbound WebRTC pickup observed sessionId=${sessionId} kind=${session.outboundBridgeKind || "unknown"}`);
-        if (sessionKind === "multiring-leg") {
-            const winner = bridge.commitWinnerFromDataChannelAnswer(sessionId);
+        if (sessionKind === "multiring-leg" || session.outboundWebrtcLegs) {
+            const winner = bridge.commitWinnerFromDataChannelAnswer(answeredLeg?.walletAddress || sessionId);
             return winner || null;
         }
         return bridge.commitWebrtcBridgePickup(sessionId);

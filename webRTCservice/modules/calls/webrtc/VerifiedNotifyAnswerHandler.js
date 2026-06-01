@@ -15,7 +15,20 @@ class VerifiedNotifyAnswerHandler {
 
     async handle(sessionId, offer, session) {
         const sessionKind = this.getSessionKind?.(session);
-        if (!session || (sessionKind !== "gateway-outbound-leg" && sessionKind !== "multiring-leg")) return null;
+        if (!session) return null;
+        if (!session.outboundWebrtc && session.outboundWebrtcLegs && offer?.from) {
+            const from = String(offer.from).toLowerCase();
+            for (const leg of session.outboundWebrtcLegs.values()) {
+                if (
+                    String(leg.toIdentity || "").toLowerCase() === from ||
+                    String(leg.walletAddress || "").toLowerCase() === from
+                ) {
+                    session.outboundWebrtc = leg;
+                    break;
+                }
+            }
+        }
+        if (sessionKind !== "gateway-outbound-leg" && sessionKind !== "multiring-leg" && !session.outboundWebrtc) return null;
 
         session.outboundLegHttpAnswered = true;
         this.logger.log(

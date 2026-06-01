@@ -37,7 +37,17 @@ class MultiringCoordinator {
 
     closeSessionNow(sessionId, reason = "multiring-cleanup") {
         const session = this.sessions.get(sessionId);
-        if (!session) return;
+        if (!session) {
+            const groupId = this.sessionToRingGroup.get(sessionId);
+            const group = groupId ? this.ringGroups.get(groupId) : null;
+            const callerSession = group ? this.sessions.get(group.callerSessionId) : null;
+            const leg = callerSession?.outboundWebrtcLegs?.get(sessionId);
+            if (!leg) return;
+            try { leg.dataChannel?.close(); } catch (_) {}
+            try { leg.peerConnection?.close(); } catch (_) {}
+            callerSession.outboundWebrtcLegs.delete(sessionId);
+            return;
+        }
         const isWinnerLockedLoser = reason === "mr-loser-winner-locked";
         try {
             if (isWinnerLockedLoser) {
@@ -112,7 +122,7 @@ class MultiringCoordinator {
         if (!calleeWallet || !(destination.ensName || calleeWallet)) return null;
 
         const walletKey = String(calleeWallet).toLowerCase();
-        const legSessionId = `${group.groupId}-leg${legIndex}`;
+        const legSessionId = walletKey;
         try {
             const {
                 legSession,
