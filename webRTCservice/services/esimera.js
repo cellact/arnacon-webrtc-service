@@ -1,5 +1,3 @@
-"use strict";
-
 const DOMAINS = ["esimeratest.global", "esimera.global"];
 const INTERNAL_TARGETS = ["esimeratest.global", "secnumtest.global", "secnum.global"];
 

@@ -20,7 +20,7 @@
 // MUST come before requiring sip.js.
 // ════════════════════════════════════════════════════════════
 
-const { applyPolyfills } = require("./modules/polyfills");
+const { applyPolyfills } = require("./modules/media/werift/Polyfills");
 const {
     fixSdpForWerift,
     waitForIceGathering,
@@ -31,7 +31,7 @@ const {
     patchInactiveToSendrecv,
     logSdp: logSdpUtil,
     addIceCandidates: addIceCandidatesUtil,
-} = require("./modules/peerConnection");
+} = require("./modules/media/negotiation/SdpUtils");
 applyPolyfills({ fixSdpForWerift, logger: console });
 const werift = require("werift");
 function sendJsonError(res, statusCode, message) {
@@ -77,27 +77,40 @@ function sendAckAndAnswer(sessionId, answerSdp) {
 }
 
 function failCall(sessionId, err, context) {
-    return callRuntimeCoreApi.failCall(sessionId, err, context);
+    return callEngine.dispatch(sessionId, {
+        type: CallEvents.CallFailed,
+        source: CallEventSources.System,
+        reason: context || "call-failed",
+        error: err,
+        notifyClient: true,
+    });
 }
 
 function ensureLocalAudioTrack(session, pc, sessionId) {
-    return callRuntimeCoreApi.ensureLocalAudioTrack(session, pc, sessionId);
+    return callSdpUseCases.ensureLocalAudioTrack(session, pc, sessionId);
 }
 
 async function createAnswerSdp(pc, sessionId, label) {
-    return callRuntimeCoreApi.createAnswerSdp(pc, sessionId, label);
+    return callSdpUseCases.createAnswerSdp(pc, sessionId, label);
 }
 
 function sendSignalingOffer(sessionId, sdp) {
-    return callRuntimeCoreApi.sendSignalingOffer(sessionId, sdp);
+    return callSdpUseCases.sendSignalingOffer(sessionId, sdp);
 }
 
 function schedulePhase2Reoffer(sessionId, pendingReoffer) {
-    return callRuntimeCoreApi.schedulePhase2Reoffer(sessionId, pendingReoffer);
+    return callSdpUseCases.schedulePhase2Reoffer(sessionId, pendingReoffer);
 }
 
 async function routeCall(sessionId, session, destination, parsedFrom) {
-    return callRuntimeCoreApi.routeCall(sessionId, session, destination, parsedFrom);
+    callRuntime.attachRoute(sessionId, destination);
+    return callEngine.dispatch(sessionId, {
+        type: CallEvents.RouteStartRequested,
+        source: CallEventSources.Route,
+        destination,
+        route: destination?.route,
+        parsedFrom,
+    });
 }
 
 function attachSbcByeHandler(sipSession, sessionId) {
@@ -117,29 +130,55 @@ const path = require("path");
 const http2 = require("http2");
 const fs = require("fs");
 const crypto = require("crypto");
-const { createSessionStore } = require("./modules/sessionStore");
-const { createCallRouter } = require("./modules/callRouter");
-const { createBlockchainApi } = require("./modules/blockchain");
-const { createNotificationApi } = require("./modules/notification");
-const { createHandlers } = require("./modules/handlers");
-const { createHttpServers } = require("./modules/httpServer");
-const { createPeerConnectionFactory } = require("./modules/peerConnection");
-const { createSipClient } = require("./modules/sipClient");
-const { createSignalingHandlers } = require("./modules/signalingHandlers");
-const { createMessagingFlow } = require("./modules/messagingFlow");
-const { createBridgeApi } = require("./modules/bridge");
-const { createCallFlowApi } = require("./modules/callFlow");
-const { createInboundCallFlow } = require("./modules/inboundCallFlow");
-const { createOfferFlow } = require("./modules/offerFlow");
-const { createHandshakeFlow } = require("./modules/handshakeFlow");
-const { createDataChannelApi } = require("./modules/dataChannel");
-const { createSipRuntime } = require("./modules/sipRuntime");
-const { createCallRuntimeCore } = require("./modules/callRuntimeCore");
-const { createOpenAiSipGateway } = require("./modules/openAiSipGateway");
-const { createSignalingPipeline } = require("./modules/signalingPipeline");
-const { createIvrRuntime } = require("./modules/ivrRuntime");
-const { createIvrAudioPlayback } = require("./modules/ivrAudioPlayback");
-const { createMinuteCounter } = require("./modules/minuteCounter");
+const { createSessionStore } = require("./modules/runtime/SessionStore");
+const { createCallRouter } = require("./modules/routing/CallRouterApi");
+const { createBlockchainApi } = require("./modules/gateways/blockchain/BlockchainApi");
+const { BlockchainGateway } = require("./modules/gateways/blockchain/BlockchainGateway");
+const { createNotificationApi } = require("./modules/gateways/notification/NotificationApi");
+const { NotificationGateway } = require("./modules/gateways/notification/NotificationGateway");
+const { createHandlers } = require("./modules/server/HttpHandlers");
+const { createHttpServers } = require("./modules/server/HttpServer");
+const { createPeerConnectionFactory } = require("./modules/media/werift/PeerConnectionFactory");
+const { createSipClient } = require("./modules/gateways/sip/SipClient");
+const { SipGateway } = require("./modules/gateways/sip/SipGateway");
+const { createSignalingHandlers } = require("./modules/participants/signaling/SignalingHandlers");
+const { createMessagingFlow } = require("./modules/messaging/MessagingFlow");
+const { WebRtcCallOrchestrator } = require("./modules/calls/webrtc/WebRtcCallOrchestrator");
+const { VerifiedNotifyAnswerHandler } = require("./modules/calls/webrtc/VerifiedNotifyAnswerHandler");
+const { StartCallUseCase } = require("./modules/calls/useCases/StartCallUseCase");
+const { AnswerCallUseCase } = require("./modules/calls/useCases/AnswerCallUseCase");
+const { RenegotiateCallUseCase } = require("./modules/calls/useCases/RenegotiateCallUseCase");
+const { createInboundCallFlow } = require("./modules/calls/inbound/InboundCallFlow");
+const { createOfferFlow } = require("./modules/calls/webrtc/WebRtcOfferUseCase");
+const { createHandshakeFlow } = require("./modules/calls/webrtc/WebRtcHandshakeUseCase");
+const { createDataChannelApi } = require("./modules/participants/signaling/DataChannelGateway");
+const { createSipRuntime } = require("./modules/gateways/sip/SipRuntime");
+const { createOpenAiSipGateway } = require("./modules/gateways/openai/OpenAiGateway");
+const { OpenAiTransferFlow } = require("./modules/gateways/openai/OpenAiTransferFlow");
+const { adaptRtpPayloadType } = require("./modules/media/codecs/rtp");
+const { MediaGraphFactory } = require("./modules/media/MediaGraphFactory");
+const { MediaRelayController } = require("./modules/media/MediaRelayController");
+const { CallSdpUseCases } = require("./modules/calls/useCases/CallSdpUseCases");
+const { SignalingAuthVerifier, createSignalingPipeline } = require("./modules/participants/signaling/SignalingPipeline");
+const { createIvrRuntime } = require("./modules/callFeatures/ivr/IvrRuntime");
+const { createIvrAudioPlayback } = require("./modules/callFeatures/ivr/IvrAudioPlayback");
+const { IvrFeature } = require("./modules/callFeatures/ivr/IvrFeature");
+const { createMinuteCounter } = require("./modules/callFeatures/minuteCounter/MinuteCounter");
+const { OpenAiSalesAgentFeature } = require("./modules/callFeatures/openaiSales/OpenAiSalesAgentFeature");
+const { IvrRedirectController } = require("./modules/callFeatures/ivr/IvrRedirectController");
+const { MinuteCounterPolicy } = require("./modules/callFeatures/minuteCounter/MinuteCounterPolicy");
+const { AddressParser } = require("./modules/routing/AddressParser");
+const { ServiceRegistry: ServiceRuntimeRegistry } = require("./modules/routing/ServiceRegistry");
+const { ServiceContextFactory } = require("./modules/routing/ServiceContextFactory");
+const { DestinationResolver } = require("./modules/routing/DestinationResolver");
+const { CallerIdResolver } = require("./modules/routing/CallerIdResolver");
+const { CallRegistry } = require("./modules/calls/CallRegistry");
+const { CallFactory } = require("./modules/calls/CallFactory");
+const { CallEvents, CallEventSources } = require("./modules/calls/CallEvents");
+const { CallRuntime } = require("./modules/calls/runtime/CallRuntime");
+const { CallEngine } = require("./modules/calls/engine/CallEngine");
+const { createCallEngineHandlers, createRouteStrategies } = require("./modules/calls/runtime/CallServiceContainer");
+const { ParticipantFactory } = require("./modules/participants/ParticipantFactory");
 const {
     MediaStreamTrack,
 } = werift;
@@ -262,12 +301,14 @@ if (selectedServiceId && activeServiceRuntimes.length === 0) {
     throw new Error(`SERVICE_ID '${selectedServiceId}' not found in config service registry`);
 }
 const defaultServiceRuntime = activeServiceRuntimes[0] || Object.values(serviceRuntimes)[0] || null;
+const serviceRuntimeRegistry = new ServiceRuntimeRegistry({
+    serviceRuntimes,
+    activeServiceRuntimes,
+    logger: console,
+});
 
 function getServiceRuntime(serviceId = null) {
-    if (serviceId && serviceRuntimes[serviceId]) {
-        return serviceRuntimes[serviceId];
-    }
-    return defaultServiceRuntime;
+    return serviceRuntimeRegistry.get(serviceId) || defaultServiceRuntime;
 }
 
 // Kamailio SIP config
@@ -324,9 +365,31 @@ const sessions = sessionStore.sessions;
 const sessionsByUser = sessionStore.sessionsByUser; // stableKey(from, to) → sessionId
 const pendingBridges = sessionStore.pendingBridges; // callee wallet (lowercase) → { callerSessionId, resolve, reject, timer }
 const pendingInboundCalls = sessionStore.pendingInboundCalls; // callee wallet (lowercase) → { fromNumber, toNumber, callId, timer }
+const callRegistry = new CallRegistry({ logger: console });
+const participantFactory = new ParticipantFactory({
+    parseAddress: (...args) => parseAddress(...args),
+    logger: console,
+});
+const callFactory = new CallFactory({
+    participantFactory,
+    logger: console,
+});
+const mediaGraphFactory = new MediaGraphFactory({
+    sessions,
+    MediaStreamTrack,
+    logger: console,
+});
+const mediaRelayController = new MediaRelayController({
+    sessions,
+    MediaStreamTrack,
+    logger: console,
+});
 const minuteCounterApi = createMinuteCounter({
     filePath: config.minuteCounterPath,
     logger: console,
+});
+const minuteCounterPolicy = new MinuteCounterPolicy({
+    getServiceRuntime: (...args) => getServiceRuntime(...args),
 });
 const dataChannelApi = createDataChannelApi({ sessions, logger: console });
 const messagingFlowApi = createMessagingFlow({
@@ -347,13 +410,14 @@ const blockchainApi = createBlockchainApi({
     createHttpError,
     logger: console,
 });
+const blockchainGateway = new BlockchainGateway({ blockchainApi });
 const callRouterApi = createCallRouter({
     roflBaseUrl: ROFL_BASE_URL,
     fetchImpl: fetch,
     logger: console,
     useLocalRoflLogic: USE_LOCAL_ROFL_LOGIC,
-    lookupBusinessNumberImpl: (...args) => blockchainApi.roflFindBusinessNumber(...args),
-    assignFromNumberImpl: (...args) => blockchainApi.roflAssignFromNumber(...args),
+    lookupBusinessNumberImpl: (...args) => blockchainGateway.roflFindBusinessNumber(...args),
+    assignFromNumberImpl: (...args) => blockchainGateway.roflAssignFromNumber(...args),
 });
 const roflLogicInfo = blockchainApi.getRoflLogicInfo();
 console.log(
@@ -376,8 +440,40 @@ const notificationApi = createNotificationApi({
     logger: console,
     fetchImpl: fetch,
 });
+const notificationGateway = new NotificationGateway({ notificationApi, logger: console });
+const addressParserApi = new AddressParser({ callRouter: callRouterApi });
+const serviceContextFactory = new ServiceContextFactory({
+    serviceRegistry: serviceRuntimeRegistry,
+    zeroAddress: ethers.constants.AddressZero,
+    parseAddress: (...args) => parseAddress(...args),
+    normalizePhone: (...args) => normalizePhone(...args),
+    blockchainApi,
+    callRouterApi,
+    sendNotification: (...args) => sendNotification(...args),
+    findOutboundSessionForInbound: (...args) => findOutboundSessionForInbound(...args),
+    openSipSession: (...args) => openSipSession(...args),
+    openInboundSipSession: (...args) => openInboundSipSession(...args),
+    notifyAndBridge: (...args) => notifyAndBridge(...args),
+    sendAck: (...args) => sendAck(...args),
+    sendAnswer: (...args) => sendAnswer(...args),
+    sendAckAndAnswer: (...args) => sendAckAndAnswer(...args),
+    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
+    handleCallEnd: (...args) => handleCallEnd(...args),
+    emailToEnsName: (...args) => emailToEnsName(...args),
+    logger: console,
+});
+const destinationResolverApi = new DestinationResolver({
+    serviceRegistry: serviceRuntimeRegistry,
+    serviceContextFactory,
+});
+const callerIdResolverApi = new CallerIdResolver({
+    serviceRegistry: serviceRuntimeRegistry,
+    serviceContextFactory,
+});
+let callRuntime;
 const ivrAudioPlaybackApi = createIvrAudioPlayback({
     sessions,
+    isInCall: (session) => Boolean(callRuntime?.isInCall(session)),
     logger: console,
     demoAudioDir: IVR_DEMO_AUDIO_DIR,
 });
@@ -387,9 +483,72 @@ const ivrRuntimeApi = createIvrRuntime({
     playAudioForSession: (...args) => ivrAudioPlaybackApi.playText(...args),
     playAudioFileForSession: (...args) => ivrAudioPlaybackApi.playFile(...args),
     stopAudioForSession: (...args) => ivrAudioPlaybackApi.stopSessionPlayback(...args),
-    redirectCallForSession: (...args) => redirectIvrSessionToWebrtc(...args),
+    startMediaForSession: (...args) => startIvrMediaSession(...args),
+    stopMediaForSession: (...args) => stopIvrMediaSession(...args),
+    redirectCallForSession: (...args) => ivrRedirectController.redirectToWebrtc(...args),
     logger: console,
 });
+const ivrRedirectController = new IvrRedirectController({
+    sessions,
+    parseAddress: (...args) => parseAddress(...args),
+    resolveDestination: (...args) => resolveDestination(...args),
+    notifyAndBridge: (...args) => notifyAndBridge(...args),
+    playWaitingAudio: (...args) => ivrAudioPlaybackApi.playFile(...args),
+    stopIvr: (...args) => ivrRuntimeApi.stopIvr(...args),
+    stopAudioForSession: (...args) => ivrAudioPlaybackApi.stopSessionPlayback(...args),
+    logger: console,
+});
+const ivrFeatureApi = new IvrFeature({
+    ivrRuntime: ivrRuntimeApi,
+    ivrAudioPlayback: ivrAudioPlaybackApi,
+    logger: console,
+});
+callRuntime = new CallRuntime({
+    sessions,
+    callRegistry,
+    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
+    enqueueSignaling: (...args) => enqueueSignaling(...args),
+    destroySession: (...args) => destroySession(...args),
+    teardownHandlers: [
+        ({ session }) => minuteCounterApi.finish(session),
+        ({ sessionId }, event) => ivrFeatureApi.stop(sessionId, event.reason || "runtime-teardown"),
+    ],
+    logger: console,
+});
+const { routeStrategyRegistry } = createRouteStrategies({
+    openSipSession: (...args) => openSipSession(...args),
+    closeSipSession: (...args) => closeSipSession(...args),
+    resolveCallerId: (...args) => resolveCallerId(...args),
+    minuteCounter: minuteCounterApi,
+    minuteCounterPolicy,
+    startMediaRelay: (...args) => startMediaRelay(...args),
+    stopMediaRelay: (...args) => stopMediaRelay(...args),
+    finishMinuteCounter: (session) => minuteCounterApi.finish(session),
+    openOpenAiSipSession: (...args) => openOpenAiSipSession(...args),
+    closeOpenAiSipSession: (...args) => openAiSipGatewayApi.closeOpenAiSipSession(...args),
+    notifyAndBridge: (...args) => notifyAndBridge(...args),
+    notifyAndBridgeMulti: (...args) => notifyAndBridgeMulti(...args),
+    startPendingMultiBridge: (...args) => bridgeApi.startPendingMultiBridge(...args),
+    destroyRuntimeSession: (...args) => callRuntime.destroyRuntimeSession(...args),
+    startIvrSession: (...args) => ivrFeatureApi.start(...args),
+    stopIvrSession: (...args) => ivrFeatureApi.stop(...args),
+    logger: console,
+});
+const callEngine = new CallEngine({
+    runtime: callRuntime,
+    routeStrategies: routeStrategyRegistry,
+    handlers: createCallEngineHandlers({
+        handshakeFlowApi: () => handshakeFlowApi,
+        startCallUseCase: () => startCallUseCase,
+        answerCallUseCase: () => answerCallUseCase,
+        renegotiateCallUseCase: () => renegotiateCallUseCase,
+        bridgeApi: () => bridgeApi,
+        callRuntime,
+        logger: console,
+    }),
+    logger: console,
+});
+callRuntime.setCallEventDispatcher((sessionId, event) => callEngine.dispatch(sessionId, event));
 const sipRuntimeApi = createSipRuntime({
     sessions,
     stopMediaRelay: (...args) => stopMediaRelay(...args),
@@ -397,6 +556,8 @@ const sipRuntimeApi = createSipRuntime({
     patchRouterForDynamicSsrc: (...args) => peerConnectionApi.patchRouterForDynamicSsrc(...args),
     SessionState,
     finishMinuteCounter: (session) => minuteCounterApi.finish(session),
+    onCallEvent: (sessionId, event) => callEngine.dispatch(sessionId, event),
+    isInCall: (session) => callRuntime.isInCall(session),
     logger: console,
 });
 const sipClientApi = createSipClient({
@@ -411,6 +572,33 @@ const sipClientApi = createSipClient({
     attachSbcByeHandler: (...args) => attachSbcByeHandler(...args),
     setupPc2: (...args) => setupPc2(...args),
     startMediaRelay: (sessionId) => startMediaRelay(sessionId),
+    isTerminalForSipEvents: (session) => callRuntime.isTerminalForSipEvents(session),
+    logger: console,
+});
+const sipGateway = new SipGateway({
+    sipClient: sipClientApi,
+    sessionStore,
+    logger: console,
+});
+const openAiTransferFlow = new OpenAiTransferFlow({
+    sessions,
+    parseAddress: (...args) => parseAddress(...args),
+    resolveDestination: (...args) => resolveDestination(...args),
+    closeOpenAiSipSession: (...args) => openAiSipGatewayApi.closeOpenAiSipSession(...args),
+    stopMediaRelay: (...args) => stopMediaRelay(...args),
+    routeCall: (...args) => routeCall(...args),
+    closeSipSession: (...args) => closeSipSession(...args),
+    startPendingMultiBridge: (...args) => bridgeApi.startPendingMultiBridge(...args),
+    startMediaRelay: (...args) => startMediaRelay(...args),
+    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
+    callRuntime,
+    connectRoute: (sessionId, { destination, routeResult, source } = {}) => callEngine.dispatch(sessionId, {
+        type: CallEvents.RouteConnected,
+        source: source || CallEventSources.Route,
+        destination,
+        route: destination?.route || routeResult,
+        routeResult,
+    }),
     logger: console,
 });
 const openAiSipGatewayApi = createOpenAiSipGateway({
@@ -418,11 +606,13 @@ const openAiSipGatewayApi = createOpenAiSipGateway({
     sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
     stopMediaRelay: (...args) => stopMediaRelay(...args),
     finishMinuteCounter: (session) => minuteCounterApi.finish(session),
-    onTransferOpenAiCall: (...args) => transferOpenAiCallRequest(...args),
+    onTransferOpenAiCall: (...args) => openAiTransferFlow.request(...args),
+    onCallEvent: (sessionId, event) => callEngine.dispatch(sessionId, event),
+    isInCall: (session) => callRuntime.isInCall(session),
     config: OPENAI_SIP_CONFIG,
     logger: console,
 });
-const bridgeApi = createBridgeApi({
+const bridgeApi = new WebRtcCallOrchestrator({
     sessions,
     pendingBridges,
     pendingInboundCalls,
@@ -432,6 +622,7 @@ const bridgeApi = createBridgeApi({
     sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
     startWebRtcBridge: (...args) => startWebRtcBridge(...args),
     destroySession: (...args) => destroySession(...args),
+    onCallEvent: (sessionId, event) => callEngine.dispatch(sessionId, event),
     notiTypeCall: NOTI_TYPE_CALL,
     MediaStreamTrack,
     waitForIceGathering: (...args) => waitForIceGathering(...args),
@@ -443,24 +634,61 @@ const bridgeApi = createBridgeApi({
     onDataChannelMessage: (...args) => onDataChannelMessage(...args),
     logger: console,
 });
-const callFlowApi = createCallFlowApi({
+const openAiSalesFeature = new OpenAiSalesAgentFeature({
+    sessions,
+    triggerCaller: OPENAI_SALES_TRIGGER_CALLER,
+    salesAgentFrom: OPENAI_SALES_AGENT_FROM,
+    createSession: (...args) => createSession(...args),
+    parseAddress: (...args) => parseAddress(...args),
+    notifyAndBridge: (...args) => notifyAndBridge(...args),
+    notifyAndBridgeMulti: (...args) => notifyAndBridgeMulti(...args),
+    startPendingMultiBridge: (...args) => bridgeApi.startPendingMultiBridge(...args),
+    routeCall: (...args) => routeCall(...args),
+    openOpenAiSipSession: (...args) => openOpenAiSipSession(...args),
+    closeSipSession: (...args) => closeSipSession(...args),
+    closeNativeSipSession: (sessionId) => sipGateway.close(sessionId),
+    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
+    destroySession: (...args) => destroySession(...args),
+    mediaGraphFactory,
+    adaptRtpPayloadType,
+    crypto,
+    SessionState,
+    callRuntime,
+    logger: console,
+});
+const answerCallUseCase = new AnswerCallUseCase({
+    sessions,
+    openInboundSipSession: (...args) => openInboundSipSession(...args),
+    startMediaRelay: (...args) => startMediaRelay(...args),
+    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
+    sendAnswer: (...args) => sendAnswer(...args),
+    sendAckAndAnswer: (...args) => sendAckAndAnswer(...args),
+    failCall: (...args) => failCall(...args),
+    schedulePhase2Reoffer: (...args) => schedulePhase2Reoffer(...args),
+    RTCSessionDescription,
+    startPendingMultiBridge: (...args) => bridgeApi.startPendingMultiBridge(...args),
+    shouldStartIvrForSession: (...args) => ivrFeatureApi.shouldStart(...args),
+    callRuntime,
+    connectRoute: (sessionId, { destination, routeResult, source } = {}) => callEngine.dispatch(sessionId, {
+        type: CallEvents.RouteConnected,
+        source: source || CallEventSources.Route,
+        destination,
+        route: destination?.route || routeResult,
+        routeResult,
+    }),
+    logger: console,
+});
+const startCallUseCase = new StartCallUseCase({
     sessions,
     pendingInboundCalls,
     parseAddress: (...args) => parseAddress(...args),
     resolveDestination: (...args) => resolveDestination(...args),
     routeCall: (...args) => routeCall(...args),
-    openInboundSipSession: (...args) => openInboundSipSession(...args),
-    startMediaRelay: (...args) => startMediaRelay(...args),
-    stopMediaRelay: (...args) => stopMediaRelay(...args),
-    closeSipSession: (...args) => closeSipSession(...args),
     sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
     sendAck: (...args) => sendAck(...args),
     sendAnswer: (...args) => sendAnswer(...args),
-    sendAckAndAnswer: (...args) => sendAckAndAnswer(...args),
-    failCall: (...args) => failCall(...args),
     ensureLocalAudioTrack: (...args) => ensureLocalAudioTrack(...args),
     createAnswerSdp: (...args) => createAnswerSdp(...args),
-    schedulePhase2Reoffer: (...args) => schedulePhase2Reoffer(...args),
     logSdp: (...args) => logSdp(...args),
     patchInactiveToSendrecv: (...args) => patchInactiveToSendrecv(...args),
     waitForIceGathering: (...args) => waitForIceGathering(...args),
@@ -469,14 +697,36 @@ const callFlowApi = createCallFlowApi({
     embedCandidatesInSdp: (...args) => embedCandidatesInSdp(...args),
     MediaStreamTrack,
     RTCSessionDescription,
-    enqueueSignaling: (...args) => enqueueSignaling(...args),
-    startPendingMultiBridge: (...args) => bridgeApi.startPendingMultiBridge(...args),
-    shouldStartIvrForSession: (...args) => ivrRuntimeApi.shouldStartForSession(...args),
-    startIvrForSession: (...args) => ivrRuntimeApi.startIvr(...args),
-    shouldStartOpenAiSalesAgent: (...args) => shouldStartOpenAiSalesAgent(...args),
-    startOpenAiSalesAgentFlow: (...args) => startOpenAiSalesAgentFlow(...args),
-    finishMinuteCounter: (session) => minuteCounterApi.finish(session),
+    answerCallUseCase,
+    shouldStartOpenAiSalesAgent: (...args) => openAiSalesFeature.shouldStart(...args),
+    startOpenAiSalesAgentFlow: (...args) => openAiSalesFeature.start(...args),
+    cancelCall: (sessionId, { destination, reason } = {}) => callEngine.dispatch(sessionId, {
+        type: CallEvents.CallCancelRequested,
+        source: CallEventSources.Route,
+        destination,
+        route: "reject",
+        reason: reason || "reject-route",
+        notifyClient: true,
+    }),
+    callRuntime,
     logger: console,
+});
+const verifiedNotifyAnswerHandler = new VerifiedNotifyAnswerHandler({
+    bridgeApi,
+    startCallUseCase,
+    destroySession: (...args) => destroySession(...args),
+    getSessionKind: (session) => callRuntime.getSessionKind(session),
+    logger: console,
+});
+const renegotiateCallUseCase = new RenegotiateCallUseCase({
+    sessions,
+    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
+    closeSipSession: (...args) => closeSipSession(...args),
+    stopMediaRelay: (...args) => stopMediaRelay(...args),
+    finishMinuteCounter: (session) => minuteCounterApi.finish(session),
+    logSdp: (...args) => logSdp(...args),
+    RTCSessionDescription,
+    callRuntime,
 });
 const signalingHandlersApi = createSignalingHandlers({
     sessions,
@@ -488,7 +738,14 @@ const signalingHandlersApi = createSignalingHandlers({
     handleRing: (...args) => handleRing(...args),
     handleCallEnd: (...args) => handleCallEnd(...args),
     handleCallDtmf: (...args) => handleCallDtmf(...args),
+    handleCallHold: (sessionId, held) => callRuntime.setSipHold(sessionId, !held),
     handleDataMessage: (...args) => messagingFlowApi.handleDataMessage(...args),
+    resetPostCallForNewRing: (sessionId) => callRuntime.resetForNewRing(sessionId, { source: "client", reason: "post-call-new-ring" }),
+    isEndRenegotiationPending: (session) => callRuntime.isEndRenegotiationPending(session),
+    canAcceptNewRing: (session) => callRuntime.canAcceptNewRing(session),
+    isRinging: (session) => callRuntime.isRinging(session),
+    isInCall: (session) => callRuntime.isInCall(session),
+    getSessionKind: (session) => callRuntime.getSessionKind(session),
     logger: console,
 });
 const peerConnectionApi = createPeerConnectionFactory({
@@ -499,200 +756,42 @@ const peerConnectionApi = createPeerConnectionFactory({
     onPeerConnected: (sessionId) => onPeerConnected(sessionId),
     onDataChannelMessage: (sessionId, raw) => signalingHandlersApi.onDataChannelMessage(sessionId, raw),
     onInboundRtp: (sessionId, rtp) => ivrAudioPlaybackApi.onInboundRtp(sessionId, rtp),
-    destroySession: (sessionId, notify) => destroySession(sessionId, notify),
+    onSessionDestroyRequested: (sessionId, event) => callEngine.dispatch(sessionId, {
+        type: CallEvents.SessionDestroyRequested,
+        source: event.source || CallEventSources.WebRtc,
+        reason: event.reason || "peer-connection-destroy",
+        notify: event.notify === true,
+    }),
     logger: console,
 });
 ivrAudioPlaybackApi.validateDependencies();
 
 // Module-backed APIs used by manager orchestration.
 function parseAddress(addr, serviceId = null) {
-    return callRouterApi.parseAddress(addr, serviceId);
+    return addressParserApi.parse(addr, serviceId);
 }
-const isRawEmail = callRouterApi.isRawEmail;
-const emailToEnsName = callRouterApi.emailToEnsName;
-const resolveEnsToAddress = blockchainApi.resolveEnsToAddress;
-const verifyHttpSignalingSignature = blockchainApi.verifyHttpSignalingSignature;
-const isEthAddress = blockchainApi.isEthAddress;
-const zeroAddress = ethers.constants.AddressZero;
+const isRawEmail = (...args) => addressParserApi.isRawEmail(...args);
+const emailToEnsName = (...args) => addressParserApi.emailToEnsName(...args);
+const resolveEnsToAddress = (...args) => blockchainGateway.resolveEnsToAddress(...args);
+const signalingAuthVerifier = new SignalingAuthVerifier({ blockchainGateway, sessions });
+const isEthAddress = (...args) => blockchainGateway.isEthAddress(...args);
 
-const sendNotification = notificationApi.sendNotification;
+const sendNotification = (...args) => notificationGateway.send(...args);
 
 function normalizePhone(value) {
-    return String(value || "").replace(/^\+/, "");
-}
-
-function getMinuteLimitSeconds(serviceRuntime) {
-    const constants = serviceRuntime?.serviceConstants || {};
-    if (constants.minuteLimitSeconds !== undefined) {
-        const parsedSeconds = Number(constants.minuteLimitSeconds);
-        return Number.isFinite(parsedSeconds) && parsedSeconds > 0 ? Math.floor(parsedSeconds) : null;
-    }
-    if (constants.minuteLimitMinutes !== undefined) {
-        const parsedMinutes = Number(constants.minuteLimitMinutes);
-        return Number.isFinite(parsedMinutes) && parsedMinutes > 0 ? Math.floor(parsedMinutes * 60) : null;
-    }
-    return null;
-}
-
-function getMinuteCounterSettings(serviceId = null) {
-    const runtime = getServiceRuntime(serviceId);
-    const limitSeconds = getMinuteLimitSeconds(runtime);
-    if (!runtime?.id || !limitSeconds) return null;
-    return {
-        serviceId: runtime.id,
-        limitSeconds,
-    };
-}
-
-function getMinuteCounterIdentity(parsedFrom, session) {
-    const rawFull = String(parsedFrom?.full || session?.callerEns || "").trim().toLowerCase();
-    if (rawFull.endsWith(".global")) return rawFull;
-
-    const runtime = getServiceRuntime(session?.serviceId || null);
-    const domains = Array.isArray(runtime?.serviceConstants?.domains) ? runtime.serviceConstants.domains : [];
-    const domain = domains[0] || runtime?.primaryDomain || "";
-    const label = normalizePhone(parsedFrom?.value || rawFull).trim().toLowerCase();
-    if (!label || !domain) return rawFull || label;
-    return `${label}.${domain}`;
-}
-
-function getAllServiceDomains() {
-    const domains = [];
-    for (const runtime of Object.values(serviceRuntimes)) {
-        const configured = Array.isArray(runtime.serviceConstants?.domains)
-            ? runtime.serviceConstants.domains
-            : [];
-        if (configured.length > 0) domains.push(...configured);
-        else {
-            if (runtime.primaryDomain) domains.push(runtime.primaryDomain);
-            if (Array.isArray(runtime.domainAliases)) domains.push(...runtime.domainAliases);
-        }
-    }
-    return Array.from(new Set(domains.filter(Boolean)));
-}
-
-async function tryInternalWebrtcLookup(label, targetDomains = []) {
-    const normalized = normalizePhone(label);
-    for (const domain of targetDomains || []) {
-        const ensName = `${normalized}.${domain}`;
-        try {
-            const addr = await resolveEnsToAddress(ensName);
-            if (addr && addr !== zeroAddress) {
-                return { route: "webrtc", wallet: addr, ensName };
-            }
-        } catch (_) {}
-    }
-    return null;
-}
-
-function selectInboundLookupValue({ payload, lookupField }) {
-    const field = lookupField === "diversion" ? "diversion" : "to";
-    return payload?.[field] || null;
-}
-
-function buildInboundCandidates({ value, domains = [] }) {
-    const normalized = normalizePhone(value);
-    if (!normalized) return [];
-    const variants = new Set([normalized]);
-    if (normalized.startsWith("0") && normalized.length > 1) variants.add(`972${normalized.slice(1)}`);
-    if (normalized.startsWith("972") && normalized.length > 3) variants.add(`0${normalized.slice(3)}`);
-    const out = [];
-    for (const domain of domains) {
-        for (const variant of variants) out.push(`${variant}.${domain}`);
-    }
-    return out;
+    return minuteCounterPolicy.normalizePhone(value);
 }
 
 function getServiceHelpers(serviceRuntime) {
-    return {
-        zeroAddress,
-        getServiceConstants: () => serviceRuntime.serviceConstants || {},
-        parseIdentity: (value) => parseAddress(value, serviceRuntime.id),
-        normalizePhone,
-        normalizeEmail: (value) => String(value || "").trim().toLowerCase(),
-        buildEnsLabel: (value) => String(value || "").trim().toLowerCase(),
-        formatProviderEns: (label, domain) => `${label}.${domain}`,
-        lookupEnsOwner: (...args) => blockchainApi.resolveEnsToOwner(...args),
-        lookupEnsAddress: (...args) => resolveEnsToAddress(...args),
-        lookupEnsTextRecord: (...args) => blockchainApi.resolveEnsTextRecord(...args),
-        lookupNftOwnedNumber: (...args) => blockchainApi.nftGetOwnedNumber(...args),
-        lookupBusinessNumber: (...args) => callRouterApi.roflFindBusinessNumber(...args),
-        lookupBusinessNumberCascade: (...args) => callRouterApi.roflCascadingBusinessLookup(...args),
-        assignPoolFromNumber: (...args) => callRouterApi.roflAssignFromNumber(...args),
-        getProviderForDomain: (domain) => {
-            if (!domain) return null;
-            const configured = Array.isArray(serviceRuntime.serviceConstants?.domains)
-                ? serviceRuntime.serviceConstants.domains
-                : [serviceRuntime.primaryDomain, ...(serviceRuntime.domainAliases || [])];
-            if (configured.includes(domain)) return serviceRuntime.providerId;
-            return null;
-        },
-        extractInboundFields: (payload) => payload || {},
-        buildInboundCandidates,
-        findLinkedOutboundSession: (...args) => findOutboundSessionForInbound(...args),
-        selectInboundLookupValue,
-        notifyAndWakeUser: async (input) => {
-            let message = input.message;
-            if (serviceRuntime.shapeNotifyPayload) {
-                message = await serviceRuntime.shapeNotifyPayload({
-                    serviceId: serviceRuntime.id,
-                    providerId: serviceRuntime.providerId,
-                    message: input.message,
-                    payload: input.payload || null,
-                    helpers: getServiceHelpers(serviceRuntime),
-                });
-            }
-            return sendNotification(input.callerEns, input.calleeEns, message, input.notificationType);
-        },
-        forwardInviteToKamailio: async (input) => openSipSession(input.sessionId, input.sipFrom, input.sipTo),
-        openInboundSipLeg: async (input) => openInboundSipSession(input.sessionId, input.phoneNumber),
-        bridgeWebrtcSessions: async (input) => notifyAndBridge(input.sessionId, input.destination),
-        buildCallerIdPayload: (input) => input,
-        sendAck,
-        sendAnswer,
-        sendAckAndAnswer,
-        sendDataChannelMessage,
-        endCall: (sessionId, reason) => handleCallEnd(sessionId, reason, true),
-        logRouteDecision: (entry) => console.log("[ServiceRoute]", entry),
-        emitServiceMetric: (metric) => console.log("[ServiceMetric]", metric),
-        getAllServiceDomains,
-        getFirstServiceDomain: () => {
-            const configured = Array.isArray(serviceRuntime.serviceConstants?.domains)
-                ? serviceRuntime.serviceConstants.domains
-                : [];
-            return configured[0] || serviceRuntime.primaryDomain || getAllServiceDomains()[0] || "";
-        },
-        tryInternalWebrtcLookup: (label, targetDomains = []) => tryInternalWebrtcLookup(label, targetDomains),
-        emailToEnsName,
-    };
+    return serviceContextFactory.helpers(serviceRuntime);
 }
 
 async function resolveDestination(parsedTo, parsedFrom = null, serviceId = null) {
-    const runtime = getServiceRuntime(serviceId);
-    if (!runtime || typeof runtime.resolveDestination !== "function") {
-        return { route: "reject", reason: "Missing service resolver" };
-    }
-    return runtime.resolveDestination({
-        serviceId: runtime.id,
-        providerId: runtime.providerId,
-        parsedTo,
-        parsedFrom,
-        helpers: getServiceHelpers(runtime),
-    });
+    return destinationResolverApi.resolve(parsedTo, parsedFrom, serviceId);
 }
 
 async function resolveCallerId(parsedFrom, walletAddress, serviceId = null) {
-    const runtime = getServiceRuntime(serviceId);
-    if (!runtime || typeof runtime.resolveCallerId !== "function") {
-        return { callerId: parsedFrom?.full || parsedFrom?.value || null, privateId: null };
-    }
-    return runtime.resolveCallerId({
-        serviceId: runtime.id,
-        providerId: runtime.providerId,
-        parsedFrom,
-        walletAddress,
-        helpers: getServiceHelpers(runtime),
-    });
+    return callerIdResolverApi.resolve(parsedFrom, walletAddress, serviceId);
 }
 
 async function resolveInboundTarget(payload, serviceId = null) {
@@ -735,6 +834,7 @@ const inboundCallFlowApi = createInboundCallFlow({
     sendNotification: (...args) => sendNotification(...args),
     pendingInboundCalls,
     destroySession: (...args) => destroySession(...args),
+    callRuntime,
     notiTypeCall: NOTI_TYPE_CALL,
     crypto,
     logger: console,
@@ -757,6 +857,7 @@ const offerFlowApi = createOfferFlow({
         return value;
     },
     addIceCandidates: (...args) => addIceCandidates(...args),
+    callRuntime,
     createHttpError: (...args) => createHttpError(...args),
     logger: console,
 });
@@ -772,29 +873,17 @@ const handshakeFlowApi = createHandshakeFlow({
     emailToEnsName: (...args) => emailToEnsName(...args),
     isEthAddress: (...args) => isEthAddress(...args),
     resolveEnsToAddress: (...args) => resolveEnsToAddress(...args),
+    callRuntime,
     logger: console,
 });
-const callRuntimeCoreApi = createCallRuntimeCore({
+const callSdpUseCases = new CallSdpUseCases({
     sessions,
     MediaStreamTrack,
     patchInactiveToSendrecv: (...args) => patchInactiveToSendrecv(...args),
     logSdp: (...args) => logSdp(...args),
     enqueueSignaling: (...args) => enqueueSignaling(...args),
     sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
-    resolveCallerId: (...args) => resolveCallerId(...args),
-    openSipSession: (...args) => openSipSession(...args),
-    openOpenAiSipSession: (...args) => openOpenAiSipSession(...args),
-    notifyAndBridge: (...args) => notifyAndBridge(...args),
-    notifyAndBridgeMulti: (...args) => notifyAndBridgeMulti(...args),
-    startIvrSession: (sessionId, destination) =>
-        ivrRuntimeApi.startIvr(sessionId, {
-            route: destination?.route || "ivr",
-            source: "outbound-route",
-            target: destination?.target || "",
-        }),
-    minuteCounter: minuteCounterApi,
-    getMinuteCounterSettings: (...args) => getMinuteCounterSettings(...args),
-    getMinuteCounterIdentity: (...args) => getMinuteCounterIdentity(...args),
+    callRuntime,
     logger: console,
 });
 // TEMPORARY:
@@ -809,13 +898,13 @@ if (!enforceNotifySignatures) {
 const signalingPipelineApi = createSignalingPipeline({
     onIncomingOffer: (...args) => onIncomingOffer(...args),
     handleInboundCallRequest: (...args) => handleInboundCallRequest(...args),
-    verifyHttpNotifySignature: (...args) => verifyHttpSignalingSignature(...args),
+    authVerifier: signalingAuthVerifier,
     createHttpError: (...args) => createHttpError(...args),
     enforceNotifySignatures,
 });
 
 
-// Call routing implementation moved to modules/callRouter.js.
+// Call routing implementation moved to modules/routing/CallRouterApi.js.
 
 
 // ═════════════════════════════════════════════════════════════
@@ -922,7 +1011,11 @@ async function onIncomingOffer(offer, serviceContext = null) {
  * and sends it back to the client via FCM.
  */
 async function handleHandshake(sessionId, fromEns, toIdentity, offerSdp, candidates, callNonce) {
-    return handshakeFlowApi.handleHandshake(sessionId, fromEns, toIdentity, offerSdp, candidates, callNonce);
+    return callEngine.dispatch(sessionId, {
+        type: CallEvents.CallOfferReceived,
+        source: CallEventSources.Http,
+        payload: { fromEns, toIdentity, offerSdp, candidates, callNonce },
+    });
 }
 
 /**
@@ -945,11 +1038,15 @@ function createPeerConnection(sessionId) {
  * Called when the data channel opens after the handshake completes.
  */
 function onDataChannelOpen(sessionId) {
-    return callFlowApi.onDataChannelOpen(sessionId, {
-        checkPendingBridge: (...args) => checkPendingBridge(...args),
-        checkPendingInboundCall: (...args) => checkPendingInboundCall(...args),
-        sendInboundRing: (...args) => sendInboundRing(...args),
-        destroySession: (...args) => destroySession(...args),
+    return callEngine.dispatch(sessionId, {
+        type: CallEvents.DataChannelOpened,
+        source: CallEventSources.WebRtc,
+        deps: {
+            checkPendingBridge: (...args) => checkPendingBridge(...args),
+            checkPendingInboundCall: (...args) => checkPendingInboundCall(...args),
+            sendInboundRing: (...args) => sendInboundRing(...args),
+            destroySession: (...args) => destroySession(...args),
+        },
     });
 }
 
@@ -965,7 +1062,7 @@ function onPeerConnected(sessionId) {
  * The callee will respond with an ANSWER + audio SDP, handled in onDataChannelMessage.
  */
 async function sendInboundRing(sessionId) {
-    return callFlowApi.sendInboundRing(sessionId);
+    return startCallUseCase.sendInboundRing(sessionId);
 }
 
 /**
@@ -973,19 +1070,21 @@ async function sendInboundRing(sessionId) {
  * Apply the answer and open the SIP leg to resume the suspended Kamailio INVITE.
  */
 async function handleInboundCalleeAnswer(sessionId, payload) {
-    return callFlowApi.handleInboundCalleeAnswer(sessionId, payload);
+    return callEngine.dispatch(sessionId, {
+        type: CallEvents.CalleeAnswered,
+        source: CallEventSources.Client,
+        payload,
+        answerKind: "inbound-callee",
+    });
 }
 
 async function handleOutboundWebrtcLegAnswer(sessionId, payload) {
-    const session = sessions.get(sessionId);
-    if (!session || !session.outboundWebrtcLeg) return null;
-    await callFlowApi.handleOutboundWebrtcLegAnswer(sessionId, payload);
-    console.log(`[Bridge] outbound WebRTC pickup observed sessionId=${sessionId} kind=${session.outboundBridgeKind || "unknown"}`);
-    if (session.multiRingLeg) {
-        const winner = bridgeApi.commitWinnerFromDataChannelAnswer(sessionId);
-        return winner || null;
-    }
-    return bridgeApi.commitWebrtcBridgePickup(sessionId);
+    return callEngine.dispatch(sessionId, {
+        type: CallEvents.CalleeAnswered,
+        source: CallEventSources.WebRtc,
+        payload,
+        answerKind: "outbound-webrtc-leg",
+    });
 }
 
 /**
@@ -1016,7 +1115,11 @@ function onDataChannelMessage(sessionId, rawMessage) {
  * then accepts audio renegotiation on PC1 and routes accordingly.
  */
 async function handleRing(sessionId, payload) {
-    return callFlowApi.handleRing(sessionId, payload);
+    return callEngine.dispatch(sessionId, {
+        type: CallEvents.CallRingRequested,
+        source: CallEventSources.Client,
+        payload,
+    });
 }
 
 /**
@@ -1025,7 +1128,7 @@ async function handleRing(sessionId, payload) {
  * this just applies the answer to PC1 to fix currentDirection.
  */
 async function handleReofferAnswer(sessionId, payload) {
-    return callFlowApi.handleReofferAnswer(sessionId, payload);
+    return renegotiateCallUseCase.handleReofferAnswer(sessionId, payload);
 }
 
 /**
@@ -1040,606 +1143,8 @@ async function notifyAndBridgeMulti(callerSessionId, destinations) {
     return bridgeApi.notifyAndBridgeMulti(callerSessionId, destinations);
 }
 
-async function redirectIvrSessionToWebrtc(sessionId, targetEns, { reason = "ivr-redirect", waitingAudioFile = null } = {}) {
-    const session = sessions.get(sessionId);
-    if (!session) {
-        console.warn(`[${sessionId}] IVR redirect skipped: session missing target=${targetEns}`);
-        return false;
-    }
-
-    const serviceId = session.serviceId || "secnum";
-    const parsedTo = parseAddress(targetEns, serviceId);
-    const parsedFrom = parseAddress(session.callerEns, serviceId);
-    const destination = await resolveDestination(parsedTo, parsedFrom, serviceId);
-    if (destination?.route !== "webrtc") {
-        console.warn(
-            `[${sessionId}] IVR redirect rejected target=${targetEns} ` +
-            `route=${destination?.route || "n/a"} reason=${destination?.reason || "not-webrtc"}`
-        );
-        return false;
-    }
-
-    console.log(`[${sessionId}] IVR redirect target=${targetEns} wallet=${destination.wallet} reason=${reason}`);
-    const waitingFile = waitingAudioFile || session.ivr?.waitingAudioFile || null;
-    try {
-        if (waitingFile) {
-            await ivrAudioPlaybackApi.playFile(sessionId, waitingFile, {
-                interrupt: true,
-                reason: `redirect-waiting:${reason}`,
-                loop: true,
-            });
-            console.log(`[${sessionId}] IVR redirect waiting audio started file=${waitingFile}`);
-        }
-        await notifyAndBridge(sessionId, destination);
-        return true;
-    } catch (err) {
-        console.warn(`[${sessionId}] IVR redirect failed target=${targetEns} reason=${reason} err=${err.message}`);
-        return false;
-    } finally {
-        ivrRuntimeApi.stopIvr(sessionId, `redirect:${reason}`);
-        await ivrAudioPlaybackApi.stopSessionPlayback(sessionId, `redirect:${reason}`);
-    }
-}
-
-function normalizeOpenAiTransferTarget(value) {
-    const raw = String(value || "").trim();
-    if (!raw) return "";
-    const withoutSip = raw.replace(/^sip:/i, "").split(";")[0].split("@")[0].trim();
-    if (withoutSip.toLowerCase().endsWith(".global")) return withoutSip.toLowerCase();
-
-    let number = withoutSip.replace(/[^\d+*]/g, "");
-    if (number.startsWith("*")) return `*${number.slice(1).replace(/\D/g, "")}`;
-    if (number.startsWith("+")) return `+${number.slice(1).replace(/\D/g, "")}`;
-    number = number.replace(/\D/g, "");
-    return number;
-}
-
-function isSessionEnded(session) {
-    return !session || session.phase === "post-call" || session.callEndInProgress === true;
-}
-
-function createOpenAiTransferToken() {
-    return `${Date.now()}:${Math.random().toString(36).slice(2)}`;
-}
-
-function getIdentityLabel(value) {
-    const raw = String(value || "").trim();
-    if (!raw) return "";
-    const withoutSip = raw.replace(/^sip:/i, "").split(";")[0].split("@")[0].trim();
-    const dotPos = withoutSip.indexOf(".");
-    return (dotPos > 0 ? withoutSip.slice(0, dotPos) : withoutSip).replace(/^\+/, "");
-}
-
-function shouldStartOpenAiSalesAgent(session, payload, parsedFrom) {
-    if (!session || session.openAiSalesAgentTriggerHandled) return false;
-    const trigger = String(OPENAI_SALES_TRIGGER_CALLER || "").replace(/^\+/, "");
-    if (!trigger) return false;
-    const candidates = [
-        parsedFrom?.value,
-        parsedFrom?.full,
-        session.callerEns,
-        payload?.from,
-    ].map(getIdentityLabel).filter(Boolean);
-    return candidates.includes(trigger);
-}
-
-function getAudioReceiverTracksFromPeerConnection(pc) {
-    const out = [];
-    const seen = new Set();
-    const addTrack = (track) => {
-        if (!track || track.kind !== "audio" || seen.has(track)) return;
-        seen.add(track);
-        out.push(track);
-    };
-    if (pc?.getReceivers) {
-        for (const receiver of pc.getReceivers()) {
-            addTrack(receiver?.track);
-        }
-    }
-    if (pc?.getTransceivers) {
-        for (const transceiver of pc.getTransceivers()) {
-            if (transceiver?.kind !== "audio") continue;
-            if (Array.isArray(transceiver.receiver?.tracks)) {
-                for (const track of transceiver.receiver.tracks) addTrack(track);
-            } else {
-                addTrack(transceiver.receiver?.track);
-            }
-        }
-    }
-    return out;
-}
-
-function parsePrimaryAudioPayloadType(sdp) {
-    const audioSection = String(sdp || "").match(/m=audio[^\r\n]*[\s\S]*?(?=\r?\nm=|$)/m)?.[0] || "";
-    const mLine = audioSection.match(/^m=audio[^\r\n]*/m)?.[0] || "";
-    const pt = Number(mLine.split(/\s+/).slice(3)[0]);
-    return Number.isFinite(pt) ? pt : null;
-}
-
-function payloadTypeFromPolicy(policy) {
-    if (policy === "pcmu") return 0;
-    if (policy === "pcma") return 8;
-    return null;
-}
-
-function deriveSalesTargetPayloadType(session, source) {
-    if (source === "sbc") {
-        return (
-            parsePrimaryAudioPayloadType(session?.sipPeerConnection?.remoteDescription?.sdp) ??
-            parsePrimaryAudioPayloadType(session?.sipPeerConnection?.localDescription?.sdp)
-        );
-    }
-    return (
-        payloadTypeFromPolicy(session?.mediaCodecPolicy) ??
-        parsePrimaryAudioPayloadType(session?.peerConnection?.localDescription?.sdp)
-    );
-}
-
-function muLawToLinear(value) {
-    const u = (~value) & 0xff;
-    let sample = ((u & 0x0f) << 3) + 0x84;
-    sample <<= (u & 0x70) >> 4;
-    return (u & 0x80) ? (0x84 - sample) : (sample - 0x84);
-}
-
-function linearToMuLaw(sample) {
-    const sign = sample < 0 ? 0x80 : 0;
-    let magnitude = Math.min(32635, Math.abs(sample)) + 0x84;
-    let exponent = 7;
-    for (let mask = 0x4000; exponent > 0 && !(magnitude & mask); mask >>= 1) exponent -= 1;
-    const mantissa = (magnitude >> (exponent + 3)) & 0x0f;
-    return (~(sign | (exponent << 4) | mantissa)) & 0xff;
-}
-
-function aLawToLinear(value) {
-    const a = value ^ 0x55;
-    let sample = (a & 0x0f) << 4;
-    const segment = (a & 0x70) >> 4;
-    if (segment === 0) sample += 8;
-    else if (segment === 1) sample += 0x108;
-    else {
-        sample += 0x108;
-        sample <<= segment - 1;
-    }
-    return (a & 0x80) ? sample : -sample;
-}
-
-function linearToALaw(sample) {
-    const sign = sample < 0 ? 0x00 : 0x80;
-    let magnitude = Math.min(32635, Math.abs(sample));
-    let encoded;
-    if (magnitude < 256) {
-        encoded = sign | (magnitude >> 4);
-    } else {
-        let exponent = 7;
-        for (let mask = 0x4000; exponent > 0 && !(magnitude & mask); mask >>= 1) exponent -= 1;
-        encoded = sign | (exponent << 4) | ((magnitude >> (exponent + 3)) & 0x0f);
-    }
-    return encoded ^ 0x55;
-}
-
-function transcodeG711Payload(payload, fromPt, toPt) {
-    if (!payload || fromPt === toPt) return payload;
-    if (!((fromPt === 0 && toPt === 8) || (fromPt === 8 && toPt === 0))) return payload;
-    const source = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
-    const converted = Buffer.allocUnsafe(source.length);
-    if (fromPt === 0) {
-        for (let i = 0; i < source.length; i += 1) converted[i] = linearToALaw(muLawToLinear(source[i]));
-    } else {
-        for (let i = 0; i < source.length; i += 1) converted[i] = linearToMuLaw(aLawToLinear(source[i]));
-    }
-    return converted;
-}
-
-function adaptSalesRtpPacket(rtp, targetPt) {
-    const sourcePt = Number(rtp?.header?.payloadType);
-    if (!rtp || !rtp.header || !Number.isFinite(sourcePt) || !Number.isFinite(targetPt)) return rtp;
-    if (sourcePt === targetPt) return rtp;
-    const convertedPayload = transcodeG711Payload(rtp.payload, sourcePt, targetPt);
-    if (convertedPayload === rtp.payload && !((sourcePt === 0 && targetPt === 8) || (sourcePt === 8 && targetPt === 0))) {
-        return rtp;
-    }
-    const packet = Object.assign(Object.create(Object.getPrototypeOf(rtp)), rtp);
-    packet.header = Object.assign(Object.create(Object.getPrototypeOf(rtp.header)), rtp.header);
-    packet.header.payloadType = targetPt;
-    packet.payload = convertedPayload;
-    return packet;
-}
-
-function createOpenAiSalesMediaAdapter(targetSessionId, { source = "webrtc" } = {}) {
-    let openAiSourceNotified = false;
-    return {
-        writeOpenAiRtp(packet) {
-            const targetSession = sessions.get(targetSessionId);
-            const targetTrack = source === "sbc" ? targetSession?.sipLocalAudioTrack : targetSession?.localAudioTrack;
-            if (!targetTrack || !packet?.header) return;
-            const targetPt = deriveSalesTargetPayloadType(targetSession, source);
-            const outgoing = adaptSalesRtpPacket(packet, targetPt);
-            if (!openAiSourceNotified) {
-                openAiSourceNotified = true;
-                targetTrack.onSourceChanged.execute({
-                    sequenceNumber: outgoing.header.sequenceNumber,
-                    timestamp: outgoing.header.timestamp,
-                });
-            }
-            targetTrack.writeRtp(outgoing);
-        },
-        subscribeSourceRtp(forwardRtp) {
-            const targetSession = sessions.get(targetSessionId);
-            const pc = source === "sbc" ? targetSession?.sipPeerConnection : targetSession?.peerConnection;
-            const openAiPayloadType = 0;
-            const disposers = [];
-            const subscribed = new Set();
-
-            const subscribeTrack = (track) => {
-                if (!track || track.kind !== "audio" || !track.onReceiveRtp?.subscribe || subscribed.has(track)) return;
-                subscribed.add(track);
-                const sub = track.onReceiveRtp.subscribe((rtp) => forwardRtp(adaptSalesRtpPacket(rtp, openAiPayloadType)));
-                if (sub?.unSubscribe) disposers.push(() => sub.unSubscribe());
-            };
-
-            for (const track of getAudioReceiverTracksFromPeerConnection(pc)) {
-                subscribeTrack(track);
-            }
-
-            const onTrackSub = pc?.onTrack?.subscribe?.((track) => subscribeTrack(track));
-            if (onTrackSub?.unSubscribe) disposers.push(() => onTrackSub.unSubscribe());
-
-            console.log(
-                `[${targetSessionId}] OpenAI sales media adapter attached source=${source} ` +
-                `tracks=${subscribed.size}`,
-            );
-            return () => {
-                for (const dispose of disposers) {
-                    try { dispose(); } catch (_) {}
-                }
-            };
-        },
-    };
-}
-
-async function endOpenAiSalesTarget(salesSessionId, targetSessionId, reason = "openai-sales-ended") {
-    const target = sessions.get(targetSessionId);
-    if (target && target.phase !== "post-call") {
-        try {
-            sendDataChannelMessage(targetSessionId, { msgType: "call", action: "end", reason });
-        } catch (_) {}
-        target.phase = "post-call";
-    }
-    if (targetSessionId !== salesSessionId) {
-        destroySession(targetSessionId, false);
-    }
-    const sales = sessions.get(salesSessionId);
-    if (sales) {
-        sales.phase = "post-call";
-        if (targetSessionId === salesSessionId) {
-            await sipClientApi.closeSipSession(salesSessionId, sessionStore).catch(() => {});
-        }
-        destroySession(salesSessionId, false);
-    }
-}
-
-async function startOpenAiSalesAgentFlow({
-    triggerSessionId,
-    triggerSession,
-    payload,
-    parsedTo,
-    destination,
-} = {}) {
-    const serviceId = triggerSession?.serviceId || "secnum";
-    const targetIdentity = payload?.to || triggerSession?.toIdentity || parsedTo?.full || parsedTo?.value || "";
-    const salesSessionId = `${triggerSessionId}-openai-sales-${Date.now()}`;
-    const parsedSalesFrom = parseAddress(OPENAI_SALES_AGENT_FROM, serviceId);
-
-    if (sessions.has(triggerSessionId)) {
-        setTimeout(() => {
-            const trigger = sessions.get(triggerSessionId);
-            if (!trigger || trigger.endCallRenegDone === true) return;
-            console.warn(`[${triggerSessionId}] OpenAI sales-agent trigger fallback destroy after missing end-call renegotiation`);
-            destroySession(triggerSessionId, false);
-        }, 10000);
-    }
-    if (!destination || destination.route === "reject" || destination.route === "openai-sip" || destination.route === "ivr") {
-        console.warn(
-            `[${triggerSessionId}] OpenAI sales-agent target rejected ` +
-            `target=${targetIdentity} route=${destination?.route || "none"}`,
-        );
-        return;
-    }
-
-    const salesSession = createSession(salesSessionId, OPENAI_SALES_AGENT_FROM, targetIdentity);
-    salesSession.serviceId = serviceId;
-    salesSession.phase = "ringing";
-    salesSession.mediaCodecPolicy = "pcmu";
-    salesSession.openAiSalesAgent = {
-        triggerSessionId,
-        targetIdentity,
-        route: destination.route,
-        startedAt: Date.now(),
-    };
-    salesSession.lastRingOfferPayload = {
-        callNonce: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
-    };
-
-    let targetSessionId = salesSessionId;
-    let mediaSource = "sbc";
-    try {
-        console.log(
-            `[${salesSessionId}] OpenAI sales-agent dialing target=${targetIdentity} ` +
-            `route=${destination.route} from=${OPENAI_SALES_AGENT_FROM}`,
-        );
-        if (destination.route === "webrtc") {
-            targetSessionId = await notifyAndBridge(salesSessionId, destination);
-            mediaSource = "webrtc";
-        } else if (destination.route === "webrtc-multiring") {
-            targetSessionId = await notifyAndBridgeMulti(salesSessionId, destination.targets || []);
-            bridgeApi.startPendingMultiBridge(salesSessionId);
-            mediaSource = "webrtc";
-        } else if (destination.route === "sbc") {
-            await routeCall(salesSessionId, salesSession, destination, parsedSalesFrom);
-            mediaSource = "sbc";
-        } else {
-            throw new Error(`unsupported OpenAI sales-agent route: ${destination.route}`);
-        }
-
-        const currentSalesSession = sessions.get(salesSessionId);
-        const targetSession = sessions.get(targetSessionId);
-        if (!currentSalesSession || !targetSession) {
-            throw new Error("sales-agent callee session disappeared before OpenAI attach");
-        }
-        currentSalesSession.phase = "in-call";
-        targetSession.phase = "in-call";
-
-        const sipSession = currentSalesSession.sipConnection?.inviter || currentSalesSession.sipConnection?.invitation || null;
-        if (mediaSource === "sbc" && sipSession?.stateChange?.addListener) {
-            sipSession.stateChange.addListener((state) => {
-                if (state !== SessionState.Terminated) return;
-                openAiSipGatewayApi.closeOpenAiSipSession(salesSessionId).catch(() => {});
-            });
-        }
-
-        await openOpenAiSipSession(salesSessionId, {
-            callerEns: OPENAI_SALES_AGENT_FROM,
-            mode: "sales-agent",
-            headers: {
-                "X-Arnacon-AI-Mode": "sales-agent",
-                "X-Arnacon-Session-Id": salesSessionId,
-                "X-Arnacon-Trigger-Session-Id": triggerSessionId,
-                "X-Arnacon-Original-To": targetIdentity,
-            },
-            mediaAdapter: createOpenAiSalesMediaAdapter(targetSessionId, { source: mediaSource }),
-            onRemoteBye: (reason) => endOpenAiSalesTarget(salesSessionId, targetSessionId, reason),
-        });
-        console.log(
-            `[${salesSessionId}] OpenAI sales-agent active targetSessionId=${targetSessionId} ` +
-            `source=${mediaSource}`,
-        );
-    } catch (err) {
-        console.warn(`[${salesSessionId}] OpenAI sales-agent failed: ${err.message}`);
-        await closeSipSession(salesSessionId).catch(() => {});
-        if (targetSessionId && targetSessionId !== salesSessionId) {
-            try {
-                sendDataChannelMessage(targetSessionId, {
-                    msgType: "call",
-                    action: "end",
-                    reason: "openai-sales-agent-failed",
-                });
-            } catch (_) {}
-            destroySession(targetSessionId, false);
-        }
-        destroySession(salesSessionId, false);
-    }
-}
-
-async function transferOpenAiCallRequest({
-    sessionId,
-    sipCallId = null,
-    openAiCallId = null,
-    target,
-    label = null,
-    reason = "openai-transfer-call",
-} = {}) {
-    const session = sessions.get(sessionId);
-    if (!session || !session.peerConnection) {
-        throw Object.assign(new Error("transfer session not found"), { statusCode: 404 });
-    }
-    if (session.openAiTransferInProgress) {
-        throw Object.assign(new Error("transfer already in progress"), { statusCode: 409 });
-    }
-
-    const normalizedTarget = normalizeOpenAiTransferTarget(target);
-    if (
-        !normalizedTarget ||
-        (
-            !normalizedTarget.endsWith(".global") &&
-            !/^(?:\+?\d{3,18}|\*\d{2,18})$/.test(normalizedTarget)
-        )
-    ) {
-        throw Object.assign(new Error(`invalid transfer target: ${target}`), { statusCode: 400 });
-    }
-
-    const serviceId = session.serviceId || "secnum";
-    const parsedTo = parseAddress(normalizedTarget, serviceId);
-    const parsedFrom = parseAddress(session.callerEns, serviceId);
-    const destination = await resolveDestination(parsedTo, parsedFrom, serviceId);
-    if (!destination || destination.route === "reject") {
-        throw Object.assign(
-            new Error(destination?.reason || `transfer target rejected: ${normalizedTarget}`),
-            { statusCode: 400 },
-        );
-    }
-    if (destination.route === "openai-sip" || destination.route === "ivr") {
-        throw Object.assign(
-            new Error(`unsupported transfer route: ${destination.route}`),
-            { statusCode: 400 },
-        );
-    }
-
-    console.log(
-        `[${sessionId}] OpenAI transfer requested target=${normalizedTarget} ` +
-        `route=${destination.route} label=${label || ""} reason=${reason} ` +
-        `openAiCallId=${openAiCallId || ""} sipCallId=${sipCallId || ""}`,
-    );
-
-    session.openAiTransferInProgress = {
-        id: createOpenAiTransferToken(),
-        target: normalizedTarget,
-        route: destination.route,
-        label,
-        reason,
-        requestedAt: Date.now(),
-        openAiCallId,
-        sipCallId,
-    };
-    const transferState = session.openAiTransferInProgress;
-
-    try {
-        if (isSessionEnded(session)) {
-            if (session.openAiTransferInProgress === transferState) {
-                session.openAiTransferInProgress = null;
-            }
-            console.log(
-                `[${sessionId}] OpenAI transfer cancelled before dial target=${normalizedTarget} ` +
-                `route=${destination.route}`,
-            );
-            return {
-                status: "cancelled",
-                route: destination.route,
-                target: normalizedTarget,
-                label,
-                reason,
-            };
-        }
-        session.callEndInProgress = false;
-        session.phase = "ringing";
-        console.log(
-            `[${sessionId}] OpenAI transfer accepted target=${normalizedTarget} ` +
-            `route=${destination.route}; closing OpenAI and starting destination dial`,
-        );
-        setImmediate(() => {
-            runOpenAiTransferDial({
-                sessionId,
-                transferState,
-                destination,
-                parsedFrom,
-            }).catch((err) => {
-                console.warn(`[${sessionId}] OpenAI transfer dial worker crashed: ${err.message}`);
-            });
-        });
-        return {
-            status: "dialing",
-            route: destination.route,
-            target: normalizedTarget,
-            label,
-            reason,
-        };
-    } catch (err) {
-        console.warn(
-            `[${sessionId}] OpenAI transfer failed target=${normalizedTarget} ` +
-            `route=${destination.route} err=${err.message}`,
-        );
-        if (session.openAiTransferInProgress === transferState) {
-            session.openAiTransferInProgress = null;
-        }
-        throw err;
-    }
-}
-
-async function runOpenAiTransferDial({
-    sessionId,
-    transferState,
-    destination,
-    parsedFrom,
-}) {
-    const initialSession = sessions.get(sessionId);
-    if (!initialSession || initialSession.openAiTransferInProgress !== transferState) return;
-
-    try {
-        await openAiSipGatewayApi.closeOpenAiSipSession(sessionId);
-        stopMediaRelay(sessionId);
-        if (
-            isSessionEnded(initialSession) ||
-            !initialSession.peerConnection ||
-            initialSession.openAiTransferInProgress !== transferState
-        ) {
-            console.log(
-                `[${sessionId}] OpenAI transfer cancelled before destination dial ` +
-                `target=${transferState.target} route=${destination.route}`,
-            );
-            return;
-        }
-        const routeResult = await routeCall(sessionId, initialSession, destination, parsedFrom);
-        const session = sessions.get(sessionId);
-        if (
-            isSessionEnded(session) ||
-            !session.peerConnection ||
-            session.openAiTransferInProgress !== transferState
-        ) {
-            await closeSipSession(sessionId);
-            stopMediaRelay(sessionId);
-            console.log(
-                `[${sessionId}] OpenAI transfer dial answered after caller ended; ` +
-                `torn down target=${transferState.target} route=${destination.route}`,
-            );
-            return;
-        }
-
-        session.phase = "in-call";
-        if (destination.route === "webrtc-multiring") {
-            bridgeApi.startPendingMultiBridge(sessionId);
-        }
-        if (routeResult === "sbc") {
-            startMediaRelay(sessionId);
-        }
-        console.log(
-            `[${sessionId}] OpenAI transfer committed target=${transferState.target} ` +
-            `route=${destination.route} routeResult=${routeResult || ""}`,
-        );
-    } catch (err) {
-        const session = sessions.get(sessionId);
-        console.warn(
-            `[${sessionId}] OpenAI transfer failed target=${transferState.target} ` +
-            `route=${destination.route} err=${err.message}`,
-        );
-        if (session && session.openAiTransferInProgress === transferState && !isSessionEnded(session)) {
-            sendDataChannelMessage(sessionId, { msgType: "call", action: "end", reason: "openai-transfer-failed" });
-            session.phase = "post-call";
-        }
-    } finally {
-        const session = sessions.get(sessionId);
-        if (session?.openAiTransferInProgress === transferState) {
-            session.openAiTransferInProgress = null;
-        }
-    }
-}
-
 async function onVerifiedNotifyAnswer(sessionId, offer, session) {
-    if (!session || !session.outboundWebrtcLeg) return null;
-
-    session.outboundLegHttpAnswered = true;
-    console.log(
-        `[Bridge] outbound WebRTC stage1 HTTP answer observed ` +
-        `sessionId=${sessionId} kind=${session.outboundBridgeKind || "unknown"}`
-    );
-
-    let observed = { handled: true };
-    if (session.multiRingLeg) {
-        observed = bridgeApi.commitWinnerFromAnswer(sessionId);
-        if (!observed || !observed.handled) return null;
-    }
-
-    try {
-        await callFlowApi.triggerOutboundWebrtcLegRing(sessionId, destroySession);
-    } catch (err) {
-        console.error(`[${sessionId}] Failed outbound stage1->stage2 ring trigger: ${err.message}`);
-    }
-    return {
-        ok: true,
-        handled: true,
-        sessionId,
-        pickedUp: false,
-        won: false,
-    };
+    return verifiedNotifyAnswerHandler.handle(sessionId, offer, session);
 }
 
 /**
@@ -1686,7 +1191,7 @@ async function handleIceRestart(sessionId, payload) {
  * inviter.sessionDescriptionHandler.peerConnection for RTP piping.
  */
 async function openSipSession(sessionId, callerEns, calleeIdentity, sipDirective = null) {
-    return sipClientApi.openSipSession(sessionId, sessionStore, { callerEns, calleeIdentity, sipDirective });
+    return sipGateway.openOutbound(sessionId, { callerEns, calleeIdentity, sipDirective });
 }
 
 async function openOpenAiSipSession(sessionId, options = {}) {
@@ -1700,7 +1205,7 @@ async function openOpenAiSipSession(sessionId, options = {}) {
  * PC1 (callee's WebRTC) ↔ PC2 (SBC via Kamailio/RTPEngine).
  */
 async function openInboundSipSession(sessionId, phoneNumber) {
-    return sipClientApi.openInboundSipSession(sessionId, sessionStore, { phoneNumber });
+    return sipGateway.openInbound(sessionId, { phoneNumber });
 }
 
 /**
@@ -1711,14 +1216,30 @@ async function openInboundSipSession(sessionId, phoneNumber) {
  *   Kamailio audio → PC2 remote track → onReceiveRtp → PC1 local track → writeRtp → Client
  */
 function startMediaRelay(sessionId) {
-    return peerConnectionApi.startMediaRelay(sessionId);
+    return mediaRelayController.startWebRtcToSip(sessionId);
 }
 
 /**
  * Stops the media relay for a session.
  */
 function stopMediaRelay(sessionId) {
-    return peerConnectionApi.stopMediaRelay(sessionId);
+    return mediaRelayController.stopSession(sessionId);
+}
+
+async function startIvrMediaSession(sessionId) {
+    const session = sessions.get(sessionId);
+    if (!session || !session.peerConnection) return false;
+    await mediaGraphFactory.ivrToWebrtc(session, {
+        payloadType: session.mediaCodecPolicy === "pcmu" ? 0 : 8,
+    });
+    return true;
+}
+
+async function stopIvrMediaSession(sessionId) {
+    const session = sessions.get(sessionId);
+    if (!session?.media?.ivrLeg) return false;
+    await session.resources?.mediaSession?.().stop("ivr-media-stop");
+    return true;
 }
 
 /**
@@ -1727,92 +1248,26 @@ function stopMediaRelay(sessionId) {
  * the client will send a renegotiation offer to drop audio from PC1.
  */
 async function handleCallEnd(sessionId, reason = "client-initiated", propagate = true) {
-    ivrRuntimeApi.stopIvr(sessionId, reason);
-    await ivrAudioPlaybackApi.stopSessionPlayback(sessionId, reason);
-    return callFlowApi.handleCallEnd(sessionId, reason, propagate);
+    return callEngine.dispatch(sessionId, {
+        type: reason === "client-reject" ? CallEvents.CallCancelRequested : CallEvents.CallEndRequested,
+        source: CallEventSources.Client,
+        reason,
+        notifyClient: false,
+        propagateLinkedSession: propagate,
+    });
 }
 
 async function handleCallDtmf(sessionId, msg) {
-    if (await ivrRuntimeApi.handleDtmf(sessionId, msg)) {
+    if (await ivrFeatureApi.handleDtmf(sessionId, msg)) {
         return;
     }
-
-    const session = sessions.get(sessionId);
-    if (!session) {
-        console.warn(`[${sessionId}] DTMF ignored: session not found`);
-        return;
-    }
-
-    const rawDigit = String(msg?.digit ?? "").trim();
-    if (!/^[0-9*#ABCD]$/i.test(rawDigit)) {
-        console.warn(`[${sessionId}] DTMF ignored: invalid digit "${rawDigit}"`);
-        return;
-    }
-    const digit = rawDigit.toUpperCase();
-
-    const rawDuration = Number(msg?.durationMs);
-    const durationMs = Number.isFinite(rawDuration)
-        ? Math.max(70, Math.min(6000, Math.floor(rawDuration)))
-        : 160;
-
-    const sipSession = session.sipConnection?.inviter || session.sipConnection?.invitation || null;
-    if (!sipSession) {
-        console.warn(`[${sessionId}] DTMF ignored: no active SIP session`);
-        return;
-    }
-
     try {
-        // Prefer native helpers when available (transport/method handled by SIP stack).
-        if (typeof sipSession.sendDtmf === "function") {
-            await sipSession.sendDtmf(digit, { duration: durationMs });
-        } else if (typeof sipSession.dtmf === "function") {
-            await sipSession.dtmf(digit, { duration: durationMs });
-        } else if (typeof sipSession.info === "function") {
-            // Fallback: SIP INFO with application/dtmf-relay body.
-            const infoBody = `Signal=${digit}\r\nDuration=${durationMs}\r\n`;
-            let infoSent = false;
-
-            try {
-                await sipSession.info({
-                    requestOptions: {
-                        extraHeaders: ["Content-Type: application/dtmf-relay"],
-                        body: {
-                            contentType: "application/dtmf-relay",
-                            content: infoBody,
-                        },
-                    },
-                });
-                infoSent = true;
-            } catch (_) {}
-
-            if (!infoSent) {
-                try {
-                    await sipSession.info({
-                        requestOptions: {
-                            extraHeaders: ["Content-Type: application/dtmf-relay"],
-                            body: infoBody,
-                        },
-                    });
-                    infoSent = true;
-                } catch (_) {}
-            }
-
-            if (!infoSent) {
-                await sipSession.info(infoBody, "application/dtmf-relay");
-            }
-        } else {
-            throw new Error("no supported SIP DTMF method on session");
-        }
-
-        sendDataChannelMessage(sessionId, {
-            msgType: "call",
-            action: "ack",
-            ackFor: "dtmf",
-            digit,
-            durationMs,
-            eventId: msg?.eventId || null,
+        return await callEngine.dispatch(sessionId, {
+            type: CallEvents.DtmfReceived,
+            source: CallEventSources.Client,
+            route: "sbc",
+            payload: msg,
         });
-        console.log(`[${sessionId}] DTMF relayed to SIP: digit=${digit} durationMs=${durationMs}`);
     } catch (err) {
         console.error(`[${sessionId}] DTMF relay failed: ${err.message}`);
     }
@@ -1822,7 +1277,12 @@ async function handleCallDtmf(sessionId, msg) {
  * Handles end-call renegotiation — client wants to drop audio but keep the data channel.
  */
 async function handleEndCallRenegotiation(sessionId, payload) {
-    return callFlowApi.handleEndCallRenegotiation(sessionId, payload);
+    return callEngine.dispatch(sessionId, {
+        type: CallEvents.EndRenegotiationReceived,
+        source: CallEventSources.Client,
+        reason: "end-call-renegotiated",
+        payload,
+    });
 }
 
 /**
@@ -1831,7 +1291,7 @@ async function handleEndCallRenegotiation(sessionId, payload) {
 async function closeSipSession(sessionId) {
     minuteCounterApi.finish(sessions.get(sessionId));
     await openAiSipGatewayApi.closeOpenAiSipSession(sessionId);
-    return sipClientApi.closeSipSession(sessionId, sessionStore);
+    return sipGateway.close(sessionId);
 }
 
 
@@ -1847,7 +1307,7 @@ function sendDataChannelMessage(sessionId, message) {
 }
 
 
-// Blockchain and notification-plan implementations moved to modules/blockchain.js and modules/notification.js.
+// Blockchain and notification-plan implementations live under modules/gateways.
 
 
 // ═════════════════════════════════════════════════════════════
@@ -1859,19 +1319,23 @@ function sendDataChannelMessage(sessionId, message) {
 // ═════════════════════════════════════════════════════════════
 
 function createSession(sessionId, callerEns, toIdentity) {
-    return sessionStore.createSession(sessionId, callerEns, toIdentity, console);
+    const session = sessionStore.createSession(sessionId, callerEns, toIdentity, console);
+    const call = callFactory.fromSession(session);
+    session.call = call;
+    session.callId = call.id;
+    callRegistry.add(call);
+    return session;
 }
 
 function destroySession(sessionId, notify = false) {
-    minuteCounterApi.finish(sessions.get(sessionId));
-    ivrRuntimeApi.stopIvr(sessionId, "session-destroyed");
-    ivrAudioPlaybackApi.stopSessionPlayback(sessionId, "session-destroyed").catch(() => {});
-    return sessionStore.destroySession(sessionId, {
+    const session = sessions.get(sessionId);
+    const result = sessionStore.destroySession(sessionId, {
         notify,
         sendDataChannelMessage,
-        closeSipSession: (id) => sipClientApi.closeSipSession(id, sessionStore),
         logger: console,
     });
+    if (session?.callId) callRegistry.remove(session.callId);
+    return result;
 }
 
 // ═════════════════════════════════════════════════════════════

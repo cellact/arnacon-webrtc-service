@@ -1,5 +1,3 @@
-"use strict";
-
 const DOMAINS = ["vodaphonetest.global", "vodaphone.global"];
 
 function getDomains(helpers) {

@@ -1,5 +1,3 @@
-"use strict";
-
 const DOMAINS = ["email.global"];
 
 function getDomains(helpers) {

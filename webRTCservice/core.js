@@ -1,5 +1,3 @@
-"use strict";
-
 const path = require("path");
 
 function startServiceProcess({
@@ -16,11 +14,11 @@ function startServiceProcess({
 
 module.exports = {
     startServiceProcess,
-    createSessionStore: require("./modules/sessionStore").createSessionStore,
-    createHttpServers: require("./modules/httpServer").createHttpServers,
-    createPublicServer: require("./modules/httpServer").createPublicServer,
-    createInternalServer: require("./modules/httpServer").createInternalServer,
-    createHandlers: require("./modules/handlers").createHandlers,
-    createSignalingPipeline: require("./modules/signalingPipeline").createSignalingPipeline,
+    createSessionStore: require("./modules/runtime/SessionStore").createSessionStore,
+    createHttpServers: require("./modules/server/HttpServer").createHttpServers,
+    createPublicServer: require("./modules/server/HttpServer").createPublicServer,
+    createInternalServer: require("./modules/server/HttpServer").createInternalServer,
+    createHandlers: require("./modules/server/HttpHandlers").createHandlers,
+    createSignalingPipeline: require("./modules/participants/signaling/SignalingPipeline").createSignalingPipeline,
     corePath: path.join(__dirname),
 };

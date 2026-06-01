@@ -1,0 +1,207 @@
+class SignalingMessageRouter {
+    constructor({
+        sessions,
+        enqueueSignaling,
+        handleEndCallRenegotiation,
+        handleReofferAnswer,
+        handleInboundCalleeAnswer,
+        handleOutboundWebrtcLegAnswer = null,
+        handleIceRestart,
+        handleRing,
+        handleCallEnd,
+        handleCallDtmf = null,
+        handleCallHold = null,
+        handleDataMessage,
+        resetPostCallForNewRing = null,
+        isEndRenegotiationPending = null,
+        canAcceptNewRing = null,
+        isRinging = null,
+        isInCall = null,
+        getSessionKind = null,
+        logger = console,
+    } = {}) {
+        Object.assign(this, {
+            sessions,
+            enqueueSignaling,
+            handleEndCallRenegotiation,
+            handleReofferAnswer,
+            handleInboundCalleeAnswer,
+            handleOutboundWebrtcLegAnswer,
+            handleIceRestart,
+            handleRing,
+            handleCallEnd,
+            handleCallDtmf,
+            handleCallHold,
+            handleDataMessage,
+            resetPostCallForNewRingHandler: resetPostCallForNewRing,
+            isEndRenegotiationPending,
+            canAcceptNewRing,
+            isRinging,
+            isInCall,
+            getSessionKind,
+            logger,
+        });
+        this.dcHandlers = {
+            signaling: (sessionId, msg, sess) => this.handleSignaling(sessionId, msg, sess),
+            call: (sessionId, msg, sess) => this.handleCallMessage(sessionId, msg, sess),
+            data: (sessionId, msg, sess, phase) => this.handleData(sessionId, msg, phase),
+        };
+    }
+
+    onDataChannelMessage(sessionId, rawMessage) {
+        let msg;
+        try {
+            msg = JSON.parse(rawMessage);
+        } catch (err) {
+            this.logger.error(`[${sessionId}] Failed to parse DC message: ${err.message}`);
+            return;
+        }
+
+        const sess = this.sessions.get(sessionId);
+        const phase = sess ? sess.phase : "no-session";
+        const msgType = msg.msgType;
+        const dcAction = msg.action || msg.payload?.type || "unknown";
+        const sdpLen = msg.payload?.sdp ? msg.payload.sdp.length : 0;
+        this.logger.log(`[${sessionId}] DC-IN: msgType=${msgType} action=${dcAction} phase=${phase}${sdpLen ? ` sdpLen=${sdpLen}` : ""}`);
+
+        const handler = this.dcHandlers[msgType];
+        if (handler) {
+            handler(sessionId, msg, sess, phase);
+            return;
+        }
+
+        this.logger.log(
+            `[${sessionId}] DC-IN unhandled msgType=${msgType} phase=${phase} keys=${Object.keys(msg || {}).join(",")}`,
+        );
+    }
+
+    handleSignaling(sessionId, msg, sess) {
+        const action = msg.action;
+        const payload = msg.payload;
+
+        if (action === "end-call" && payload) {
+            if (
+                sess &&
+                (
+                    this.isRinging?.(sess) ||
+                    this.isEndRenegotiationPending?.(sess)
+                )
+            ) {
+                this.handleEndCallRenegotiation(sessionId, payload).catch((err) => {
+                    this.logger.error(`[${sessionId}] Immediate end-call failed: ${err.message}`);
+                });
+                return;
+            }
+            this.enqueueSignaling(sessionId, "end-call", () => this.handleEndCallRenegotiation(sessionId, payload));
+            return;
+        }
+
+        if (payload && payload.type === "answer") {
+            const s = this.sessions.get(sessionId);
+            if (s && s.pendingReoffer) {
+                this.enqueueSignaling(sessionId, "reoffer-answer", () => this.handleReofferAnswer(sessionId, payload));
+            } else if (s && this.getSessionKind?.(s) === "gateway-outbound-leg" && typeof this.handleOutboundWebrtcLegAnswer === "function") {
+                this.enqueueSignaling(sessionId, "outbound-webrtc-leg-answer", () => this.handleOutboundWebrtcLegAnswer(sessionId, payload));
+            } else if (s && this.getSessionKind?.(s) === "gateway-inbound") {
+                this.enqueueSignaling(sessionId, "inbound-answer", () => this.handleInboundCalleeAnswer(sessionId, payload));
+            }
+            return;
+        }
+
+        if (payload && payload.type === "offer") {
+            const s = this.sessions.get(sessionId);
+            if (s && this.isInCall?.(s)) {
+                this.enqueueSignaling(sessionId, "ice-restart", () => this.handleIceRestart(sessionId, payload));
+            } else if (s && this.isEndRenegotiationPending?.(s)) {
+                this.logger.log(`[${sessionId}] New offer supersedes pending end-call renegotiation`);
+                this.resetPostCallForNewRing(s);
+                this.handleRing(sessionId, payload).catch((err) => {
+                    this.logger.error(`[${sessionId}] Immediate ring-after-teardown-superseded failed: ${err.message}`);
+                });
+            } else if (s && this.canAcceptNewRing?.(s)) {
+                this.logger.log(`[${sessionId}] Treating post-call offer as new ring`);
+                this.resetPostCallForNewRing(s);
+                this.handleRing(sessionId, payload).catch((err) => {
+                    this.logger.error(`[${sessionId}] Immediate ring-after-post-call failed: ${err.message}`);
+                });
+            } else {
+                this.enqueueSignaling(sessionId, "ring", () => this.handleRing(sessionId, payload));
+            }
+        }
+    }
+
+    resetPostCallForNewRing(session) {
+        if (typeof this.resetPostCallForNewRingHandler === "function") {
+            return this.resetPostCallForNewRingHandler(session.sessionId);
+        }
+        session.signalingQueue = Promise.resolve();
+    }
+
+    handleCallMessage(sessionId, msg, sess) {
+        const action = msg.action;
+        if (action === "end") {
+            if (sess && this.isRinging?.(sess)) {
+                this.handleCallEnd(sessionId, "client-initiated").catch((err) => {
+                    this.logger.error(`[${sessionId}] Immediate call-end failed: ${err.message}`);
+                });
+                return;
+            }
+            this.enqueueSignaling(sessionId, "call-end", () => this.handleCallEnd(sessionId, "client-initiated"));
+            return;
+        }
+        if (action === "reject") {
+            if (sess && this.isRinging?.(sess)) {
+                this.handleCallEnd(sessionId, "client-reject").catch((err) => {
+                    this.logger.error(`[${sessionId}] Immediate call-reject failed: ${err.message}`);
+                });
+                return;
+            }
+            this.enqueueSignaling(sessionId, "call-reject", () => this.handleCallEnd(sessionId, "client-reject"));
+            return;
+        }
+        if (action === "hold") {
+            if (typeof this.handleCallHold === "function") this.handleCallHold(sessionId, true);
+            return;
+        }
+        if (action === "unhold") {
+            if (typeof this.handleCallHold === "function") this.handleCallHold(sessionId, false);
+            return;
+        }
+        if (action === "dtmf" && typeof this.handleCallDtmf === "function") {
+            this.enqueueSignaling(sessionId, "call-dtmf", () => this.handleCallDtmf(sessionId, msg));
+        }
+    }
+
+    handleData(sessionId, msg, phase) {
+        const inferredAction =
+            msg.action ||
+            msg.event ||
+            msg.kind ||
+            msg.payload?.type ||
+            (typeof msg.data === "string" ? msg.data : "data");
+        const textBody =
+            typeof msg.text === "string"
+                ? msg.text
+                : typeof msg.data === "string"
+                    ? msg.data
+                    : typeof msg.payload === "string"
+                        ? msg.payload
+                        : null;
+        const previewSource = textBody || JSON.stringify(msg.payload ?? msg.data ?? msg);
+        const preview = String(previewSource || "")
+            .replace(/\s+/g, " ")
+            .slice(0, 200);
+        this.logger.log(
+            `[${sessionId}] DC-DATA: action=${inferredAction} phase=${phase} preview="${preview}"`,
+        );
+        if (typeof this.handleDataMessage === "function") {
+            this.handleDataMessage(sessionId, msg, phase).catch((err) => {
+                this.logger.error(`[${sessionId}] DC-DATA forward failed: ${err.message}`);
+            });
+        }
+    }
+}
+
+module.exports = {
+    SignalingMessageRouter,
+};

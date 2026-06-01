@@ -1,5 +1,3 @@
-"use strict";
-
 const DOMAINS = ["secnumtest.global", "secnum.global", "cellactm.global", "cellactl.global"];
 const IVR_WAITING_AUDIO_FILE = "waiting.mp3";
 const MULTIRING_CONFIG_BASE_URL = "https://lightpbx-save-config-343948402138.europe-west1.run.app";

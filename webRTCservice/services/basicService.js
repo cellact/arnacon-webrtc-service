@@ -1,5 +1,3 @@
-"use strict";
-
 function getDomains(helpers) {
     const configured = helpers.getServiceConstants()?.domains;
     return Array.isArray(configured) && configured.length ? configured : ["basicservice.global"];

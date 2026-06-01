@@ -1,5 +1,3 @@
-"use strict";
-
 const DOMAINS = ["phonemyemail.global"];
 
 function getDomains(helpers) {
