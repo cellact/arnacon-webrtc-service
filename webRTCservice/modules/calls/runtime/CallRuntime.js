@@ -360,6 +360,7 @@ class CallRuntime {
 
     clearSipRouteState(sessionId, options = {}) {
         const context = this.requireContext(sessionId);
+        if (!context.resources?.disposers?.has("sipLeg")) return null;
         return context.resources?.sipLeg?.().clear(options);
     }
 

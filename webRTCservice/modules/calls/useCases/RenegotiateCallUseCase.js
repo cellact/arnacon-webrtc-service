@@ -41,7 +41,6 @@ function keepInactiveAudioReusable(answerSection, offerSection) {
 
 function keepGeneratedInactiveAudioReusable(section) {
     if (mediaKind(section) !== "audio") return section;
-    if (!/^a=inactive/m.test(section)) return section;
     return section.replace(/^m=audio\s+0\s+/m, "m=audio 9 ");
 }
 

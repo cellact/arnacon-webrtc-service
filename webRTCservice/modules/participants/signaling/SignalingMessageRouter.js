@@ -83,6 +83,14 @@ class SignalingMessageRouter {
         if (action === "end-call" && payload) {
             if (
                 sess &&
+                !this.isEndRenegotiationPending?.(sess) &&
+                this.canAcceptNewRing?.(sess)
+            ) {
+                this.logger.log(`[${sessionId}] Ignoring duplicate end-call renegotiation after post-call completion`);
+                return;
+            }
+            if (
+                sess &&
                 (
                     this.isRinging?.(sess) ||
                     this.isEndRenegotiationPending?.(sess)
@@ -152,6 +160,14 @@ class SignalingMessageRouter {
             notifyOwnedWebRtcLegs: !fromOwnedWebRtcLeg,
         };
         if (action === "end") {
+            if (
+                sess &&
+                !this.isEndRenegotiationPending?.(sess) &&
+                this.canAcceptNewRing?.(sess)
+            ) {
+                this.logger.log(`[${sessionId}] Ignoring duplicate call-end after post-call completion`);
+                return;
+            }
             if (sess && this.isRinging?.(sess)) {
                 this.handleCallEnd(sessionId, "client-initiated", endOptions).catch((err) => {
                     this.logger.error(`[${sessionId}] Immediate call-end failed: ${err.message}`);
