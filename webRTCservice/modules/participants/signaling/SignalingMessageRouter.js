@@ -48,6 +48,13 @@ class SignalingMessageRouter {
         };
     }
 
+    isInactiveOffer(payload = {}) {
+        const sdp = String(payload.sdp || "");
+        const audioSection = sdp.match(/^m=audio[\s\S]*?(?=\r?\nm=|$)/m)?.[0] || "";
+        if (!audioSection) return true;
+        return /^a=inactive/m.test(audioSection) && !/^a=sendrecv/m.test(audioSection);
+    }
+
     onDataChannelMessage(sessionId, rawMessage, meta = {}) {
         let msg;
         try {
@@ -127,17 +134,18 @@ class SignalingMessageRouter {
             const s = this.sessions.get(sessionId);
             if (s && this.isInCall?.(s)) {
                 this.enqueueSignaling(sessionId, "ice-restart", () => this.handleIceRestart(sessionId, payload));
-            } else if (
-                s &&
-                (
-                    this.isEndRenegotiationPending?.(s) ||
-                    this.canAcceptNewRing?.(s)
-                )
-            ) {
-                this.logger.log(`[${sessionId}] Treating late signaling offer as post-call renegotiation`);
+            } else if (s && this.isEndRenegotiationPending?.(s) && this.isInactiveOffer(payload)) {
+                this.logger.log(`[${sessionId}] Treating inactive late signaling offer as post-call renegotiation`);
                 this.handleEndCallRenegotiation(sessionId, payload, meta).catch((err) => {
                     this.logger.error(`[${sessionId}] Immediate post-call renegotiation failed: ${err.message}`);
                 });
+            } else if (
+                s &&
+                this.canAcceptNewRing?.(s)
+            ) {
+                this.logger.log(`[${sessionId}] Treating late signaling offer as new ring`);
+                this.resetPostCallForNewRing(s);
+                this.enqueueSignaling(sessionId, "ring", () => this.handleRing(sessionId, payload));
             } else {
                 this.enqueueSignaling(sessionId, "ring", () => this.handleRing(sessionId, payload));
             }
