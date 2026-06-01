@@ -1,5 +1,56 @@
 const { buildEndCallAnswerPayload } = require("../../participants/signaling/SignalingEnvelope");
 
+function splitSdpSections(sdp) {
+    const normalized = String(sdp || "").replace(/\r?\n/g, "\r\n");
+    const parts = normalized.split(/\r\n(?=m=)/);
+    return {
+        session: parts.shift() || "",
+        media: parts,
+    };
+}
+
+function mediaKind(section) {
+    return section.match(/^m=([^\s]+)/m)?.[1] || null;
+}
+
+function mediaMid(section) {
+    return section.match(/^a=mid:([^\r\n]+)/m)?.[1] || null;
+}
+
+function replaceOrInsertMid(section, mid) {
+    if (!mid) return section;
+    if (/^a=mid:/m.test(section)) return section.replace(/^a=mid:[^\r\n]+/m, `a=mid:${mid}`);
+    return section.replace(/^m=[^\r\n]+\r\n/, (line) => `${line}a=mid:${mid}\r\n`);
+}
+
+function keepInactiveAudioReusable(answerSection, offerSection) {
+    if (mediaKind(answerSection) !== "audio") return answerSection;
+    if (!/^a=inactive/m.test(offerSection)) return answerSection;
+    return answerSection.replace(/^m=audio\s+0\s+/m, "m=audio 9 ");
+}
+
+function alignEndCallAnswerSdp(answerSdp, offerSdp) {
+    const offer = splitSdpSections(offerSdp);
+    const answer = splitSdpSections(answerSdp);
+    const offerBundle = offer.session.match(/^a=group:BUNDLE\s+([^\r\n]+)/m)?.[1] || null;
+    let session = answer.session;
+    if (offerBundle) {
+        if (/^a=group:BUNDLE\s+/m.test(session)) {
+            session = session.replace(/^a=group:BUNDLE\s+[^\r\n]+/m, `a=group:BUNDLE ${offerBundle}`);
+        } else {
+            session += `a=group:BUNDLE ${offerBundle}\r\n`;
+        }
+    }
+
+    const media = answer.media.map((section, index) => {
+        const offerSection = offer.media[index] || "";
+        const mid = mediaMid(offerSection);
+        return keepInactiveAudioReusable(replaceOrInsertMid(section, mid), offerSection);
+    });
+
+    return [session, ...media].join("\r\n").replace(/\r\n{3,}/g, "\r\n\r\n");
+}
+
 class RenegotiateCallUseCase {
     constructor({
         sessions,
@@ -48,8 +99,8 @@ class RenegotiateCallUseCase {
             }
         }
         const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        const answerSdp = answer.sdp;
+        const answerSdp = alignEndCallAnswerSdp(answer.sdp, payload.sdp);
+        await pc.setLocalDescription(new this.RTCSessionDescription(answerSdp, "answer"));
 
         if (this.callRuntime) {
             await this.callRuntime.clearSipRouteState(sessionId, { reason: "end-call-renegotiated" });
