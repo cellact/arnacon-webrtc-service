@@ -134,7 +134,10 @@ class SignalingMessageRouter {
                     this.canAcceptNewRing?.(s)
                 )
             ) {
-                this.logger.log(`[${sessionId}] Ignoring late signaling offer during post-call teardown`);
+                this.logger.log(`[${sessionId}] Treating late signaling offer as post-call renegotiation`);
+                this.handleEndCallRenegotiation(sessionId, payload, meta).catch((err) => {
+                    this.logger.error(`[${sessionId}] Immediate post-call renegotiation failed: ${err.message}`);
+                });
             } else {
                 this.enqueueSignaling(sessionId, "ring", () => this.handleRing(sessionId, payload));
             }
