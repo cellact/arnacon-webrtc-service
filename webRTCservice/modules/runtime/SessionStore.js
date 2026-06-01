@@ -53,6 +53,7 @@ class SessionStore {
 
     normalizeSessionId(sessionId) {
         if (!sessionId || typeof sessionId !== "string") return sessionId;
+        if (!sessionId.includes("|")) return sessionId;
         return sessionId.split("|").map((part) => this.identityLabel(part)).join("|");
     }
 
