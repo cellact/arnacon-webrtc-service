@@ -18,7 +18,6 @@ class SignalingAuthVerifier {
         this.blockchainGateway = blockchainGateway;
         this.sessions = sessions;
     }
-
     resolveSession(payload = {}) {
         const candidates = new Set();
         if (payload.sessionId) {
