@@ -9,6 +9,7 @@ function authIdentityLabel(identity) {
 }
 function authNormalizeSessionId(sessionId) {
     if (!sessionId || typeof sessionId !== "string") return sessionId;
+    if (!sessionId.includes("|")) return sessionId;
     return sessionId.split("|").map(authIdentityLabel).join("|");
 }
 
