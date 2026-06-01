@@ -129,7 +129,6 @@ class WebRtcOutboundLegFactory {
             isCall: true,
             extra: {
                 label: callerNumberLabel || undefined,
-                callerEns,
                 ...(options.payload || {}),
             },
         }));

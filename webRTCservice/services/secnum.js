@@ -1,11 +1,14 @@
-const DOMAINS = ["secnumtest.global", "secnum.global", "cellactm.global", "cellactl.global"];
+const DOMAINS = ["secnum.global", "secnumtest.global"];
 const IVR_WAITING_AUDIO_FILE = "waiting.mp3";
 const MULTIRING_CONFIG_BASE_URL = "https://lightpbx-save-config-343948402138.europe-west1.run.app";
 const MULTIRING_CONFIG_TIMEOUT_MS = 2500;
 
 function getDomains(helpers) {
     const configured = helpers.getServiceConstants()?.domains;
-    return Array.isArray(configured) && configured.length ? configured : DOMAINS;
+    if (!Array.isArray(configured) || configured.length === 0) return DOMAINS;
+    const allowed = new Set(DOMAINS);
+    const filtered = configured.map((domain) => String(domain || "").toLowerCase()).filter((domain) => allowed.has(domain));
+    return filtered.length ? filtered : DOMAINS;
 }
 
 function resolveInboundValue(payload, helpers) {
@@ -19,8 +22,7 @@ function resolveInboundValue(payload, helpers) {
     const rawStr = String(raw || "").trim();
     if (!rawStr) return "";
 
-    // Handle either plain number ("972...") or ENS-like target
-    // ("972....cellactm.global") by always taking the first label.
+    // Handle either plain number ("972...") or ENS-like target by taking the first label only.
     const firstLabel = rawStr.includes(".") ? rawStr.split(".")[0] : rawStr;
     return helpers.normalizePhone(firstLabel);
 }
@@ -35,6 +37,13 @@ async function resolveEnsWallet(helpers, ensName) {
         return owner;
     }
     return null;
+}
+
+function buildExactEnsCandidates(value, domains) {
+    const target = String(value || "").trim().toLowerCase();
+    if (!target) return [];
+    if (target.endsWith(".global")) return [target];
+    return domains.map((domain) => `${target}.${domain}`);
 }
 
 function normalizeMultiringEndpoint(value, helpers) {
@@ -152,14 +161,12 @@ async function resolveInboundTarget(ctx) {
         };
     }
     const inboundDomain = String(payload?.toDomain || "").trim().toLowerCase();
+    const allowedDomains = new Set(getDomains(helpers));
     const domains = Array.from(new Set([
-        inboundDomain,
+        allowedDomains.has(inboundDomain) ? inboundDomain : null,
         ...getDomains(helpers),
     ].filter(Boolean)));
-    const candidates = helpers.buildInboundCandidates({
-        value: targetValue,
-        domains,
-    });
+    const candidates = buildExactEnsCandidates(targetValue, domains);
     for (const ensName of candidates) {
         helpers.logRouteDecision?.({
             serviceId: "secnum",
@@ -197,10 +204,7 @@ async function resolveNumberAsOwnServiceTarget(parsedTo, helpers) {
     const targetValue = helpers.normalizePhone(rawValue).replace(/\D/g, "");
     if (!targetValue) return null;
 
-    const candidates = helpers.buildInboundCandidates({
-        value: targetValue,
-        domains: getDomains(helpers),
-    });
+    const candidates = buildExactEnsCandidates(targetValue, getDomains(helpers));
     for (const ensName of candidates) {
         helpers.logRouteDecision?.({
             serviceId: "secnum",

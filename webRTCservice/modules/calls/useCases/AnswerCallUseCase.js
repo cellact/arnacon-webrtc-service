@@ -106,7 +106,7 @@ class AnswerCallUseCase {
         routeCall,
         routeResult = null,
     }) {
-        const session = this.sessions.get(sessionId);
+        let session = this.sessions.get(sessionId);
         if (!session) return;
         if (!isInbound && destination?.route === "ivr") {
             const exactPolicy = exactG711PolicyFromAnswer(answerSdp);
@@ -121,10 +121,23 @@ class AnswerCallUseCase {
             if (isInbound) await this.openInboundSipSession(sessionId, session.inboundCall.toNumber);
             else routeResult = await routeCall(sessionId, session, destination, parsedFrom);
         } catch (err) {
+            session = this.sessions.get(sessionId);
+            if (!session) {
+                this.logger.warn(
+                    `[${sessionId}] Route failure completed after session teardown: ` +
+                    `${err?.message || err}`,
+                );
+                return;
+            }
             this.failCall(sessionId, err, isInbound ? "Inbound SIP session failed" : "Call routing failed");
             return;
         }
 
+        session = this.sessions.get(sessionId);
+        if (!session) {
+            this.logger.warn(`[${sessionId}] Route connected after session teardown; skipping answer commit`);
+            return;
+        }
         if (this.callRuntime) this.callRuntime.markInCall(sessionId, { source: "route", reason: "route-connected" });
         if (isInbound) this.sendAckAndAnswer(sessionId, answerSdp);
         else this.sendAnswer(sessionId, answerSdp);
