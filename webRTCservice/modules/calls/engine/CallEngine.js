@@ -119,7 +119,7 @@ class CallEngine {
         });
         const strategy = this.getStrategy(context, event);
         if (event.notifyClient) this.runtime.notifyCallEnd(sessionId, event);
-        this.runtime.notifyOwnedWebRtcLegsCallEnd(sessionId, event);
+        if (event.notifyOwnedWebRtcLegs !== false) this.runtime.notifyOwnedWebRtcLegsCallEnd(sessionId, event);
         if (event.propagateLinkedSession) this.runtime.propagateLinkedEvent(sessionId, event);
         if (strategy?.end) await strategy.end(context, event);
         return { handled: true };
@@ -130,7 +130,7 @@ class CallEngine {
         this.runtime.markCancelled(sessionId, event);
         const strategy = this.getStrategy(context, event);
         if (event.notifyClient !== false) this.runtime.notifyCallEnd(sessionId, event);
-        this.runtime.notifyOwnedWebRtcLegsCallEnd(sessionId, event);
+        if (event.notifyOwnedWebRtcLegs !== false) this.runtime.notifyOwnedWebRtcLegsCallEnd(sessionId, event);
         if (event.propagateLinkedSession) this.runtime.propagateLinkedEvent(sessionId, event);
         if (strategy?.cancel) await strategy.cancel(context, event);
         return { handled: true };

@@ -43,12 +43,12 @@ class SignalingMessageRouter {
         });
         this.dcHandlers = {
             signaling: (sessionId, msg, sess) => this.handleSignaling(sessionId, msg, sess),
-            call: (sessionId, msg, sess) => this.handleCallMessage(sessionId, msg, sess),
+            call: (sessionId, msg, sess, phase, meta) => this.handleCallMessage(sessionId, msg, sess, meta),
             data: (sessionId, msg, sess, phase) => this.handleData(sessionId, msg, phase),
         };
     }
 
-    onDataChannelMessage(sessionId, rawMessage) {
+    onDataChannelMessage(sessionId, rawMessage, meta = {}) {
         let msg;
         try {
             msg = JSON.parse(rawMessage);
@@ -62,11 +62,12 @@ class SignalingMessageRouter {
         const msgType = msg.msgType;
         const dcAction = msg.action || msg.payload?.type || "unknown";
         const sdpLen = msg.payload?.sdp ? msg.payload.sdp.length : 0;
-        this.logger.log(`[${sessionId}] DC-IN: msgType=${msgType} action=${dcAction} phase=${phase}${sdpLen ? ` sdpLen=${sdpLen}` : ""}`);
+        const channelRole = meta.channelRole || "caller-webrtc";
+        this.logger.log(`[${sessionId}] DC-IN(${channelRole}): msgType=${msgType} action=${dcAction} phase=${phase}${sdpLen ? ` sdpLen=${sdpLen}` : ""}`);
 
         const handler = this.dcHandlers[msgType];
         if (handler) {
-            handler(sessionId, msg, sess, phase);
+            handler(sessionId, msg, sess, phase, meta);
             return;
         }
 
@@ -143,26 +144,31 @@ class SignalingMessageRouter {
         session.signalingQueue = Promise.resolve();
     }
 
-    handleCallMessage(sessionId, msg, sess) {
+    handleCallMessage(sessionId, msg, sess, meta = {}) {
         const action = msg.action;
+        const fromOwnedWebRtcLeg = meta.channelRole === "callee-webrtc";
+        const endOptions = {
+            notifyClient: fromOwnedWebRtcLeg,
+            notifyOwnedWebRtcLegs: !fromOwnedWebRtcLeg,
+        };
         if (action === "end") {
             if (sess && this.isRinging?.(sess)) {
-                this.handleCallEnd(sessionId, "client-initiated").catch((err) => {
+                this.handleCallEnd(sessionId, "client-initiated", endOptions).catch((err) => {
                     this.logger.error(`[${sessionId}] Immediate call-end failed: ${err.message}`);
                 });
                 return;
             }
-            this.enqueueSignaling(sessionId, "call-end", () => this.handleCallEnd(sessionId, "client-initiated"));
+            this.enqueueSignaling(sessionId, "call-end", () => this.handleCallEnd(sessionId, "client-initiated", endOptions));
             return;
         }
         if (action === "reject") {
             if (sess && this.isRinging?.(sess)) {
-                this.handleCallEnd(sessionId, "client-reject").catch((err) => {
+                this.handleCallEnd(sessionId, "client-reject", endOptions).catch((err) => {
                     this.logger.error(`[${sessionId}] Immediate call-reject failed: ${err.message}`);
                 });
                 return;
             }
-            this.enqueueSignaling(sessionId, "call-reject", () => this.handleCallEnd(sessionId, "client-reject"));
+            this.enqueueSignaling(sessionId, "call-reject", () => this.handleCallEnd(sessionId, "client-reject", endOptions));
             return;
         }
         if (action === "hold") {

@@ -59,7 +59,9 @@ class WebRtcOutboundLegFactory {
         dc.onMessage.subscribe((msg) => {
             if (typeof this.onDataChannelMessage !== "function") return;
             const raw = typeof msg === "string" ? msg : Buffer.from(msg).toString("utf-8");
-            this.onDataChannelMessage(sessionId, raw);
+            this.onDataChannelMessage(sessionId, raw, {
+                channelRole: "callee-webrtc",
+            });
         });
         dc.onclose = () => {
             legSession.dataChannelOpen = false;

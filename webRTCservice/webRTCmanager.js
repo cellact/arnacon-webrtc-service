@@ -1246,12 +1246,15 @@ async function stopIvrMediaSession(sessionId) {
  * Tears down the SIP leg (PC2) and media relay. Does NOT touch PC1 —
  * the client will send a renegotiation offer to drop audio from PC1.
  */
-async function handleCallEnd(sessionId, reason = "client-initiated", propagate = true) {
+async function handleCallEnd(sessionId, reason = "client-initiated", options = {}) {
+    const normalizedOptions = typeof options === "boolean" ? { propagate: options } : options;
+    const propagate = normalizedOptions.propagate !== false;
     return callEngine.dispatch(sessionId, {
         type: reason === "client-reject" ? CallEvents.CallCancelRequested : CallEvents.CallEndRequested,
         source: CallEventSources.Client,
         reason,
-        notifyClient: false,
+        notifyClient: normalizedOptions.notifyClient === true,
+        notifyOwnedWebRtcLegs: normalizedOptions.notifyOwnedWebRtcLegs !== false,
         propagateLinkedSession: propagate,
     });
 }
