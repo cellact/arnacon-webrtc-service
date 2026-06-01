@@ -93,6 +93,44 @@ class WebRtcCallOrchestrator {
         return `${callerSessionId}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
     }
 
+    isOpenDataChannel(channel) {
+        return channel && (channel.readyState === "open" || channel.readyState === "OPEN");
+    }
+
+    identityLabel(identity) {
+        if (!identity || typeof identity !== "string") return identity;
+        const trimmed = identity.trim();
+        const atPos = trimmed.indexOf("@");
+        if (atPos > 0) return trimmed.slice(0, atPos);
+        const dotPos = trimmed.indexOf(".");
+        if (dotPos > 0) return trimmed.slice(0, dotPos);
+        return trimmed;
+    }
+
+    sameIdentity(left, right) {
+        return this.identityLabel(String(left || "").toLowerCase()) ===
+            this.identityLabel(String(right || "").toLowerCase());
+    }
+
+    findReusableOutboundLeg(callerSessionId, destination = {}) {
+        const callerSession = this.sessions.get(callerSessionId);
+        if (!callerSession) return null;
+
+        const walletKey = String(destination.wallet || "").toLowerCase();
+        const targetEns = destination.ensName || destination.wallet || "";
+        const candidates = [];
+        if (callerSession.outboundWebrtc) candidates.push(callerSession.outboundWebrtc);
+        if (callerSession.outboundWebrtcLegs?.values) {
+            for (const leg of callerSession.outboundWebrtcLegs.values()) candidates.push(leg);
+        }
+
+        return candidates.find((leg) => {
+            if (!leg?.peerConnection || !this.isOpenDataChannel(leg.dataChannel)) return false;
+            if (walletKey && String(leg.walletAddress || "").toLowerCase() === walletKey) return true;
+            return targetEns && this.sameIdentity(leg.toIdentity, targetEns);
+        }) || null;
+    }
+
     waitForWebrtcPickup(callerSessionId, legSessionId, walletKey, attemptId, timeoutReason = "webrtc-pickup-timeout") {
         const BRIDGE_TIMEOUT = 60000;
         let timer = null;
@@ -161,6 +199,38 @@ class WebRtcCallOrchestrator {
             this.pendingBridgeRegistry.setList(walletKey, nextList);
         }
         return cancelled;
+    }
+
+    async tryBridgeOverExistingLeg(callerSessionId, destination, sendRingOverDataChannel) {
+        const callerSession = this.sessions.get(callerSessionId);
+        if (!callerSession || typeof sendRingOverDataChannel !== "function") return null;
+        const legSession = this.findReusableOutboundLeg(callerSessionId, destination);
+        if (!legSession) return null;
+
+        this.cancelPendingBridgeForSession(callerSessionId, "webrtc-pickup-replaced");
+        const walletKey = String(legSession.walletAddress || destination?.wallet || callerSessionId).toLowerCase();
+        const bridgeAttemptId = this.createBridgeAttemptId(callerSessionId);
+        callerSession.outboundWebrtc = legSession;
+        callerSession.outboundLegHttpAnswered = true;
+        callerSession.outboundLegRingSent = false;
+        callerSession.outboundWebrtcTransportReady = true;
+        legSession.bridgeAttemptId = bridgeAttemptId;
+        legSession.outboundBridgeKind = legSession.outboundBridgeKind || "single";
+
+        const pickup = this.waitForWebrtcPickup(callerSessionId, callerSessionId, walletKey, bridgeAttemptId);
+        try {
+            this.logger.log(`[${callerSessionId}] Reusing existing WebRTC callee leg over data channel`);
+            await sendRingOverDataChannel();
+            const calleeSessionId = await pickup.promise;
+            if (!calleeSessionId) return null;
+            this.startBridgeRtp(callerSessionId, calleeSessionId);
+            this.logger.log(`[Bridge] WebRTC callee connected over existing data channel callerSessionId=${callerSessionId} calleeSessionId=${calleeSessionId}`);
+            return calleeSessionId;
+        } catch (err) {
+            pickup.promise.catch(() => {});
+            pickup.cancel(err?.message || "webrtc-existing-leg-failed");
+            throw err;
+        }
     }
 
     async notifyAndBridge(callerSessionId, destination) {

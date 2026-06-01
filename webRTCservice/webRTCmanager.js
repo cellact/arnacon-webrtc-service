@@ -1161,6 +1161,12 @@ async function handleReofferAnswer(sessionId, payload) {
  * then pipes audio between the caller's PC1 and the callee's PC1.
  */
 async function notifyAndBridge(callerSessionId, destination) {
+    const reused = await bridgeApi.tryBridgeOverExistingLeg(
+        callerSessionId,
+        destination,
+        () => startCallUseCase.triggerOutboundWebrtcLegRing(callerSessionId),
+    );
+    if (reused) return reused;
     return bridgeApi.notifyAndBridge(callerSessionId, destination);
 }
 
