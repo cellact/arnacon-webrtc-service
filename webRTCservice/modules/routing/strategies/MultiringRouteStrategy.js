@@ -12,6 +12,7 @@ class MultiringRouteStrategy extends RouteStrategy {
         this.webRtcBridgePort = webRtcBridgePort || {
             notifyAndBridgeMulti,
             startPendingMultiBridge,
+            stopMedia: null,
             stopSession: stopWebRtcSession,
         };
         this.logger = logger;
@@ -33,18 +34,27 @@ class MultiringRouteStrategy extends RouteStrategy {
     }
 
     async end(context, event) {
+        const mediaSession = context.resources?.mediaSession?.();
+        if (mediaSession?.getGraph?.()) {
+            await mediaSession.stop(event.reason || "multiring-end");
+        } else if (typeof this.webRtcBridgePort.stopMedia === "function") {
+            await Promise.resolve(this.webRtcBridgePort.stopMedia(context.sessionId, event.reason || "multiring-end"));
+        }
+        return "webrtc-multiring";
+    }
+
+    async cancel(context, event) {
         if (typeof this.webRtcBridgePort.stopSession === "function") {
             return this.webRtcBridgePort.stopSession(context.sessionId, event.reason || "multiring-end");
         }
         return "webrtc-multiring";
     }
 
-    async cancel(context, event) {
-        return this.end(context, event);
-    }
-
     async fail(context, event) {
-        return this.end(context, event);
+        if (typeof this.webRtcBridgePort.stopSession === "function") {
+            return this.webRtcBridgePort.stopSession(context.sessionId, event.reason || "multiring-failed");
+        }
+        return "webrtc-multiring";
     }
 }
 

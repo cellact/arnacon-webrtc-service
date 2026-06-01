@@ -24,6 +24,10 @@ class BlockchainGateway {
         return this.blockchainApi.verifyAnswerSignature(...args);
     }
 
+    verifyParticipantSignature(...args) {
+        return this.blockchainApi.verifyParticipantSignature(...args);
+    }
+
     isEthAddress(...args) {
         return this.blockchainApi.isEthAddress(...args);
     }

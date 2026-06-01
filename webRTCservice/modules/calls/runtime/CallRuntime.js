@@ -275,11 +275,22 @@ class CallRuntime {
         });
         let sent = false;
         const notifyLeg = (leg) => {
-            if (!leg?.dataChannel) return;
+            if (!leg?.dataChannel) {
+                this.logger.warn(`[${sessionId}] Cannot send DC message to owned leg: no data channel on leg`);
+                return;
+            }
+            if (leg.dataChannel.readyState !== "open") {
+                this.logger.warn(`[${sessionId}] Cannot send DC message to owned leg: data channel not open (readyState=${leg.dataChannel.readyState})`);
+                return;
+            }
             try {
+                const action = event.action || "end";
+                this.logger.log(`[${sessionId}] DC-OUT(leg): msgType=call action=${action} phase=${leg.phase || "?"}`);
                 leg.dataChannel.send(message);
                 sent = true;
-            } catch (_) {}
+            } catch (err) {
+                this.logger.error(`[${sessionId}] Failed to send DC message to owned leg: ${err.message}`);
+            }
         };
         notifyLeg(session.outboundWebrtc);
         if (session.outboundWebrtcLegs?.values) {

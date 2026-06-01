@@ -320,6 +320,28 @@ function createBlockchainApi({
         logger.log(`[${sessionId || "no-session"}] Initial offer signature verified for ${from} (${recoveredSigner})`);
     }
 
+    async function verifyParticipantSignature(message) {
+        const from = normalizeEnsDomain(message.from || "");
+        const { xdata, xsign, sessionId, type } = message;
+        if (!from) throw createHttpError(400, "Missing required field: from");
+        if (!xdata) throw createHttpError(401, "Missing required field: xdata");
+        if (!xsign) throw createHttpError(401, "Missing required field: xsign");
+
+        const expectedSigner = await resolveExpectedSigner(from);
+        let recoveredSigner;
+        try {
+            recoveredSigner = ethers.utils.getAddress(
+                ethers.utils.verifyMessage(String(xdata), String(xsign)),
+            );
+        } catch (err) {
+            throw createHttpError(401, `Invalid xsign for xdata: ${err.message}`);
+        }
+        if (recoveredSigner !== expectedSigner) {
+            throw createHttpError(403, `xsign signer mismatch for ${from}: expected ${expectedSigner}, got ${recoveredSigner}`);
+        }
+        logger.log(`[${sessionId || "no-session"}] ${type || "participant"} signature verified for ${from} (${recoveredSigner})`);
+    }
+
     async function resolveExpectedSigner(identity) {
         if (isEthAddress(identity)) {
             return ethers.utils.getAddress(identity);
@@ -529,6 +551,7 @@ function createBlockchainApi({
         resolveEnsTextRecord,
         resolveWrappedOwner,
         verifyInitialOfferSignature,
+        verifyParticipantSignature,
         verifyAnswerSignature,
         resolveCallerServiceProviderContract,
         nftGetOwnedNumber,

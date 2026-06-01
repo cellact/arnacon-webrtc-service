@@ -70,6 +70,7 @@ function createRouteStrategies({
         notifyAndBridge,
         notifyAndBridgeMulti,
         startPendingMultiBridge,
+        stopMedia: stopMediaRelay,
         stopSession: (sessionId, reason) => destroyRuntimeSession(sessionId, { source: "webrtc", reason }),
     };
     const ivrRoutePort = {

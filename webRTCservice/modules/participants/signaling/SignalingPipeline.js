@@ -10,7 +10,7 @@ class SignalingAuthVerifier {
         if (type === "offer") return this.blockchainGateway.verifyInitialOfferSignature(payload, signalingPlan);
         if (type === "answer") return this.blockchainGateway.verifyAnswerSignature(payload, this.sessions.get(payload.sessionId), signalingPlan);
         if (type === "ice-batch" || type === "cancel") {
-            return this.blockchainGateway.verifyAnswerSignature(payload, this.sessions.get(payload.sessionId), signalingPlan);
+            return this.blockchainGateway.verifyParticipantSignature(payload, signalingPlan);
         }
         throw new Error(`Unsupported HTTP signaling auth type: ${type}`);
     }

@@ -10,6 +10,7 @@ class WebRtcRouteStrategy extends RouteStrategy {
         super();
         this.webRtcBridgePort = webRtcBridgePort || {
             notifyAndBridge,
+            stopMedia: null,
             stopSession: stopWebRtcSession,
         };
         this.logger = logger;
@@ -25,18 +26,27 @@ class WebRtcRouteStrategy extends RouteStrategy {
     }
 
     async end(context, event) {
+        const mediaSession = context.resources?.mediaSession?.();
+        if (mediaSession?.getGraph?.()) {
+            await mediaSession.stop(event.reason || "webrtc-end");
+        } else if (typeof this.webRtcBridgePort.stopMedia === "function") {
+            await Promise.resolve(this.webRtcBridgePort.stopMedia(context.sessionId, event.reason || "webrtc-end"));
+        }
+        return "webrtc";
+    }
+
+    async cancel(context, event) {
         if (typeof this.webRtcBridgePort.stopSession === "function") {
             return this.webRtcBridgePort.stopSession(context.sessionId, event.reason || "webrtc-end");
         }
         return "webrtc";
     }
 
-    async cancel(context, event) {
-        return this.end(context, event);
-    }
-
     async fail(context, event) {
-        return this.end(context, event);
+        if (typeof this.webRtcBridgePort.stopSession === "function") {
+            return this.webRtcBridgePort.stopSession(context.sessionId, event.reason || "webrtc-failed");
+        }
+        return "webrtc";
     }
 }
 
