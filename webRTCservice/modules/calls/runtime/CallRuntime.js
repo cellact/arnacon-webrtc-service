@@ -177,6 +177,21 @@ class CallRuntime {
         context.session.callEndInProgress = false;
         context.session.endCallRenegDone = false;
         context.session.signalingQueue = Promise.resolve();
+        context.session.outboundLegHttpAnswered = false;
+        context.session.outboundLegRingSent = false;
+        context.session.outboundWebrtcTransportReady = false;
+        if (context.session.outboundWebrtc) {
+            context.session.outboundWebrtc.stage1AnswerApplied = false;
+            context.session.outboundWebrtc.endCallRenegOfferSent = false;
+            context.session.outboundWebrtc.endCallRenegAnswered = false;
+        }
+        if (context.session.outboundWebrtcLegs?.values) {
+            for (const leg of context.session.outboundWebrtcLegs.values()) {
+                leg.stage1AnswerApplied = false;
+                leg.endCallRenegOfferSent = false;
+                leg.endCallRenegAnswered = false;
+            }
+        }
         this.setTeardownState(context.session, "idle", event.reason || "new-ring");
         return context;
     }

@@ -112,6 +112,9 @@ class WebRtcOutboundLegFactory {
         } else {
             callerSession.outboundWebrtc = legSession;
         }
+        callerSession.outboundLegHttpAnswered = false;
+        callerSession.outboundLegRingSent = false;
+        callerSession.outboundWebrtcTransportReady = false;
 
         const pc = this.attachOutboundDataChannel(callerSessionId, legSession);
         legSession.localAudioTrack = new this.MediaStreamTrack({ kind: "audio" });
