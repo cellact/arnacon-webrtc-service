@@ -43,6 +43,14 @@ class SessionLeg {
         return run;
     }
 
+    // A settled end-of-life state: further teardown ingress must not re-cycle us.
+    _isTerminal() {
+        return this.state === LEG_STATES.ENDED
+            || this.state === LEG_STATES.CANCELED
+            || this.state === LEG_STATES.REJECTED
+            || this.state === LEG_STATES.FAILED;
+    }
+
     onStateChange(listener) {
         this._listeners.add(listener);
         return () => this._listeners.delete(listener);
@@ -226,19 +234,40 @@ class SessionLeg {
             case LEG_EVENTS.END:
             case LEG_EVENTS.END_RENEGOTIATION:
             case LEG_EVENTS.REMOTE_BYE:
-                // The endpoint itself is ending: drive our own teardown to a
-                // settled state. The ENDING emit lets PolySession coordinate the
-                // peer in parallel.
+                // Teardown glare is normal: when a call ends, BOTH the client
+                // (hang-up) and PolySession (ending the peer) drive teardown, and
+                // the end-call renegotiation answer/offer the client sends to
+                // complete the handshake arrives AFTER we have already settled. If
+                // we are already tearing down / done, absorb that trailing SDP
+                // WITHOUT re-emitting a state change -- otherwise every stray
+                // end-call message bounces us ended<->ending and re-triggers
+                // reconcile (the cascade we saw in the logs). We still let the
+                // negotiation answer the client's end-call offer so its PC closes
+                // cleanly; we just don't churn state.
+                if (this._isTerminal() || this.state === LEG_STATES.ENDING) {
+                    await this._tx(() => this.negotiation.endCall?.({ leg: this, mode: "remote", ...event }));
+                    return;
+                }
+                // First teardown: drive ourselves to a settled state. The ENDING
+                // emit lets PolySession coordinate the peer in parallel.
                 this.setState(LEG_STATES.ENDING, { reason: event.type, from: "self", payload: event.payload });
                 await this._tx(() => this.negotiation.endCall({ leg: this, mode: "remote", ...event }));
                 this.setState(LEG_STATES.ENDED, { reason: event.type, from: "self" });
                 return;
             case LEG_EVENTS.CANCEL:
+                if (this._isTerminal() || this.state === LEG_STATES.CANCELING) {
+                    await this._tx(() => this.negotiation.endCall?.({ leg: this, mode: "cancel", ...event }));
+                    return;
+                }
                 this.setState(LEG_STATES.CANCELING, { reason: "client-cancel", from: "self", payload: event.payload });
                 await this._tx(() => this.negotiation.endCall({ leg: this, mode: "cancel", ...event }));
                 this.setState(LEG_STATES.CANCELED, { reason: "client-cancel", from: "self" });
                 return;
             case LEG_EVENTS.REJECT:
+                if (this._isTerminal() || this.state === LEG_STATES.REJECTING) {
+                    await this._tx(() => this.negotiation.endCall?.({ leg: this, mode: "reject", ...event }));
+                    return;
+                }
                 this.setState(LEG_STATES.REJECTING, { reason: "client-reject", from: "self", payload: event.payload });
                 await this._tx(() => this.negotiation.endCall({ leg: this, mode: "reject", ...event }));
                 this.setState(LEG_STATES.REJECTED, { reason: "client-reject", from: "self" });

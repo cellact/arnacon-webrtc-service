@@ -55,6 +55,26 @@ test("ingress END settles the leg through its own teardown", async () => {
     assert.equal(negotiation.named("endCall")[0].mode, "remote");
 });
 
+test("idempotent teardown: trailing end-call renegotiation is absorbed without state churn", async () => {
+    const { leg, negotiation } = makeWebRtcLeg("t");
+    leg.setState(S.IN_CALL, { from: "self" });
+    const seen = [];
+    leg.onStateChange((e) => seen.push([e.prevState, e.state]));
+
+    // First end settles us once: inCall -> ending -> ended.
+    await leg.handleIngress(makeLegEvent(LEG_EVENTS.END));
+    assert.equal(leg.state, S.ENDED);
+
+    // The peer's end-call answer/offer arrives AFTER we are ended (teardown glare).
+    // It must be absorbed (negotiation still runs to answer the client) but must
+    // NOT bounce us ended<->ending or re-emit -- that was the log cascade.
+    await leg.handleIngress(makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "x" }));
+    await leg.handleIngress(makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "x" }));
+    assert.equal(leg.state, S.ENDED);
+    assert.deepEqual(seen, [[S.IN_CALL, S.ENDING], [S.ENDING, S.ENDED]], "only one settle, no re-cycling");
+    assert.equal(negotiation.named("endCall").length, 3, "each end-call SDP is still absorbed by the transport");
+});
+
 test("from is recorded on the leg", async () => {
     const { leg } = makeWebRtcLeg("f");
     leg.setState(S.IN_CALL, { from: "self" });

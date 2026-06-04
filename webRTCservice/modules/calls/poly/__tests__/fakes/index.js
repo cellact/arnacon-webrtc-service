@@ -136,6 +136,8 @@ function fakePrimitives() {
         getRelayCandidates: () => [],
         embedCandidatesInSdp: (sdp) => sdp,
         patchInactiveToSendrecv: (sdp) => sdp.replace(/a=inactive/g, "a=sendrecv"),
+        // real (pure) narrowing so codec-policy tests exercise the actual logic
+        narrowAudioOfferForCodecPolicy: require("../../../../media/negotiation/SdpCodecNegotiator").narrowAudioOfferForCodecPolicy,
         ensureLocalAudioTrack: () => {},
         createAnswerSdp: async (pc) => (await pc.createAnswer()).sdp,
         logSdp: () => {},

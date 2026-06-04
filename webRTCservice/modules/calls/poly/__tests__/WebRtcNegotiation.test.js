@@ -141,6 +141,34 @@ test("answer() flushes the held answer once the peer picks up", async () => {
     assert.ok(signaling.lastOfType("call", "ack"));
 });
 
+const MULTI_CODEC_AUDIO =
+    "v=0\r\n" +
+    "m=audio 9 UDP/TLS/RTP/SAVPF 111 0 8\r\n" +
+    "a=mid:0\r\n" +
+    "a=sendrecv\r\n" +
+    "a=rtpmap:111 opus/48000/2\r\n" +
+    "a=rtpmap:0 PCMU/8000\r\n" +
+    "a=rtpmap:8 PCMA/8000\r\n";
+
+test("applyOffer narrows the incoming offer to the session codec policy (PCMA) before answering", async () => {
+    const { neg, session } = build({ answerSdp: MULTI_CODEC_AUDIO });
+    session.mediaCodecPolicy = "pcma";
+    await neg.applyOffer({ mode: "ring", payload: { sdp: MULTI_CODEC_AUDIO } });
+    const remote = session.peerConnection.remoteDescription.sdp;
+    assert.match(remote, /m=audio 9 \S+ 8\r\n/, "m-line should be narrowed to PT 8 only");
+    assert.doesNotMatch(remote, /opus/, "opus must be stripped so the client can only send PCMA");
+});
+
+test("ring narrows the callee ring offer to the session codec policy (PCMA)", async () => {
+    const { neg, signaling, session } = build({ offerSdp: MULTI_CODEC_AUDIO });
+    session.mediaCodecPolicy = "pcma";
+    await neg.ring({ from: "alice.secnum.global" });
+    const msg = signaling.lastOfType("signaling", "offer");
+    assert.ok(msg, "expected a signaling offer");
+    assert.match(msg.payload.sdp, /m=audio 9 \S+ 8\r\n/, "ring offer should be narrowed to PT 8 only");
+    assert.doesNotMatch(msg.payload.sdp, /opus/, "opus must be stripped from the ring offer");
+});
+
 test("callee leg connect delegates to inviteCallee (deferred) and binds the returned leg session", async () => {
     const signaling = new FakeSignaling();
     const legSession = {

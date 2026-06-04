@@ -120,6 +120,14 @@ class WebRtcNegotiation extends CallNegotiationPort {
         }
         session.iceCandidates = [];
         const offer = await pc.createOffer();
+        // Narrow the ring offer to the route's codec policy (e.g. PCMA only for
+        // webrtc<->webrtc) so the callee answers with that single codec and the
+        // G711-only bridge relays cleanly. Without this the offer carries opus and
+        // the two legs can settle on mismatched codecs -> grain noise.
+        if (session.mediaCodecPolicy && this.p.narrowAudioOfferForCodecPolicy) {
+            const narrowed = this.p.narrowAudioOfferForCodecPolicy(offer.sdp, session.mediaCodecPolicy);
+            if (narrowed !== offer.sdp) offer.sdp = narrowed;
+        }
         await pc.setLocalDescription(offer);
         await this.p.waitForIceGathering(pc);
         const gathered = this.p.formatIceCandidates(session).filter((c) => !String(c.candidate || "").toLowerCase().includes(" tcp "));
@@ -155,6 +163,14 @@ class WebRtcNegotiation extends CallNegotiationPort {
         const payload = ctx.payload || {};
         const isIceRestart = ctx.mode === "ice-restart";
         let offerSdp = payload.sdp;
+        // Pin the audio to the route's codec policy (e.g. PCMA for webrtc<->webrtc)
+        // BEFORE answering, so PC1's answer can only contain that codec. Otherwise
+        // werift re-exposes/re-orders opus in the answer, the client sends opus, and
+        // the G711-only media bridge relays opus bytes the peer decodes as PCMA ->
+        // grain noise. Mirrors the legacy narrowing the poly cutover dropped.
+        if (this.session.mediaCodecPolicy && this.p.narrowAudioOfferForCodecPolicy) {
+            offerSdp = this.p.narrowAudioOfferForCodecPolicy(offerSdp, this.session.mediaCodecPolicy);
+        }
         if (audioDirection(offerSdp) === "inactive" && this.p.patchInactiveToSendrecv) {
             offerSdp = this.p.patchInactiveToSendrecv(offerSdp);
         }
