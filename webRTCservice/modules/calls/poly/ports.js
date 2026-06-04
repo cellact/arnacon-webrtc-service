@@ -1,0 +1,111 @@
+// Segregated ports (interfaces) for the PolySession layer. Each is intentionally
+// narrow (ISP): collaborators depend on a tiny contract, never on a concrete
+// gateway or a god-object callback bag. Concrete implementations live in the
+// composition root / adapters. Calling an unimplemented method throws so a
+// half-built double fails loudly instead of silently no-op'ing.
+
+// What the PolySession may ask a leg to do. "from" travels with the intent so a
+// leg knows who initiated the action (itself vs the peer) and reacts correctly.
+const LEG_INTENTS = Object.freeze({
+    CONNECT: "connect",
+    RING: "ring",
+    ANSWER: "answer",
+    END: "endCall",
+    CANCEL: "cancel",
+    REJECT: "reject",
+});
+
+// Normalized inbound events produced by ingress adapters (wire -> event). A leg
+// translates these into transport work + its own state changes.
+const LEG_EVENTS = Object.freeze({
+    TRANSPORT_OPEN: "transport-open",
+    TRANSPORT_CLOSE: "transport-close",
+    OFFER: "offer",
+    ANSWER: "answer",
+    ICE: "ice",
+    END: "end",
+    END_RENEGOTIATION: "end-renegotiation",
+    REJECT: "reject",
+    CANCEL: "cancel",
+    DTMF: "dtmf",
+    HOLD: "hold",
+    REMOTE_BYE: "remote-bye",
+});
+
+function makeLegEvent(type, payload = {}, meta = {}) {
+    return { type, payload, meta, at: Date.now() };
+}
+
+function notImplemented(cls, method) {
+    throw new Error(`${cls} must implement ${method}()`);
+}
+
+// Builds/tears down the media graph between two media endpoints. The only bridge
+// between PolySession and the (unchanged) media layer. Never reads p/s state.
+class MediaControllerPort {
+    // eslint-disable-next-line no-unused-vars
+    async connect(endpointA, endpointB, ctx = {}) {
+        notImplemented("MediaControllerPort", "connect");
+    }
+
+    // eslint-disable-next-line no-unused-vars
+    async disconnect(handle) {
+        notImplemented("MediaControllerPort", "disconnect");
+    }
+}
+
+// Sends already-built signaling messages to one endpoint (DC, or HTTP/FCM bridge).
+class SignalingTransportPort {
+    // eslint-disable-next-line no-unused-vars
+    send(message) {
+        notImplemented("SignalingTransportPort", "send");
+    }
+
+    isOpen() {
+        return false;
+    }
+}
+
+// Out-of-band invite delivery (FCM/APNS) when there is no open data channel yet.
+class NotificationPort {
+    // eslint-disable-next-line no-unused-vars
+    async notify(target, payload) {
+        notImplemented("NotificationPort", "notify");
+    }
+}
+
+// Transport-specific SDP/call negotiation, injected into a leg so the leg depends
+// on this abstraction instead of RTCPeerConnection / SIP.js directly (DIP).
+// Implementations return the next leg state so the leg stays declarative.
+class CallNegotiationPort {
+    // eslint-disable-next-line no-unused-vars
+    async ring(ctx) { notImplemented("CallNegotiationPort", "ring"); }
+
+    // eslint-disable-next-line no-unused-vars
+    async answer(ctx) { notImplemented("CallNegotiationPort", "answer"); }
+
+    // eslint-disable-next-line no-unused-vars
+    async applyOffer(ctx) { notImplemented("CallNegotiationPort", "applyOffer"); }
+
+    // eslint-disable-next-line no-unused-vars
+    async applyAnswer(ctx) { notImplemented("CallNegotiationPort", "applyAnswer"); }
+
+    // eslint-disable-next-line no-unused-vars
+    async endCall(ctx) { notImplemented("CallNegotiationPort", "endCall"); }
+
+    // eslint-disable-next-line no-unused-vars
+    getMediaEndpoint(ctx) { notImplemented("CallNegotiationPort", "getMediaEndpoint"); }
+
+    // eslint-disable-next-line no-unused-vars
+    async dispose(ctx) { /* optional */ }
+}
+
+module.exports = {
+    LEG_INTENTS,
+    LEG_EVENTS,
+    makeLegEvent,
+    MediaControllerPort,
+    SignalingTransportPort,
+    NotificationPort,
+    CallNegotiationPort,
+};

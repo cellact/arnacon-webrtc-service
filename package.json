@@ -21,6 +21,7 @@
     "demoAudio/**/*"
   ],
   "scripts": {
+    "test": "node --test webRTCservice/modules/calls/poly/__tests__/*.test.js",
     "build": "node webRTCservice/build.js",
     "clean": "node webRTCservice/clean.js",
     "validate:exports": "node webRTCservice/validateExports.js",

@@ -76,16 +76,6 @@ function sendAckAndAnswer(sessionId, answerSdp) {
     return dataChannelApi.sendAckAndAnswer(sessionId, answerSdp);
 }
 
-function failCall(sessionId, err, context) {
-    return callEngine.dispatch(sessionId, {
-        type: CallEvents.CallFailed,
-        source: CallEventSources.System,
-        reason: context || "call-failed",
-        error: err,
-        notifyClient: true,
-    });
-}
-
 function ensureLocalAudioTrack(session, pc, sessionId) {
     return callSdpUseCases.ensureLocalAudioTrack(session, pc, sessionId);
 }
@@ -96,21 +86,6 @@ async function createAnswerSdp(pc, sessionId, label) {
 
 function sendSignalingOffer(sessionId, sdp) {
     return callSdpUseCases.sendSignalingOffer(sessionId, sdp);
-}
-
-function schedulePhase2Reoffer(sessionId, pendingReoffer) {
-    return callSdpUseCases.schedulePhase2Reoffer(sessionId, pendingReoffer);
-}
-
-async function routeCall(sessionId, session, destination, parsedFrom) {
-    callRuntime.attachRoute(sessionId, destination);
-    return callEngine.dispatch(sessionId, {
-        type: CallEvents.RouteStartRequested,
-        source: CallEventSources.Route,
-        destination,
-        route: destination?.route,
-        parsedFrom,
-    });
 }
 
 function attachSbcByeHandler(sipSession, sessionId) {
@@ -141,31 +116,17 @@ const { createHttpServers } = require("./modules/server/HttpServer");
 const { createPeerConnectionFactory } = require("./modules/media/werift/PeerConnectionFactory");
 const { createSipClient } = require("./modules/gateways/sip/SipClient");
 const { SipGateway } = require("./modules/gateways/sip/SipGateway");
-const { createSignalingHandlers } = require("./modules/participants/signaling/SignalingHandlers");
 const { createMessagingFlow } = require("./modules/messaging/MessagingFlow");
-const { WebRtcCallOrchestrator } = require("./modules/calls/webrtc/WebRtcCallOrchestrator");
-const { VerifiedNotifyAnswerHandler } = require("./modules/calls/webrtc/VerifiedNotifyAnswerHandler");
-const { StartCallUseCase } = require("./modules/calls/useCases/StartCallUseCase");
-const { AnswerCallUseCase } = require("./modules/calls/useCases/AnswerCallUseCase");
-const { RenegotiateCallUseCase } = require("./modules/calls/useCases/RenegotiateCallUseCase");
 const { createInboundCallFlow } = require("./modules/calls/inbound/InboundCallFlow");
 const { createOfferFlow } = require("./modules/calls/webrtc/WebRtcOfferUseCase");
 const { createHandshakeFlow } = require("./modules/calls/webrtc/WebRtcHandshakeUseCase");
 const { createDataChannelApi } = require("./modules/participants/signaling/DataChannelGateway");
 const { createSipRuntime } = require("./modules/gateways/sip/SipRuntime");
-const { createOpenAiSipGateway } = require("./modules/gateways/openai/OpenAiGateway");
-const { OpenAiTransferFlow } = require("./modules/gateways/openai/OpenAiTransferFlow");
 const { adaptRtpPayloadType } = require("./modules/media/codecs/rtp");
 const { MediaGraphFactory } = require("./modules/media/MediaGraphFactory");
-const { MediaRelayController } = require("./modules/media/MediaRelayController");
 const { CallSdpUseCases } = require("./modules/calls/useCases/CallSdpUseCases");
 const { SignalingAuthVerifier, createSignalingPipeline } = require("./modules/participants/signaling/SignalingPipeline");
-const { createIvrRuntime } = require("./modules/callFeatures/ivr/IvrRuntime");
-const { createIvrAudioPlayback } = require("./modules/callFeatures/ivr/IvrAudioPlayback");
-const { IvrFeature } = require("./modules/callFeatures/ivr/IvrFeature");
 const { createMinuteCounter } = require("./modules/callFeatures/minuteCounter/MinuteCounter");
-const { OpenAiSalesAgentFeature } = require("./modules/callFeatures/openaiSales/OpenAiSalesAgentFeature");
-const { IvrRedirectController } = require("./modules/callFeatures/ivr/IvrRedirectController");
 const { MinuteCounterPolicy } = require("./modules/callFeatures/minuteCounter/MinuteCounterPolicy");
 const { AddressParser } = require("./modules/routing/AddressParser");
 const { ServiceRegistry: ServiceRuntimeRegistry } = require("./modules/routing/ServiceRegistry");
@@ -174,11 +135,14 @@ const { DestinationResolver } = require("./modules/routing/DestinationResolver")
 const { CallerIdResolver } = require("./modules/routing/CallerIdResolver");
 const { CallRegistry } = require("./modules/calls/CallRegistry");
 const { CallFactory } = require("./modules/calls/CallFactory");
-const { CallEvents, CallEventSources } = require("./modules/calls/CallEvents");
-const { CallRuntime } = require("./modules/calls/runtime/CallRuntime");
-const { CallEngine } = require("./modules/calls/engine/CallEngine");
-const { createCallEngineHandlers, createRouteStrategies } = require("./modules/calls/runtime/CallServiceContainer");
 const { ParticipantFactory } = require("./modules/participants/ParticipantFactory");
+const { createPolyCore } = require("./modules/calls/poly/createPolyCore");
+const { WebRtcOutboundLegFactory } = require("./modules/calls/webrtc/WebRtcOutboundLegFactory");
+const { LEG_EVENTS, makeLegEvent } = require("./modules/calls/poly/ports");
+const { LEG_STATES } = require("./modules/calls/poly/states");
+const { isInactiveOffer } = require("./modules/calls/poly/negotiation/sdp");
+const { routeToCodecPolicy } = require("./modules/media/negotiation/CodecPolicy");
+const { narrowAudioOfferForCodecPolicy } = require("./modules/media/negotiation/SdpCodecNegotiator");
 const {
     MediaStreamTrack,
 } = werift;
@@ -379,11 +343,6 @@ const mediaGraphFactory = new MediaGraphFactory({
     MediaStreamTrack,
     logger: console,
 });
-const mediaRelayController = new MediaRelayController({
-    sessions,
-    MediaStreamTrack,
-    logger: console,
-});
 const minuteCounterApi = createMinuteCounter({
     filePath: config.minuteCounterPath,
     logger: console,
@@ -453,12 +412,13 @@ const serviceContextFactory = new ServiceContextFactory({
     findOutboundSessionForInbound: (...args) => findOutboundSessionForInbound(...args),
     openSipSession: (...args) => openSipSession(...args),
     openInboundSipSession: (...args) => openInboundSipSession(...args),
-    notifyAndBridge: (...args) => notifyAndBridge(...args),
+    // OpenAI/IVR/multiring service flows are out of scope for the poly cutover.
+    notifyAndBridge: () => { throw new Error("notifyAndBridge: service bridging not wired under PolySession"); },
     sendAck: (...args) => sendAck(...args),
     sendAnswer: (...args) => sendAnswer(...args),
     sendAckAndAnswer: (...args) => sendAckAndAnswer(...args),
     sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
-    handleCallEnd: (...args) => handleCallEnd(...args),
+    handleCallEnd: () => { throw new Error("handleCallEnd: service teardown not wired under PolySession"); },
     emailToEnsName: (...args) => emailToEnsName(...args),
     logger: console,
 });
@@ -470,95 +430,22 @@ const callerIdResolverApi = new CallerIdResolver({
     serviceRegistry: serviceRuntimeRegistry,
     serviceContextFactory,
 });
-let callRuntime;
-const ivrAudioPlaybackApi = createIvrAudioPlayback({
-    sessions,
-    isInCall: (session) => Boolean(callRuntime?.isInCall(session)),
-    logger: console,
-    demoAudioDir: IVR_DEMO_AUDIO_DIR,
-});
-const ivrRuntimeApi = createIvrRuntime({
-    sessions,
-    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
-    playAudioForSession: (...args) => ivrAudioPlaybackApi.playText(...args),
-    playAudioFileForSession: (...args) => ivrAudioPlaybackApi.playFile(...args),
-    stopAudioForSession: (...args) => ivrAudioPlaybackApi.stopSessionPlayback(...args),
-    startMediaForSession: (...args) => startIvrMediaSession(...args),
-    stopMediaForSession: (...args) => stopIvrMediaSession(...args),
-    redirectCallForSession: (...args) => ivrRedirectController.redirectToWebrtc(...args),
-    logger: console,
-});
-const ivrRedirectController = new IvrRedirectController({
-    sessions,
-    parseAddress: (...args) => parseAddress(...args),
-    resolveDestination: (...args) => resolveDestination(...args),
-    notifyAndBridge: (...args) => notifyAndBridge(...args),
-    playWaitingAudio: (...args) => ivrAudioPlaybackApi.playFile(...args),
-    stopIvr: (...args) => ivrRuntimeApi.stopIvr(...args),
-    stopAudioForSession: (...args) => ivrAudioPlaybackApi.stopSessionPlayback(...args),
-    logger: console,
-});
-const ivrFeatureApi = new IvrFeature({
-    ivrRuntime: ivrRuntimeApi,
-    ivrAudioPlayback: ivrAudioPlaybackApi,
-    logger: console,
-});
-callRuntime = new CallRuntime({
-    sessions,
-    callRegistry,
-    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
-    enqueueSignaling: (...args) => enqueueSignaling(...args),
-    destroySession: (...args) => destroySession(...args),
-    teardownHandlers: [
-        ({ session }) => minuteCounterApi.finish(session),
-        ({ sessionId }, event) => ivrFeatureApi.stop(sessionId, event.reason || "runtime-teardown"),
-    ],
-    logger: console,
-});
-const { routeStrategyRegistry } = createRouteStrategies({
-    openSipSession: (...args) => openSipSession(...args),
-    closeSipSession: (...args) => closeSipSession(...args),
-    resolveCallerId: (...args) => resolveCallerId(...args),
-    minuteCounter: minuteCounterApi,
-    minuteCounterPolicy,
-    startMediaRelay: (...args) => startMediaRelay(...args),
-    stopMediaRelay: (...args) => stopMediaRelay(...args),
-    finishMinuteCounter: (session) => minuteCounterApi.finish(session),
-    openOpenAiSipSession: (...args) => openOpenAiSipSession(...args),
-    closeOpenAiSipSession: (...args) => openAiSipGatewayApi.closeOpenAiSipSession(...args),
-    notifyAndBridge: (...args) => notifyAndBridge(...args),
-    notifyAndBridgeMulti: (...args) => notifyAndBridgeMulti(...args),
-    startPendingMultiBridge: (...args) => bridgeApi.startPendingMultiBridge(...args),
-    cancelPendingBridge: (...args) => bridgeApi.cancelPendingBridgeForSession(...args),
-    destroyRuntimeSession: (...args) => callRuntime.destroyRuntimeSession(...args),
-    startIvrSession: (...args) => ivrFeatureApi.start(...args),
-    stopIvrSession: (...args) => ivrFeatureApi.stop(...args),
-    logger: console,
-});
-const callEngine = new CallEngine({
-    runtime: callRuntime,
-    routeStrategies: routeStrategyRegistry,
-    handlers: createCallEngineHandlers({
-        handshakeFlowApi: () => handshakeFlowApi,
-        startCallUseCase: () => startCallUseCase,
-        answerCallUseCase: () => answerCallUseCase,
-        renegotiateCallUseCase: () => renegotiateCallUseCase,
-        bridgeApi: () => bridgeApi,
-        callRuntime,
-        logger: console,
-    }),
-    logger: console,
-});
-callRuntime.setCallEventDispatcher((sessionId, event) => callEngine.dispatch(sessionId, event));
+// ─── Legacy coordination core REMOVED (PolySession is the coordinator) ──────
+// CallEngine / CallRuntime / route strategies / WebRtcCallOrchestrator / the
+// StartCall/Answer/Renegotiate use cases / VerifiedNotifyAnswerHandler /
+// SignalingMessageRouter+Handlers, plus OpenAI/IVR/multiring, are gone. The
+// retained transport modules (handshake, offer-intake, inbound, SIP, peer
+// connection factory, CallSdpUseCases) accept `callRuntime` but only via guarded
+// `callRuntime?.x()` calls, so a null placeholder short-circuits them safely.
+const callRuntime = null;
+
 const sipRuntimeApi = createSipRuntime({
     sessions,
-    stopMediaRelay: (...args) => stopMediaRelay(...args),
-    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
     patchRouterForDynamicSsrc: (...args) => peerConnectionApi.patchRouterForDynamicSsrc(...args),
     SessionState,
-    finishMinuteCounter: (session) => minuteCounterApi.finish(session),
-    onCallEvent: (sessionId, event) => callEngine.dispatch(sessionId, event),
-    isInCall: (session) => callRuntime.isInCall(session),
+    // Remote SBC BYE -> PolySession teardown via the SIP leg.
+    onCallEvent: (sessionId, event) => onSipCallEvent(sessionId, event),
+    isInCall: (session) => isSessionInCall(session),
     logger: console,
 });
 const sipClientApi = createSipClient({
@@ -572,8 +459,10 @@ const sipClientApi = createSipClient({
     registerExpires: KAMAILIO_REGISTER_EXPIRES,
     attachSbcByeHandler: (...args) => attachSbcByeHandler(...args),
     setupPc2: (...args) => setupPc2(...args),
-    startMediaRelay: (sessionId) => startMediaRelay(sessionId),
-    isTerminalForSipEvents: (session) => callRuntime.isTerminalForSipEvents(session),
+    // Media is now bridged by PolySession's MediaController (MediaGraph),
+    // confirmed equivalent to the old MediaRelayController piping.
+    startMediaRelay: () => {},
+    isTerminalForSipEvents: () => false,
     logger: console,
 });
 const sipGateway = new SipGateway({
@@ -581,175 +470,18 @@ const sipGateway = new SipGateway({
     sessionStore,
     logger: console,
 });
-const openAiTransferFlow = new OpenAiTransferFlow({
+// Proven outbound WebRTC leg transport (PC + DC + FCM invite payload), reused by
+// the poly callee leg via the injected `outboundInvite` seam below.
+const outboundLegFactory = new WebRtcOutboundLegFactory({
     sessions,
-    parseAddress: (...args) => parseAddress(...args),
-    resolveDestination: (...args) => resolveDestination(...args),
-    closeOpenAiSipSession: (...args) => openAiSipGatewayApi.closeOpenAiSipSession(...args),
-    stopMediaRelay: (...args) => stopMediaRelay(...args),
-    routeCall: (...args) => routeCall(...args),
-    closeSipSession: (...args) => closeSipSession(...args),
-    startPendingMultiBridge: (...args) => bridgeApi.startPendingMultiBridge(...args),
-    startMediaRelay: (...args) => startMediaRelay(...args),
-    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
-    callRuntime,
-    connectRoute: (sessionId, { destination, routeResult, source } = {}) => callEngine.dispatch(sessionId, {
-        type: CallEvents.RouteConnected,
-        source: source || CallEventSources.Route,
-        destination,
-        route: destination?.route || routeResult,
-        routeResult,
-    }),
-    logger: console,
-});
-const openAiSipGatewayApi = createOpenAiSipGateway({
-    sessions,
-    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
-    stopMediaRelay: (...args) => stopMediaRelay(...args),
-    finishMinuteCounter: (session) => minuteCounterApi.finish(session),
-    onTransferOpenAiCall: (...args) => openAiTransferFlow.request(...args),
-    onCallEvent: (sessionId, event) => callEngine.dispatch(sessionId, event),
-    isInCall: (session) => callRuntime.isInCall(session),
-    config: OPENAI_SIP_CONFIG,
-    logger: console,
-});
-const bridgeApi = new WebRtcCallOrchestrator({
-    sessions,
-    pendingBridges,
-    pendingInboundCalls,
-    createSession: (...args) => createSession(...args),
     createPeerConnection: (...args) => createPeerConnection(...args),
-    sendNotification: (...args) => sendNotification(...args),
-    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
-    startWebRtcBridge: (...args) => startWebRtcBridge(...args),
-    destroySession: (...args) => destroySession(...args),
-    onCallEvent: (sessionId, event) => callEngine.dispatch(sessionId, event),
-    notiTypeCall: NOTI_TYPE_CALL,
     MediaStreamTrack,
     waitForIceGathering: (...args) => waitForIceGathering(...args),
     formatIceCandidates: (...args) => formatIceCandidates(...args),
     getRelayCandidates: (...args) => getRelayCandidates(...args),
     embedCandidatesInSdp: (...args) => embedCandidatesInSdp(...args),
-    RTCSessionDescription,
     onDataChannelOpen: (...args) => onDataChannelOpen(...args),
     onDataChannelMessage: (...args) => onDataChannelMessage(...args),
-    logger: console,
-});
-const openAiSalesFeature = new OpenAiSalesAgentFeature({
-    sessions,
-    triggerCaller: OPENAI_SALES_TRIGGER_CALLER,
-    salesAgentFrom: OPENAI_SALES_AGENT_FROM,
-    createSession: (...args) => createSession(...args),
-    parseAddress: (...args) => parseAddress(...args),
-    notifyAndBridge: (...args) => notifyAndBridge(...args),
-    notifyAndBridgeMulti: (...args) => notifyAndBridgeMulti(...args),
-    startPendingMultiBridge: (...args) => bridgeApi.startPendingMultiBridge(...args),
-    routeCall: (...args) => routeCall(...args),
-    openOpenAiSipSession: (...args) => openOpenAiSipSession(...args),
-    closeSipSession: (...args) => closeSipSession(...args),
-    closeNativeSipSession: (sessionId) => sipGateway.close(sessionId),
-    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
-    destroySession: (...args) => destroySession(...args),
-    mediaGraphFactory,
-    adaptRtpPayloadType,
-    crypto,
-    SessionState,
-    callRuntime,
-    logger: console,
-});
-const answerCallUseCase = new AnswerCallUseCase({
-    sessions,
-    openInboundSipSession: (...args) => openInboundSipSession(...args),
-    startMediaRelay: (...args) => startMediaRelay(...args),
-    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
-    sendAnswer: (...args) => sendAnswer(...args),
-    sendAckAndAnswer: (...args) => sendAckAndAnswer(...args),
-    failCall: (...args) => failCall(...args),
-    schedulePhase2Reoffer: (...args) => schedulePhase2Reoffer(...args),
-    RTCSessionDescription,
-    startPendingMultiBridge: (...args) => bridgeApi.startPendingMultiBridge(...args),
-    shouldStartIvrForSession: (...args) => ivrFeatureApi.shouldStart(...args),
-    callRuntime,
-    connectRoute: (sessionId, { destination, routeResult, source } = {}) => callEngine.dispatch(sessionId, {
-        type: CallEvents.RouteConnected,
-        source: source || CallEventSources.Route,
-        destination,
-        route: destination?.route || routeResult,
-        routeResult,
-    }),
-    logger: console,
-});
-const startCallUseCase = new StartCallUseCase({
-    sessions,
-    pendingInboundCalls,
-    parseAddress: (...args) => parseAddress(...args),
-    resolveDestination: (...args) => resolveDestination(...args),
-    routeCall: (...args) => routeCall(...args),
-    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
-    sendAck: (...args) => sendAck(...args),
-    sendAnswer: (...args) => sendAnswer(...args),
-    ensureLocalAudioTrack: (...args) => ensureLocalAudioTrack(...args),
-    createAnswerSdp: (...args) => createAnswerSdp(...args),
-    logSdp: (...args) => logSdp(...args),
-    patchInactiveToSendrecv: (...args) => patchInactiveToSendrecv(...args),
-    waitForIceGathering: (...args) => waitForIceGathering(...args),
-    formatIceCandidates: (...args) => formatIceCandidates(...args),
-    getRelayCandidates: (...args) => getRelayCandidates(...args),
-    embedCandidatesInSdp: (...args) => embedCandidatesInSdp(...args),
-    MediaStreamTrack,
-    RTCSessionDescription,
-    answerCallUseCase,
-    shouldStartOpenAiSalesAgent: (...args) => openAiSalesFeature.shouldStart(...args),
-    startOpenAiSalesAgentFlow: (...args) => openAiSalesFeature.start(...args),
-    cancelCall: (sessionId, { destination, reason } = {}) => callEngine.dispatch(sessionId, {
-        type: CallEvents.CallCancelRequested,
-        source: CallEventSources.Route,
-        destination,
-        route: "reject",
-        reason: reason || "reject-route",
-        notifyClient: true,
-    }),
-    callRuntime,
-    logger: console,
-});
-const verifiedNotifyAnswerHandler = new VerifiedNotifyAnswerHandler({
-    bridgeApi,
-    startCallUseCase,
-    destroySession: (...args) => destroySession(...args),
-    getSessionKind: (session) => callRuntime.getSessionKind(session),
-    callRuntime,
-    RTCSessionDescription,
-    addIceCandidates: (...args) => addIceCandidates(...args),
-    logger: console,
-});
-const renegotiateCallUseCase = new RenegotiateCallUseCase({
-    sessions,
-    sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
-    closeSipSession: (...args) => closeSipSession(...args),
-    stopMediaRelay: (...args) => stopMediaRelay(...args),
-    finishMinuteCounter: (session) => minuteCounterApi.finish(session),
-    logSdp: (...args) => logSdp(...args),
-    RTCSessionDescription,
-    callRuntime,
-});
-const signalingHandlersApi = createSignalingHandlers({
-    sessions,
-    handleEndCallRenegotiation: (...args) => handleEndCallRenegotiation(...args),
-    handleReofferAnswer: (...args) => handleReofferAnswer(...args),
-    handleInboundCalleeAnswer: (...args) => handleInboundCalleeAnswer(...args),
-    handleOutboundWebrtcLegAnswer: (...args) => handleOutboundWebrtcLegAnswer(...args),
-    handleIceRestart: (...args) => handleIceRestart(...args),
-    handleRing: (...args) => handleRing(...args),
-    handleCallEnd: (...args) => handleCallEnd(...args),
-    handleCallDtmf: (...args) => handleCallDtmf(...args),
-    handleCallHold: (sessionId, held) => callRuntime.setSipHold(sessionId, !held),
-    handleDataMessage: (...args) => messagingFlowApi.handleDataMessage(...args),
-    resetPostCallForNewRing: (sessionId) => callRuntime.resetForNewRing(sessionId, { source: "client", reason: "post-call-new-ring" }),
-    isEndRenegotiationPending: (session) => callRuntime.isEndRenegotiationPending(session),
-    canAcceptNewRing: (session) => callRuntime.canAcceptNewRing(session),
-    isRinging: (session) => callRuntime.isRinging(session),
-    isInCall: (session) => callRuntime.isInCall(session),
-    getSessionKind: (session) => callRuntime.getSessionKind(session),
     logger: console,
 });
 const peerConnectionApi = createPeerConnectionFactory({
@@ -758,17 +490,12 @@ const peerConnectionApi = createPeerConnectionFactory({
     iceServers: ICE_SERVERS,
     onDataChannelOpen: (sessionId) => onDataChannelOpen(sessionId),
     onPeerConnected: (sessionId) => onPeerConnected(sessionId),
-    onDataChannelMessage: (sessionId, raw, meta = {}) => signalingHandlersApi.onDataChannelMessage(sessionId, raw, meta),
-    onInboundRtp: (sessionId, rtp) => ivrAudioPlaybackApi.onInboundRtp(sessionId, rtp),
-    onSessionDestroyRequested: (sessionId, event) => callEngine.dispatch(sessionId, {
-        type: CallEvents.SessionDestroyRequested,
-        source: event.source || CallEventSources.WebRtc,
-        reason: event.reason || "peer-connection-destroy",
-        notify: event.notify === true,
-    }),
+    onDataChannelMessage: (sessionId, raw, meta = {}) => onDataChannelMessage(sessionId, raw, meta),
+    onInboundRtp: null, // IVR audio playback dropped
+    // Terminal PC state -> PolySession teardown for the pair owning this session.
+    onSessionDestroyRequested: (sessionId, event) => onTransportClosed(sessionId, event),
     logger: console,
 });
-ivrAudioPlaybackApi.validateDependencies();
 
 // Module-backed APIs used by manager orchestration.
 function parseAddress(addr, serviceId = null) {
@@ -860,22 +587,7 @@ const offerFlowApi = createOfferFlow({
     destroySession: (...args) => destroySession(...args),
     handleHandshake: (...args) => handleHandshake(...args),
     handleInboundAnswer: (...args) => handleInboundAnswer(...args),
-    handleHttpReject: (sessionId, offer) => {
-        const session = sessions.get(sessionId);
-        const rejectedByOwnedWebRtcLeg = Boolean(
-            session?.outboundWebrtc &&
-            relationIdentityLabel(session.outboundWebrtc.toIdentity) === relationIdentityLabel(offer.from),
-        );
-        return callEngine.dispatch(sessionId, {
-            type: CallEvents.CallEndRequested,
-            source: CallEventSources.Client,
-            route: "webrtc",
-            reason: "client-reject",
-            notifyClient: rejectedByOwnedWebRtcLeg,
-            notifyOwnedWebRtcLegs: !rejectedByOwnedWebRtcLeg,
-            propagateLinkedSession: false,
-        });
-    },
+    handleHttpReject: (sessionId, offer) => onHttpReject(sessionId, offer),
     onVerifiedNotifyAnswer: (...args) => onVerifiedNotifyAnswer(...args),
     parseAddress: (...args) => parseAddress(...args),
     normalizeIdentity: (value, serviceId = null) => {
@@ -905,12 +617,15 @@ const handshakeFlowApi = createHandshakeFlow({
     callRuntime,
     logger: console,
 });
+// Retained only for its pure SDP helpers (createAnswerSdp / ensureLocalAudioTrack)
+// which the poly WebRtc primitives reuse. callRuntime=null disables the legacy
+// phase-2 reoffer path (poly does not use it).
 const callSdpUseCases = new CallSdpUseCases({
     sessions,
     MediaStreamTrack,
     patchInactiveToSendrecv: (...args) => patchInactiveToSendrecv(...args),
     logSdp: (...args) => logSdp(...args),
-    enqueueSignaling: (...args) => enqueueSignaling(...args),
+    enqueueSignaling: (sessionId, label, fn) => Promise.resolve().then(fn),
     sendDataChannelMessage: (...args) => sendDataChannelMessage(...args),
     callRuntime,
     logger: console,
@@ -928,6 +643,70 @@ const signalingPipelineApi = createSignalingPipeline({
     enforceNotifySignatures,
 });
 
+// ─── PolySession orchestration core — THE coordinator ───────────────────────
+// PolySession is now the live coordination core for the three flows
+// (secnum<->secnum, secnum->sip, sip->secnum). Legs own transport by delegating
+// to the proven primitives below; ingress (HTTP /notify, data channel, SIP BYE)
+// funnels through polyIngress. No legacy CallEngine/CallRuntime remains.
+function isOpenDc(dc) {
+    return !!dc && (dc.readyState === "open" || dc.readyState === "OPEN");
+}
+// Resolve the data channel a leg should signal over: the caller leg uses its own
+// session DC; a secnum<->secnum callee leg uses the outbound-leg DC attached to
+// the caller session (legSession === callerSession.outboundWebrtc).
+function resolveLegDataChannel(session, callerSessionId) {
+    if (session?.dataChannel) return session.dataChannel;
+    const caller = callerSessionId ? sessions.get(callerSessionId) : null;
+    return caller?.outboundWebrtc?.dataChannel || null;
+}
+const polyCore = createPolyCore({
+    mediaGraphFactory,
+    webrtcPrimitives: {
+        RTCSessionDescription,
+        MediaStreamTrack,
+        createAnswerSdp: (...args) => createAnswerSdp(...args),
+        waitForIceGathering: (...args) => waitForIceGathering(...args),
+        formatIceCandidates: (...args) => formatIceCandidates(...args),
+        getRelayCandidates: (...args) => getRelayCandidates(...args),
+        embedCandidatesInSdp: (...args) => embedCandidatesInSdp(...args),
+        patchInactiveToSendrecv: (...args) => patchInactiveToSendrecv(...args),
+        ensureLocalAudioTrack: (...args) => ensureLocalAudioTrack(...args),
+        narrowAudioOfferForCodecPolicy: (...args) => narrowAudioOfferForCodecPolicy(...args),
+        logSdp: (...args) => logSdp(...args),
+    },
+    makeSignalingTransport: ({ session, callerSessionId }) => ({
+        send: (message) => {
+            const dc = resolveLegDataChannel(session, callerSessionId);
+            if (!isOpenDc(dc)) {
+                console.error(`[poly-signaling] no open data channel for ${message.payload?.type || message.action || "message"}`);
+                return;
+            }
+            dc.send(JSON.stringify(message));
+        },
+        isOpen: () => isOpenDc(resolveLegDataChannel(session, callerSessionId)),
+    }),
+    // secnum<->secnum callee invite: reuse the proven outbound leg factory + FCM.
+    outboundInvite: (...args) => outboundInvite(...args),
+    sipPort: {
+        openOutbound: (sessionId, { target, from, sipDirective = null } = {}) => openSipSession(sessionId, from, target, sipDirective),
+        openInbound: (sessionId, { phoneNumber } = {}) => openInboundSipSession(sessionId, phoneNumber),
+        close: (sessionId) => closeSipSession(sessionId),
+        sendDtmf: (sessionId, digit) => { console.log(`[${sessionId}] DTMF ${digit} (no-op; out of scope)`); },
+        setHold: (sessionId, held) => { console.log(`[${sessionId}] hold=${held} (no-op; out of scope)`); },
+    },
+    // Billing: finish the minute counter once per call when the pair tears down.
+    makeTeardownHooks: ({ a, b }) => [
+        () => {
+            const s = a?.session || (a?.callerSessionId ? sessions.get(a.callerSessionId) : null) || (b?.session);
+            if (s) minuteCounterApi.finish(s);
+        },
+    ],
+    logger: console,
+});
+const polyRegistry = polyCore.registry;
+const polyIngress = polyCore.ingress;
+console.log("[poly] PolySession core is the live coordinator");
+
 
 // Call routing implementation moved to modules/routing/CallRouterApi.js.
 
@@ -938,7 +717,32 @@ const signalingPipelineApi = createSignalingPipeline({
 
 async function handleInboundCallRequest(data, serviceContext = null) {
     const payload = serviceContext?.serviceId ? { ...data, serviceId: serviceContext.serviceId } : data;
-    return inboundCallFlowApi.handleInboundCallRequest(payload);
+    // The inbound flow creates the session + PC1 and FCM-invites the secnum callee.
+    const result = await inboundCallFlowApi.handleInboundCallRequest(payload);
+    if (result?.ok && result.sessionId) {
+        const session = sessions.get(result.sessionId);
+        if (session) {
+            // sip->secnum: legA = SIP gateway (PSTN dialing in), legB = secnum
+            // webrtc callee. The FCM invite is already out, so seed states directly:
+            // sip CALLING (caller side), webrtc RINGING (waiting for pickup). When the
+            // callee answers (HTTP), legB -> IN_CALL and reconcile answers the sip leg
+            // (openInbound) + bridges media.
+            const calleeEns = result.ensName || session.toIdentity;
+            const phoneNumber = session.inboundCall?.toNumber || payload.to;
+            try {
+                const { poly } = polyRegistry.resolve({
+                    a: { endpoint: phoneNumber, kind: "sip", role: "inbound", phoneNumber, session },
+                    b: { endpoint: calleeEns, kind: "webrtc", session },
+                    target: "a",
+                });
+                poly.legs.a.setState(LEG_STATES.CALLING, { reason: "pstn-inbound", from: "self" });
+                poly.legs.b.setState(LEG_STATES.RINGING, { reason: "fcm-invite-sent", from: "a" });
+            } catch (err) {
+                console.error(`[${result.sessionId}] inbound poly seed failed: ${err.message}`);
+            }
+        }
+    }
+    return result;
 }
 
 /**
@@ -999,7 +803,6 @@ for (const serviceRuntime of activeServiceRuntimes) {
     serviceServers.startInternalServer();
     httpServers.push({ serviceId: serviceRuntime.id, servers: serviceServers });
 }
-openAiSipGatewayApi.startAuthServer();
 
 // ════════════════════════════════════════════════════════════
 // LAYER 3 — REACT AT RUNTIME
@@ -1036,16 +839,13 @@ async function onIncomingOffer(offer, serviceContext = null) {
  * and sends it back to the client via FCM.
  */
 async function handleHandshake(sessionId, fromEns, toIdentity, offerSdp, candidates, callNonce) {
-    return callEngine.dispatch(sessionId, {
-        type: CallEvents.CallOfferReceived,
-        source: CallEventSources.Http,
-        payload: { fromEns, toIdentity, offerSdp, candidates, callNonce },
-    });
+    // HTTP initial offer: bring up PC1 (DC-only) + answer over FCM. PolySession is
+    // created later, at the data-channel RING, once routing is known.
+    return handshakeFlowApi.handleHandshake(sessionId, fromEns, toIdentity, offerSdp, candidates, callNonce);
 }
 
 /**
  * Handles the callee's SDP answer for an inbound SBC call where the gateway is the offerer.
- * Applies the remote answer and lets ICE complete — data channel will open afterwards.
  */
 async function handleInboundAnswer(sessionId, answerSdp, candidates) {
     return handshakeFlowApi.handleInboundAnswer(sessionId, answerSdp, candidates);
@@ -1053,279 +853,297 @@ async function handleInboundAnswer(sessionId, answerSdp, candidates) {
 
 /**
  * Creates PC1 — the client-facing WebRTC PeerConnection.
- * Initially data-channel only. Audio tracks are added later during Phase 2 renegotiation.
  */
 function createPeerConnection(...args) {
     return peerConnectionApi.createPeerConnection(...args);
 }
 
+// ─── PolySession ingress helpers (manager seam) ─────────────────────────────
+
+function pLabel(identity) {
+    if (!identity || typeof identity !== "string") return identity;
+    const t = identity.trim();
+    const at = t.indexOf("@");
+    if (at > 0) return t.slice(0, at);
+    const dot = t.indexOf(".");
+    if (dot > 0) return t.slice(0, dot);
+    return t;
+}
+
+function polyForSession(session) {
+    if (!session) return null;
+    return polyRegistry.getByEndpoint(session.callerEns)
+        || polyRegistry.getByEndpoint(session.toIdentity)
+        || null;
+}
+
+// Which leg ref a webrtc message on `session` targets. callee-webrtc role => the
+// outbound callee leg (its negotiation.session === session.outboundWebrtc);
+// otherwise the primary PC1 leg (negotiation.session === session).
+function polyWebrtcRef(poly, session, channelRole) {
+    const isCallee = channelRole === "callee-webrtc";
+    for (const ref of ["a", "b"]) {
+        const leg = poly.legs[ref];
+        if (!leg || leg.kind !== "webrtc") continue;
+        const ns = leg.negotiation?.session;
+        if (isCallee) {
+            if (ns && ns === session.outboundWebrtc) return ref;
+        } else if (ns && ns === session) {
+            return ref;
+        }
+    }
+    if (poly.legs.a.kind === "webrtc") return "a";
+    if (poly.legs.b.kind === "webrtc") return "b";
+    return "a";
+}
+
+function polySipRef(poly) {
+    if (poly.legs.a.kind === "sip") return "a";
+    if (poly.legs.b.kind === "sip") return "b";
+    return null;
+}
+
+function polyRefByEndpoint(poly, endpoint) {
+    const want = pLabel(String(endpoint || "").toLowerCase());
+    for (const ref of ["a", "b"]) {
+        if (pLabel(String(poly.legs[ref].endpoint || "").toLowerCase()) === want) return ref;
+    }
+    return null;
+}
+
+// Resolve routing at the audio RING and create the PolySession for the pair.
+async function onDcRing(callerSessionId, payload) {
+    const session = sessions.get(callerSessionId);
+    if (!session || !session.peerConnection) return;
+    session.lastRingOfferPayload = payload;
+    const serviceId = session.serviceId || null;
+    const to = payload.to || session.toIdentity;
+    const parsedTo = parseAddress(to, serviceId);
+    const parsedFrom = parseAddress(session.callerEns, serviceId);
+    const destination = await resolveDestination(parsedTo, parsedFrom, serviceId);
+
+    if (!destination || destination.route === "reject") {
+        sendDataChannelMessage(callerSessionId, { msgType: "call", action: "end", reason: "reject-route" });
+        return;
+    }
+
+    session.mediaCodecPolicy = routeToCodecPolicy(destination, { isInbound: false }) || null;
+
+    const a = { endpoint: session.callerEns, kind: "webrtc", session };
+    let b;
+    if (destination.route === "webrtc") {
+        b = {
+            endpoint: destination.ensName || destination.wallet,
+            kind: "webrtc",
+            role: "callee",
+            destination,
+            callerSessionId,
+        };
+    } else {
+        // sip / sbc: the SIP leg shares the caller's session (sipPeerConnection
+        // is attached on openOutbound). Resolve the SBC caller-id + directive
+        // (P-Asserted-Identity / privacy / headers) exactly like the legacy
+        // routeCall path so Kamailio accepts the INVITE.
+        let callerIdResult = null;
+        try {
+            callerIdResult = await resolveCallerId(parsedFrom, session.walletAddress, serviceId);
+        } catch (err) {
+            console.warn(`[${callerSessionId}] callerId resolve failed: ${err.message}`);
+        }
+        const sipTo = destination.number || destination.target || destination.to || session.toIdentity;
+        session.sipFrom = callerIdResult?.callerId || parsedFrom?.full || session.callerEns;
+        session.sipDirective = destination.sipDirective || {
+            target: destination.target || null,
+            identity: callerIdResult?.identity || null,
+            privacy: callerIdResult?.privacy || null,
+            callerId: callerIdResult?.callerId || null,
+            privateId: callerIdResult?.privateId || null,
+            headers: {
+                ...(callerIdResult?.headers || {}),
+                "X-Arnacon-Service-Id": serviceId,
+            },
+        };
+        b = {
+            endpoint: sipTo,
+            kind: "sip",
+            role: "outbound",
+            session,
+        };
+    }
+
+    const { poly } = polyRegistry.resolve({ a, b, target: "a" });
+    // Mark both transports usable, then deliver the caller's audio offer.
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, payload));
+}
+
 /**
- * Called when the data channel opens after the handshake completes.
+ * Called when a data channel opens. Marks the matching webrtc leg's transport
+ * open if a PolySession already exists for the pair (otherwise the RING that
+ * follows will create it).
  */
 function onDataChannelOpen(sessionId) {
-    return callEngine.dispatch(sessionId, {
-        type: CallEvents.DataChannelOpened,
-        source: CallEventSources.WebRtc,
-        deps: {
-            checkPendingBridge: (...args) => checkPendingBridge(...args),
-            checkPendingInboundCall: (...args) => checkPendingInboundCall(...args),
-            sendInboundRing: (...args) => sendInboundRing(...args),
-            destroySession: (...args) => destroySession(...args),
-        },
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    const poly = polyForSession(session);
+    if (!poly) return;
+    const ref = polyWebrtcRef(poly, session, "caller-webrtc");
+    poly.onIngress(ref, makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN)).catch((err) => {
+        console.error(`[${sessionId}] poly transport-open failed: ${err.message}`);
     });
 }
 
 function onPeerConnected(sessionId) {
-    const session = sessions.get(sessionId);
-    if (!session || !session.walletAddress) return;
-    checkPendingBridge(sessionId, session.walletAddress);
-    checkPendingInboundCall(sessionId, session.walletAddress);
+    // No pending-bridge bookkeeping anymore — pairing is handled by the registry.
 }
 
 /**
- * Gateway-as-caller: sends RING + audio SDP offer over the data channel.
- * The callee will respond with an ANSWER + audio SDP, handled in onDataChannelMessage.
- */
-async function sendInboundRing(sessionId) {
-    return startCallUseCase.sendInboundRing(sessionId);
-}
-
-/**
- * Gateway-as-caller: callee responded to RING with an audio answer SDP via data channel.
- * Apply the answer and open the SIP leg to resume the suspended Kamailio INVITE.
- */
-async function handleInboundCalleeAnswer(sessionId, payload) {
-    return callEngine.dispatch(sessionId, {
-        type: CallEvents.CalleeAnswered,
-        source: CallEventSources.Client,
-        payload,
-        answerKind: "inbound-callee",
-    });
-}
-
-async function handleOutboundWebrtcLegAnswer(sessionId, payload) {
-    return callEngine.dispatch(sessionId, {
-        type: CallEvents.CalleeAnswered,
-        source: CallEventSources.WebRtc,
-        payload,
-        answerKind: "outbound-webrtc-leg",
-    });
-}
-
-/**
- * Enqueues an async task on the session's signaling queue so SDP operations
- * (end-call renegotiation, RING offers, answers, ICE restarts) never overlap.
- */
-function enqueueSignaling(sessionId, label, fn) {
-    return signalingHandlersApi.enqueueSignaling(sessionId, label, fn);
-}
-
-/**
- * Called when a message arrives on the data channel.
- * Routes to the appropriate handler based on message type.
- * SDP-touching operations are serialized via enqueueSignaling.
+ * Data channel ingress -> normalized leg events for the owning PolySession.
+ * Replaces SignalingMessageRouter phase-gating (leg states gate instead).
  */
 function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
-    return signalingHandlersApi.onDataChannelMessage(sessionId, rawMessage, meta);
-}
+    let msg;
+    try {
+        msg = JSON.parse(rawMessage);
+    } catch (err) {
+        console.error(`[${sessionId}] Failed to parse DC message: ${err.message}`);
+        return;
+    }
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    const channelRole = meta.channelRole || "caller-webrtc";
 
+    if (msg.msgType === "data") {
+        messagingFlowApi.handleDataMessage(sessionId, msg, session.phase).catch((err) => {
+            console.error(`[${sessionId}] DC-DATA forward failed: ${err.message}`);
+        });
+        return;
+    }
 
-// ═════════════════════════════════════════════════════════════
-// PHASE 2 — AUDIO CALL (via Data Channel + SIP)
-// ═════════════════════════════════════════════════════════════
+    // First (active) signaling offer with no existing PolySession == the RING.
+    if (
+        msg.msgType === "signaling" &&
+        msg.payload?.type === "offer" &&
+        !isInactiveOffer(msg.payload.sdp) &&
+        !polyForSession(session)
+    ) {
+        onDcRing(sessionId, msg.payload).catch((err) => {
+            console.error(`[${sessionId}] ring routing failed: ${err.message}`);
+            sendDataChannelMessage(sessionId, { msgType: "call", action: "end", reason: "ring-failed" });
+        });
+        return;
+    }
 
-/**
- * Called when the client sends a RING over the data channel.
- * Runs the call routing pipeline to determine where the call goes,
- * then accepts audio renegotiation on PC1 and routes accordingly.
- */
-async function handleRing(sessionId, payload) {
-    return callEngine.dispatch(sessionId, {
-        type: CallEvents.CallRingRequested,
-        source: CallEventSources.Client,
-        payload,
+    const poly = polyForSession(session);
+    if (!poly) {
+        console.log(`[${sessionId}] DC message with no PolySession (msgType=${msg.msgType} action=${msg.action || msg.payload?.type})`);
+        return;
+    }
+
+    let action;
+    let payload;
+    if (msg.msgType === "signaling") {
+        action = msg.action === "end-call" ? "end-call" : msg.payload?.type;
+        payload = msg.payload || {};
+    } else if (msg.msgType === "call") {
+        if (msg.action === "hold") { action = "hold"; payload = { enabled: true }; }
+        else if (msg.action === "unhold") { action = "hold"; payload = { enabled: false }; }
+        else { action = msg.action; payload = msg; }
+    }
+    if (!action) return;
+
+    const event = polyIngress.toLegEvent(action, payload, { channelRole });
+    if (!event) return;
+    const ref = polyWebrtcRef(poly, session, channelRole);
+    poly.onIngress(ref, event).catch((err) => {
+        console.error(`[${sessionId}] poly ingress (${action}) failed: ${err.message}`);
     });
 }
 
-/**
- * Called when the client answers a server-initiated re-offer (Phase 2).
- * Since the call is already routed (SIP session opened in Phase 1),
- * this just applies the answer to PC1 to fix currentDirection.
- */
-async function handleReofferAnswer(sessionId, payload) {
-    return renegotiateCallUseCase.handleReofferAnswer(sessionId, payload);
-}
-
-/**
- * WebRTC-to-WebRTC bridge: notifies the callee to connect, waits for them,
- * then pipes audio between the caller's PC1 and the callee's PC1.
- */
-async function notifyAndBridge(callerSessionId, destination) {
-    const reused = await bridgeApi.tryBridgeOverExistingLeg(
-        callerSessionId,
-        destination,
-        () => startCallUseCase.triggerOutboundWebrtcLegRing(callerSessionId),
-    );
-    if (reused) return reused;
-    return bridgeApi.notifyAndBridge(callerSessionId, destination);
-}
-
-async function notifyAndBridgeMulti(callerSessionId, destinations) {
-    return bridgeApi.notifyAndBridgeMulti(callerSessionId, destinations);
-}
-
+// HTTP /notify "answer" (callee picked up: secnum<->secnum leg or inbound callee).
 async function onVerifiedNotifyAnswer(sessionId, offer, session) {
-    return verifiedNotifyAnswerHandler.handle(sessionId, offer, session);
+    const poly = polyForSession(session) || polyRegistry.getByEndpoint(offer.from);
+    if (!poly) return { handled: false };
+    const ref = polyRefByEndpoint(poly, offer.from)
+        || (poly.legs.b.kind === "webrtc" ? "b" : "a");
+    try {
+        await poly.onIngress(ref, polyIngress.toLegEvent("answer", { sdp: offer.sdp, candidates: offer.candidates || [] }, {}));
+    } catch (err) {
+        console.error(`[${sessionId}] poly http-answer failed: ${err.message}`);
+        return { handled: false };
+    }
+    return { handled: true };
 }
 
-/**
- * Bridges audio between two WebRTC sessions (caller PC1 ↔ callee PC1).
- * Audio tracks may not exist yet (callee hasn't sent RING), so wiring is
- * event-driven: we subscribe to onTrack on both PCs and wire each direction
- * as tracks become available.
- */
-function startWebRtcBridge(callerSessionId, calleeSessionId) {
-    return bridgeApi.startBridgeRtp(callerSessionId, calleeSessionId);
+// HTTP /notify "reject".
+async function onHttpReject(sessionId, offer) {
+    const session = sessions.get(sessionId);
+    const poly = polyForSession(session);
+    if (!poly) return { ok: true, ignored: true, type: "reject", sessionId };
+    const ref = polyRefByEndpoint(poly, offer.from) || "b";
+    try {
+        await poly.onIngress(ref, polyIngress.toLegEvent("reject", {}, {}));
+    } catch (err) {
+        console.error(`[${sessionId}] poly http-reject failed: ${err.message}`);
+    }
+    return { ok: true, type: "reject", sessionId };
 }
 
-/**
- * Called when an incoming offer arrives from a user who might be a callee
- * for a pending WebRTC bridge. Checks pendingBridges and resolves if matched.
- */
-function checkPendingBridge(sessionId, walletAddress) {
-    return bridgeApi.checkPendingBridge(sessionId, walletAddress);
+// secnum<->secnum callee invite: reuse the proven outbound leg factory + FCM.
+async function outboundInvite({ callerSessionId, destination }) {
+    const { legSession, calleeEns, callerEns, callPayload } =
+        await outboundLegFactory.create(callerSessionId, destination, { kind: "webrtc" });
+    legSession.lastNotificationResult = await sendNotification(callerEns, calleeEns, callPayload, NOTI_TYPE_CALL);
+    return legSession;
 }
 
-/**
- * Called when a callee connects who might be the target of a pending inbound
- * SBC call. Marks the session so handleRing routes through the inbound path.
- */
-function checkPendingInboundCall(sessionId, walletAddress) {
-    return bridgeApi.checkPendingInboundCall(sessionId, walletAddress);
+// SIP runtime remote BYE -> teardown via the SIP leg.
+function onSipCallEvent(sessionId, event) {
+    const session = sessions.get(sessionId);
+    const poly = polyForSession(session);
+    if (!poly) return;
+    const ref = polySipRef(poly);
+    if (!ref) return;
+    return poly.onIngress(ref, polyIngress.toLegEvent("bye", {}, {})).catch((err) => {
+        console.error(`[${sessionId}] poly remote-bye failed: ${err.message}`);
+    });
 }
 
-/**
- * Handles an ICE restart from the client during an active call.
- * Renegotiates PC1 (client-facing) without touching PC2 (SIP leg).
- */
-async function handleIceRestart(sessionId, payload) {
-    return bridgeApi.handleIceRestart(sessionId, payload);
+function isSessionInCall(session) {
+    const poly = polyForSession(session);
+    if (!poly) return false;
+    return poly.legs.a.state === LEG_STATES.IN_CALL || poly.legs.b.state === LEG_STATES.IN_CALL;
 }
 
-/**
- * Opens a SIP session to Kamailio via sip.js.
- *
- * sip.js handles the full SIP dialog: WSS connect → REGISTER → INVITE → 200 OK → ACK
- *
- * Thanks to the werift polyfill, sip.js's internal PeerConnection (PC2) is actually
- * a werift RTCPeerConnection. After the call is established, we access PC2 via
- * inviter.sessionDescriptionHandler.peerConnection for RTP piping.
- */
+// Terminal PC state -> tear the pair down and clean up.
+async function onTransportClosed(sessionId, event = {}) {
+    const session = sessions.get(sessionId);
+    const poly = polyForSession(session);
+    if (poly) {
+        const ref = polyWebrtcRef(poly, session, "caller-webrtc");
+        try {
+            await poly.onIngress(ref, makeLegEvent(LEG_EVENTS.TRANSPORT_CLOSE));
+        } catch (err) {
+            console.error(`[${sessionId}] poly transport-close failed: ${err.message}`);
+        }
+        try { await polyRegistry.destroy(polyRegistry.keyForPair(poly.legs.a.endpoint, poly.legs.b.endpoint), event.reason || "transport-closed"); } catch (_) {}
+    }
+    destroySession(sessionId, event.notify === true);
+}
+
 async function openSipSession(sessionId, callerEns, calleeIdentity, sipDirective = null) {
     return sipGateway.openOutbound(sessionId, { callerEns, calleeIdentity, sipDirective });
 }
 
-async function openOpenAiSipSession(sessionId, options = {}) {
-    return openAiSipGatewayApi.openOpenAiSipSession(sessionId, options);
-}
-
-/**
- * Opens a SIP session for an inbound SBC call. Registers with Kamailio using
- * the called phone number as the SIP identity, which triggers PUSHJOIN to
- * resume the suspended INVITE. Then accepts the incoming INVITE and bridges
- * PC1 (callee's WebRTC) ↔ PC2 (SBC via Kamailio/RTPEngine).
- */
 async function openInboundSipSession(sessionId, phoneNumber) {
     return sipGateway.openInbound(sessionId, { phoneNumber });
-}
-
-/**
- * Starts relaying audio between PC1 (client) and PC2 (Kamailio/sip.js)
- * by piping raw RTP packets between the two PeerConnections.
- *
- *   Client audio → PC1 remote track → onReceiveRtp → PC2 local track → writeRtp → Kamailio
- *   Kamailio audio → PC2 remote track → onReceiveRtp → PC1 local track → writeRtp → Client
- */
-function startMediaRelay(sessionId) {
-    return mediaRelayController.startWebRtcToSip(sessionId);
-}
-
-/**
- * Stops the media relay for a session.
- */
-function stopMediaRelay(sessionId) {
-    return mediaRelayController.stopSession(sessionId);
-}
-
-async function startIvrMediaSession(sessionId) {
-    const session = sessions.get(sessionId);
-    if (!session || !session.peerConnection) return false;
-    await mediaGraphFactory.ivrToWebrtc(session, {
-        payloadType: session.mediaCodecPolicy === "pcmu" ? 0 : 8,
-    });
-    return true;
-}
-
-async function stopIvrMediaSession(sessionId) {
-    const session = sessions.get(sessionId);
-    if (!session?.media?.ivrLeg) return false;
-    await session.resources?.mediaSession?.().stop("ivr-media-stop");
-    return true;
-}
-
-/**
- * Called when the client sends an end-call message over the data channel.
- * Tears down the SIP leg (PC2) and media relay. Does NOT touch PC1 —
- * the client will send a renegotiation offer to drop audio from PC1.
- */
-async function handleCallEnd(sessionId, reason = "client-initiated", options = {}) {
-    const normalizedOptions = typeof options === "boolean" ? { propagate: options } : options;
-    const propagate = normalizedOptions.propagate !== false;
-    return callEngine.dispatch(sessionId, {
-        type: reason === "client-reject" ? CallEvents.CallCancelRequested : CallEvents.CallEndRequested,
-        source: CallEventSources.Client,
-        reason,
-        notifyClient: normalizedOptions.notifyClient === true,
-        notifyOwnedWebRtcLegs: normalizedOptions.notifyOwnedWebRtcLegs !== false,
-        propagateLinkedSession: propagate,
-    });
-}
-
-async function handleCallDtmf(sessionId, msg) {
-    if (await ivrFeatureApi.handleDtmf(sessionId, msg)) {
-        return;
-    }
-    try {
-        return await callEngine.dispatch(sessionId, {
-            type: CallEvents.DtmfReceived,
-            source: CallEventSources.Client,
-            route: "sbc",
-            payload: msg,
-        });
-    } catch (err) {
-        console.error(`[${sessionId}] DTMF relay failed: ${err.message}`);
-    }
-}
-
-/**
- * Handles end-call renegotiation — client wants to drop audio but keep the data channel.
- */
-async function handleEndCallRenegotiation(sessionId, payload, options = {}) {
-    return callEngine.dispatch(sessionId, {
-        type: CallEvents.EndRenegotiationReceived,
-        source: CallEventSources.Client,
-        reason: "end-call-renegotiated",
-        payload,
-        channelRole: options.channelRole || "caller-webrtc",
-    });
 }
 
 /**
  * Closes the SIP session — sends BYE via sip.js, tears down UserAgent.
  */
 async function closeSipSession(sessionId) {
-    minuteCounterApi.finish(sessions.get(sessionId));
-    await openAiSipGatewayApi.closeOpenAiSipSession(sessionId);
     return sipGateway.close(sessionId);
 }
 
@@ -1386,4 +1204,7 @@ module.exports = {
     parseAddress,
     resolveDestination,
     resolveCallerId,
+    polyCore,
+    polyRegistry,
+    polyIngress,
 };
