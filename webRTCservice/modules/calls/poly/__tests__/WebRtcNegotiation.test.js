@@ -103,13 +103,34 @@ test("applyOffer (ring) holds the answer AND does not ack: P decides when", asyn
     );
 });
 
-test("ackRing sends a ring ack on every call (no persistent guard; P gates frequency)", async () => {
+test("ackConnected sends a ring ack on every call (no persistent guard; P gates frequency)", async () => {
     const { neg, signaling } = build();
     await neg.applyOffer({ mode: "ring", payload: { sdp: "v=0\r\nm=audio 9 UDP\r\na=mid:0\r\na=sendrecv\r\n" } });
-    await neg.ackRing();
-    await neg.ackRing();
+    await neg.ackConnected();
+    await neg.ackConnected();
     const acks = signaling.sent.filter((m) => m.msgType === "call" && m.action === "ack" && m.ackFor === "ring");
-    assert.equal(acks.length, 2, "each ackRing sends a ring ack -- two rings => two acks");
+    assert.equal(acks.length, 2, "each ackConnected sends a ring ack -- two rings => two acks");
+});
+
+test("ackRing is a no-op for webrtc (the caller was already acked at connect)", async () => {
+    const { neg, signaling } = build();
+    await neg.ackRing();
+    assert.equal(
+        signaling.sent.filter((m) => m.msgType === "call" && m.action === "ack").length,
+        0,
+        "ackRing must send nothing for webrtc",
+    );
+});
+
+test("applySessionAnswer applies the remote SDP but does NOT ack and does NOT advance", async () => {
+    const { neg, signaling, session } = build();
+    await neg.applySessionAnswer({ payload: { sdp: "session-answer-sdp" } });
+    assert.equal(session.peerConnection.remoteDescription.type, "answer");
+    assert.equal(
+        signaling.lastOfType("call", "ack"),
+        undefined,
+        "session answer is a transport step, not a call accept -- no ack",
+    );
 });
 
 test("answer() flushes the held answer once the peer picks up", async () => {
@@ -120,7 +141,7 @@ test("answer() flushes the held answer once the peer picks up", async () => {
     assert.ok(signaling.lastOfType("call", "ack"));
 });
 
-test("callee leg ring delegates to inviteCallee and binds the returned leg session", async () => {
+test("callee leg connect delegates to inviteCallee (deferred) and binds the returned leg session", async () => {
     const signaling = new FakeSignaling();
     const legSession = {
         sessionId: "alice|bob",
@@ -139,15 +160,15 @@ test("callee leg ring delegates to inviteCallee and binds the returned leg sessi
         primitives: fakePrimitives(),
         logger: silentLogger,
     });
-    await neg.connect(); // callee has no transport yet -> no throw
-    await neg.ring({ from: "alice.secnum.global" });
-    assert.ok(invited, "expected inviteCallee to be called on callee ring");
+    const result = await neg.connect({ from: "alice.secnum.global" });
+    assert.deepEqual(result, { deferred: true }, "callee connect waits for its DC to open");
+    assert.ok(invited, "expected inviteCallee to be called on callee connect");
     assert.equal(invited.destination.wallet, "0xbob");
     assert.equal(neg.session, legSession, "leg session should bind to the created outbound leg");
     assert.equal(neg.getMediaEndpoint().peerConnection, legSession.peerConnection);
 });
 
-test("callee leg ring without inviteCallee transport throws", async () => {
+test("callee leg connect without inviteCallee transport throws", async () => {
     const neg = new WebRtcNegotiation({
         id: "bob",
         endpoint: "bob.secnum.global",
@@ -157,5 +178,5 @@ test("callee leg ring without inviteCallee transport throws", async () => {
         primitives: fakePrimitives(),
         logger: silentLogger,
     });
-    await assert.rejects(() => neg.ring({}), /no inviteCallee transport/);
+    await assert.rejects(() => neg.connect({}), /no inviteCallee transport/);
 });

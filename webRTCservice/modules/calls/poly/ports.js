@@ -9,7 +9,13 @@
 const LEG_INTENTS = Object.freeze({
     CONNECT: "connect",
     RING: "ring",
-    ACK: "ack",
+    // Two distinct acks, both decided by PolySession (the leg only knows HOW):
+    //   ACK_CONNECTED - the caller's client offered and we are now connected; ack
+    //                   its ring so it stops re-offering. Fired once per fresh ring.
+    //   ACK_RING      - the peer has actually started ringing. webrtc: no-op (the
+    //                   caller was already acked at connect); sip: a real 180.
+    ACK_CONNECTED: "ackConnected",
+    ACK_RING: "ackRing",
     ANSWER: "answer",
     END: "endCall",
     CANCEL: "cancel",
@@ -82,8 +88,13 @@ class CallNegotiationPort {
     // eslint-disable-next-line no-unused-vars
     async ring(ctx) { notImplemented("CallNegotiationPort", "ring"); }
 
-    // Acknowledge receipt of this endpoint's ring to its client (P decides WHEN;
-    // the transport decides HOW). Optional + idempotent: SIP has no DC ack.
+    // Ack the caller's ring at connect time so its client stops re-offering
+    // (P decides WHEN, the transport decides HOW). Optional: SIP has no DC ack.
+    // eslint-disable-next-line no-unused-vars
+    async ackConnected(ctx) { /* optional */ }
+
+    // Signal that the peer is actually ringing now. webrtc: no-op; sip: 180.
+    // Optional + idempotent.
     // eslint-disable-next-line no-unused-vars
     async ackRing(ctx) { /* optional */ }
 
@@ -95,6 +106,11 @@ class CallNegotiationPort {
 
     // eslint-disable-next-line no-unused-vars
     async applyAnswer(ctx) { notImplemented("CallNegotiationPort", "applyAnswer"); }
+
+    // A transport-establishment answer (the callee answered our session offer to
+    // bring up its PC/DC) -- NOT a call accept. Optional: SIP never gets one.
+    // eslint-disable-next-line no-unused-vars
+    async applySessionAnswer(ctx) { /* optional */ }
 
     // eslint-disable-next-line no-unused-vars
     async endCall(ctx) { notImplemented("CallNegotiationPort", "endCall"); }

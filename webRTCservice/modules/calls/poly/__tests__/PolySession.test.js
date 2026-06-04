@@ -53,6 +53,50 @@ test("webrtc<->webrtc happy path: connect, ring, answer, media GO; then end tear
     assert.equal(bEnds[0].from, "alice");
 });
 
+test("secnum<->secnum two-phase callee: connect -> session-answer -> ring -> accept -> media GO", async () => {
+    const a = makeWebRtcLeg("alice");                      // caller: transport up via handshake
+    const b = makeWebRtcLeg("bob", { deferConnect: true }); // callee: connect only invites
+    const { poly, media } = buildPoly(a, b);
+
+    // Caller transport up; callee still disconnected (no FCM yet).
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    assert.equal(a.leg.state, S.CONNECTED);
+    assert.equal(b.leg.state, S.DISCONNECTED);
+
+    // Caller's audio offer -> caller CALLING. P acks the caller (ackConnected) and
+    // brings the callee transport up (connect, deferred -> stays connecting).
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o" }));
+    assert.equal(a.leg.state, S.CALLING);
+    assert.equal(b.leg.state, S.CONNECTING);
+    assert.equal(a.negotiation.named("ackConnected").length, 1, "caller acked once on the fresh ring");
+    assert.equal(b.negotiation.named("connect").length, 1, "callee invited (connect) once");
+    assert.equal(b.negotiation.named("ring").length, 0, "callee not rung until its DC opens");
+
+    // Callee's session-establishment answer (/notify) lands while connecting:
+    // applied as a session answer, NOT a call accept (stays connecting).
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "session-ans" }));
+    assert.equal(b.leg.state, S.CONNECTING);
+    assert.equal(b.negotiation.named("applySessionAnswer").length, 1);
+    assert.equal(b.negotiation.named("applyAnswer").length, 0);
+
+    // Callee's data channel opens -> connected -> P rings it (audio offer over DC),
+    // and tells the caller the peer is ringing (ackRing, a no-op for webrtc).
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    assert.equal(b.leg.state, S.RINGING);
+    assert.equal(b.negotiation.named("ring").length, 1, "callee rung once it is connected");
+    assert.equal(a.negotiation.named("ackRing").length, 1, "caller told the peer is ringing");
+    assert.equal(media.connects.length, 0, "no media before the callee accepts");
+
+    // Callee's client accepts over the data channel (answer while ringing) -> the
+    // real accept: both in-call, caller's held answer flushed, media bridged once.
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "accept-ans" }));
+    assert.equal(b.leg.state, S.IN_CALL);
+    assert.equal(a.leg.state, S.IN_CALL);
+    assert.equal(b.negotiation.named("applyAnswer").length, 1, "DC accept applied as a real answer");
+    assert.equal(a.negotiation.named("answer").length, 1, "caller's held answer flushed");
+    assert.equal(media.connects.length, 1);
+});
+
 test("media is connected exactly once across repeated reconcile passes", async () => {
     const a = makeWebRtcLeg("alice");
     const b = makeWebRtcLeg("bob");
@@ -76,7 +120,7 @@ test("one side disconnects mid-call: peer is ended, media stops, disconnected si
     await poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "ans" }));
 
     await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_CLOSE));
-    assert.equal(b.leg.state, S.DISCONNECTED);
+    assert.equal(b.leg.state, S.FAILED);
     assert.equal(a.leg.state, S.ENDED);
     assert.equal(media.disconnects.length, 1);
 });

@@ -9,6 +9,11 @@
 //   3. steady    - both in call (keep media) / both idle (do nothing)
 
 const { LEG_STATES, isTeardown, needsEnding, canBeRung } = require("./states");
+
+// A leg that wants a call (driving the peer toward it).
+function isCaller(state) {
+    return state === LEG_STATES.CALLING || state === LEG_STATES.RINGING;
+}
 const { LEG_INTENTS } = require("./ports");
 
 // Action constructors (plain data; PolySession resolves leg refs + executes).
@@ -41,19 +46,26 @@ function reconcile(snapshot, event = null) {
     }
 
     // ---- 2. Progress ------------------------------------------------------
-    // Ack a *new* ring. A leg only enters CALLING from a client offer, so an
-    // event whose state is CALLING marks exactly one fresh ring -> ack it once.
-    // Later passes (ring/answer/...) carry a different event, so we never re-ack
-    // the same ring, and there is no persistent guard: two rings => two acks.
+    // (2a) Ack a *fresh* ring (caller's client offered -> CALLING). A leg only
+    // enters CALLING from a client offer, so a CALLING-typed event marks exactly
+    // one fresh ring -> ackConnected once (tells the client we heard it so it
+    // stops re-offering). Later passes carry a different event, so we never
+    // re-ack the same ring; no persistent guard => two rings => two acks.
     if (event && event.state === LEG_STATES.CALLING) {
-        if (a.state === LEG_STATES.CALLING) actions.push(intent("a", LEG_INTENTS.ACK, "self"));
-        if (b.state === LEG_STATES.CALLING) actions.push(intent("b", LEG_INTENTS.ACK, "self"));
+        if (a.state === LEG_STATES.CALLING) actions.push(intent("a", LEG_INTENTS.ACK_CONNECTED, "self"));
+        if (b.state === LEG_STATES.CALLING) actions.push(intent("b", LEG_INTENTS.ACK_CONNECTED, "self"));
+    }
+    // (2b) The peer just started ringing -> tell the caller (webrtc: no-op; sip:
+    // a real 180). Gated on the RINGING event so it fires once per ring.
+    if (event && event.state === LEG_STATES.RINGING) {
+        if (a.state === LEG_STATES.RINGING && isCaller(b.state)) actions.push(intent("b", LEG_INTENTS.ACK_RING, "a"));
+        if (b.state === LEG_STATES.RINGING && isCaller(a.state)) actions.push(intent("a", LEG_INTENTS.ACK_RING, "b"));
     }
 
     // One side reached in-call while the peer is still ringing/calling -> they
-    // picked up: finalize the peer (send ack / apply answer) and bridge media.
-    const aReaching = b.state === LEG_STATES.RINGING || b.state === LEG_STATES.CALLING;
-    const bReaching = a.state === LEG_STATES.RINGING || a.state === LEG_STATES.CALLING;
+    // picked up: finalize the peer (flush its held answer) and bridge media.
+    const aReaching = isCaller(b.state);
+    const bReaching = isCaller(a.state);
     if (a.state === LEG_STATES.IN_CALL && aReaching) {
         actions.push(intent("b", LEG_INTENTS.ANSWER, "a"));
         if (!mediaConnected) actions.push(media("connect"));
@@ -64,14 +76,19 @@ function reconcile(snapshot, event = null) {
         if (!mediaConnected) actions.push(media("connect"));
         return actions;
     }
-    // One side wants a call and the other is reachable but idle -> ring it.
-    if ((a.state === LEG_STATES.CALLING || a.state === LEG_STATES.RINGING) && canBeRung(b.state)) {
-        actions.push(intent("b", LEG_INTENTS.RING, "a"));
-        return actions;
+    // One side wants a call and the peer is reachable. Two-phase:
+    //   peer DISCONNECTED -> bring its transport up first (connect: callee FCM
+    //     session offer / sip nothing-to-do). The peer stays connecting until its
+    //     transport-open ingress lands, then this rule fires again to ring it.
+    //   peer CONNECTED/ended/... (transport up, idle) -> present the call (ring:
+    //     audio offer over its DC / sip INVITE).
+    if (isCaller(a.state)) {
+        if (b.state === LEG_STATES.DISCONNECTED) { actions.push(intent("b", LEG_INTENTS.CONNECT, "a")); return actions; }
+        if (canBeRung(b.state)) { actions.push(intent("b", LEG_INTENTS.RING, "a")); return actions; }
     }
-    if ((b.state === LEG_STATES.CALLING || b.state === LEG_STATES.RINGING) && canBeRung(a.state)) {
-        actions.push(intent("a", LEG_INTENTS.RING, "b"));
-        return actions;
+    if (isCaller(b.state)) {
+        if (a.state === LEG_STATES.DISCONNECTED) { actions.push(intent("a", LEG_INTENTS.CONNECT, "b")); return actions; }
+        if (canBeRung(a.state)) { actions.push(intent("a", LEG_INTENTS.RING, "b")); return actions; }
     }
 
     // ---- 3. Steady --------------------------------------------------------

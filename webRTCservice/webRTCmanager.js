@@ -972,9 +972,16 @@ async function onDcRing(callerSessionId, payload) {
     }
 
     const { poly } = polyRegistry.resolve({ a, b, target: "a" });
-    // Mark both transports usable, then deliver the caller's audio offer.
+    // Caller transport is already up (HTTP handshake). The SIP leg has no transport
+    // to negotiate (openOutbound happens on ring), so mark it usable too. A webrtc
+    // callee, by contrast, starts disconnected: reconcile will connect() it (FCM
+    // session offer) and only ring() it once its data channel opens.
     await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
-    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    if (b.kind === "sip") {
+        await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    }
+    // Deliver the caller's audio offer -> caller leg goes CALLING and reconcile
+    // drives the peer (connect -> ring -> answer).
     await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, payload));
 }
 
@@ -983,14 +990,17 @@ async function onDcRing(callerSessionId, payload) {
  * open if a PolySession already exists for the pair (otherwise the RING that
  * follows will create it).
  */
-function onDataChannelOpen(sessionId) {
+function onDataChannelOpen(sessionId, meta = {}) {
     const session = sessions.get(sessionId);
     if (!session) return;
     const poly = polyForSession(session);
     if (!poly) return;
-    const ref = polyWebrtcRef(poly, session, "caller-webrtc");
+    // The callee's outbound DC reuses the caller's sessionId, so the channelRole
+    // (set by WebRtcOutboundLegFactory) is what tells us which leg just opened.
+    const channelRole = meta.channelRole || "caller-webrtc";
+    const ref = polyWebrtcRef(poly, session, channelRole);
     poly.onIngress(ref, makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN)).catch((err) => {
-        console.error(`[${sessionId}] poly transport-open failed: ${err.message}`);
+        console.error(`[${sessionId}] poly transport-open (${channelRole}) failed: ${err.message}`);
     });
 }
 
@@ -1091,9 +1101,11 @@ async function onHttpReject(sessionId, offer) {
 }
 
 // secnum<->secnum callee invite: reuse the proven outbound leg factory + FCM.
+// dcOnly: the FCM session offer carries only the data channel (audio is added
+// later by the poly ring), mirroring the caller's DC-only HTTP handshake.
 async function outboundInvite({ callerSessionId, destination }) {
     const { legSession, calleeEns, callerEns, callPayload } =
-        await outboundLegFactory.create(callerSessionId, destination, { kind: "webrtc" });
+        await outboundLegFactory.create(callerSessionId, destination, { kind: "webrtc", dcOnly: true });
     legSession.lastNotificationResult = await sendNotification(callerEns, calleeEns, callPayload, NOTI_TYPE_CALL);
     return legSession;
 }

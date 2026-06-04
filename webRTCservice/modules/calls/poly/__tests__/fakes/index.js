@@ -10,9 +10,12 @@ const silentLogger = { log() {}, error() {}, warn() {} };
 // Records every intent the SessionLeg base delegates to it. Does not mutate leg
 // state (the base owns that); just captures the call + the `from`/`mode`.
 class FakeNegotiation extends CallNegotiationPort {
-    constructor({ id } = {}) {
+    // deferConnect: model a callee whose connect only fires an invite and waits
+    // for its transport to open (returns { deferred: true }).
+    constructor({ id, deferConnect = false } = {}) {
         super();
         this.id = id;
+        this.deferConnect = deferConnect;
         this.calls = [];
         this.mediaEndpoint = { id: id || "ep", kind: "fake-media" };
     }
@@ -21,11 +24,14 @@ class FakeNegotiation extends CallNegotiationPort {
         this.calls.push({ name, from: ctx?.from ?? null, mode: ctx?.mode ?? null, type: ctx?.type ?? null });
     }
 
-    async connect(ctx) { this._record("connect", ctx); }
+    async connect(ctx) { this._record("connect", ctx); return this.deferConnect ? { deferred: true } : undefined; }
     async ring(ctx) { this._record("ring", ctx); }
+    async ackConnected(ctx) { this._record("ackConnected", ctx); }
+    async ackRing(ctx) { this._record("ackRing", ctx); }
     async answer(ctx) { this._record("answer", ctx); }
     async applyOffer(ctx) { this._record("applyOffer", ctx); }
     async applyAnswer(ctx) { this._record("applyAnswer", ctx); }
+    async applySessionAnswer(ctx) { this._record("applySessionAnswer", ctx); }
     async endCall(ctx) { this._record("endCall", ctx); }
     async handleAux(ctx) { this._record("aux", ctx); }
     getMediaEndpoint() { return this.mediaEndpoint; }
@@ -56,8 +62,8 @@ class FakeMediaController extends MediaControllerPort {
     }
 }
 
-function makeWebRtcLeg(id) {
-    const negotiation = new FakeNegotiation({ id });
+function makeWebRtcLeg(id, opts = {}) {
+    const negotiation = new FakeNegotiation({ id, ...opts });
     const leg = new WebRtcLeg({ id, endpoint: id, negotiation, logger: silentLogger });
     return { leg, negotiation };
 }

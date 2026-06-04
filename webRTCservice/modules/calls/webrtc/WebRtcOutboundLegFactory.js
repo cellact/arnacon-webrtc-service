@@ -53,7 +53,7 @@ class WebRtcOutboundLegFactory {
         dc.onopen = () => {
             legSession.dataChannelOpen = true;
             if (typeof this.onDataChannelOpen === "function") {
-                this.onDataChannelOpen(sessionId);
+                this.onDataChannelOpen(sessionId, { channelRole: "callee-webrtc" });
             }
         };
         dc.onMessage.subscribe((msg) => {
@@ -87,6 +87,10 @@ class WebRtcOutboundLegFactory {
 
         const legSession = {
             sessionId: callerSessionId,
+            // The signaling id the callee client negotiates its session under; the
+            // poly ring (audio offer over the DC) must reuse it so the client
+            // matches the ring to this session.
+            signalingSessionId: signalingSessionId,
             role: "callee-webrtc",
             callerEns,
             toIdentity: calleeEns,
@@ -117,8 +121,14 @@ class WebRtcOutboundLegFactory {
         callerSession.outboundWebrtcTransportReady = false;
 
         const pc = this.attachOutboundDataChannel(callerSessionId, legSession);
-        legSession.localAudioTrack = new this.MediaStreamTrack({ kind: "audio" });
-        pc.addTrack(legSession.localAudioTrack);
+        // DC-only session offer (mirrors the caller's HTTP handshake): audio is
+        // negotiated later via the poly ring (audio offer over the data channel),
+        // so the callee only sets up its PC/DC here. Legacy callers (multiring,
+        // etc.) keep the audio-in-session-offer behavior unless dcOnly is set.
+        if (!options.dcOnly) {
+            legSession.localAudioTrack = new this.MediaStreamTrack({ kind: "audio" });
+            pc.addTrack(legSession.localAudioTrack);
+        }
         legSession.iceCandidates = [];
 
         const offer = await pc.createOffer();

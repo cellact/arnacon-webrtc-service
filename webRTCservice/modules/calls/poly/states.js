@@ -22,12 +22,15 @@ const LEG_STATES = Object.freeze({
 const ALL_STATES = Object.freeze(Object.values(LEG_STATES));
 
 // Teardown intent is in flight or the transport dropped: highest priority for p.
+// NOTE: DISCONNECTED is the *initial* (never-connected) state, NOT a teardown --
+// otherwise a fresh callee leg (which starts disconnected) would be mistaken for a
+// drop and PolySession would end the caller instead of connecting the callee. An
+// actual mid-call transport loss escalates to FAILED (see SessionLeg TRANSPORT_CLOSE).
 const TEARDOWN_STATES = Object.freeze(new Set([
     LEG_STATES.ENDING,
     LEG_STATES.CANCELING,
     LEG_STATES.REJECTING,
     LEG_STATES.FAILED,
-    LEG_STATES.DISCONNECTED,
 ]));
 
 // A call worth tearing down exists on this leg.

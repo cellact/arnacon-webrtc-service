@@ -63,24 +63,35 @@ class WebRtcNegotiation extends CallNegotiationPort {
         return this.session?.peerConnection || null;
     }
 
-    // PolySession.connect: transport is established by the ingress/factory layer.
-    // A callee leg has no transport until it is invited (ring), so only the
-    // caller leg asserts an existing PC here.
-    async connect() {
-        if (this.role === "callee") return;
+    // PolySession.connect:
+    //   caller: its PC was established upstream (HTTP handshake) -> just assert it.
+    //   callee: bring up the transport by FCM-inviting it with a DC-only session
+    //           offer. This returns { deferred: true } so the leg stays CONNECTING
+    //           until the callee's data channel opens (TRANSPORT_OPEN ingress);
+    //           the callee's session answer arrives in between as a (session)
+    //           ANSWER ingress. Audio is negotiated later, on ring().
+    async connect(ctx = {}) {
+        if (this.role === "callee") {
+            await this._inviteCallee(ctx);
+            return { deferred: true };
+        }
         if (!this.pc) throw new Error(`[${this.id}] WebRtc leg has no peer connection`);
+        return undefined;
     }
 
+    // Present the call to this endpoint: send a fresh RING + audio offer over its
+    // data channel (renegotiating audio on top of the DC-only session). Same for a
+    // caller leg being re-rung and a freshly-connected callee leg.
     async ring(ctx = {}) {
-        if (this.role === "callee") return this._inviteCallee(ctx);
         return this._sendDataChannelRing(ctx);
     }
 
-    // Callee leg: create the outbound PC + FCM-invite the callee. Delegates to the
-    // proven WebRtcOutboundLegFactory (via injected inviteCallee) so the invite
-    // payload/codec/ICE handling stays identical to the legacy path. The created
-    // legSession (caller.outboundWebrtc) becomes this leg's transport state; the
-    // callee's pickup later arrives as an ANSWER ingress event.
+    // Callee leg: create the outbound PC (DC-only) + FCM-invite the callee.
+    // Delegates to the proven WebRtcOutboundLegFactory (via injected inviteCallee)
+    // so the invite payload/ICE handling stays identical to the legacy path. The
+    // created legSession (caller.outboundWebrtc) becomes this leg's transport
+    // state; the callee's session answer arrives later as an ANSWER ingress while
+    // still CONNECTING.
     async _inviteCallee(ctx = {}) {
         if (typeof this.inviteCallee !== "function") {
             throw new Error(`[${this.id}] callee leg has no inviteCallee transport`);
@@ -124,7 +135,11 @@ class WebRtcNegotiation extends CallNegotiationPort {
                 type: "offer",
                 from: ctx.from ? identityLabel(ctx.from) : fromLabel,
                 to: session.toIdentity,
-                sessionId: session.sessionId,
+                // A callee leg negotiated its session under the "caller|callee"
+                // signaling id (set by the outbound factory); reuse it so the
+                // client matches this ring to that session. Caller legs fall back
+                // to their own session id.
+                sessionId: session.signalingSessionId || session.sessionId,
                 sdp: offerSdp,
                 candidates: relayCandidates,
                 label: fromLabel,
@@ -170,21 +185,39 @@ class WebRtcNegotiation extends CallNegotiationPort {
             return;
         }
         // Hold the answer SDP until PolySession fires answer() (peer picked up).
-        // We do NOT ack here: P decides WHEN to ack (reconcile emits the ACK
-        // intent); this adapter only knows HOW (ackRing below).
+        // We do NOT ack here: P decides WHEN to ack (reconcile emits ACK_CONNECTED
+        // on the fresh ring); this adapter only knows HOW (ackConnected above).
         this._pendingAnswerSdp = answerSdp;
     }
 
-    // HOW to ack this endpoint's ring (P decides WHEN via the ACK intent).
-    // No persistent guard: every ring P tells us to ack gets an ack. P already
-    // emits the ACK intent exactly once per ring (gated on the CALLING event),
-    // so two rings => two acks, even when this leg is reused across calls.
-    async ackRing() {
+    // The caller's client offered a ring and we are connected: ack it so the
+    // client stops re-offering. The ios client needs an ack-for-ring here even
+    // though, server-side, the peer is only being reached now. No persistent
+    // guard: P fires this once per fresh ring (gated on the CALLING event), so a
+    // reused leg gets a fresh ack on each new call.
+    async ackConnected() {
         this.signaling.send({ msgType: "call", action: "ack", ackFor: "ring" });
     }
 
-    // This endpoint's client answered our ring: apply its answer. Ported from
-    // AnswerCallUseCase.handleOutboundWebrtcLegAnswer.
+    // The peer is actually ringing now. The webrtc caller already received its
+    // ack-for-ring at connect (ackConnected), so there is nothing more to send.
+    async ackRing() {
+        // no-op for webrtc
+    }
+
+    // The callee answered our session offer (bringing its PC/DC up) -- NOT a call
+    // accept. Apply the remote SDP and return; we do NOT ack (the data channel may
+    // not be open yet; the /notify HTTP response is the client's ack) and we do
+    // NOT advance to in-call (the leg stays connecting until the DC opens).
+    async applySessionAnswer(ctx = {}) {
+        const pc = this.pc;
+        if (!pc) throw new Error(`[${this.id}] cannot apply session answer without a peer connection`);
+        const payload = ctx.payload || {};
+        await pc.setRemoteDescription(new this.p.RTCSessionDescription(payload.sdp, "answer"));
+    }
+
+    // This endpoint's client accepted the call (answer to our ring's audio offer):
+    // apply its answer and ack. Ported from AnswerCallUseCase.handleOutboundWebrtcLegAnswer.
     async applyAnswer(ctx = {}) {
         const pc = this.pc;
         if (!pc) throw new Error(`[${this.id}] cannot apply answer without a peer connection`);

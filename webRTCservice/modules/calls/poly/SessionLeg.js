@@ -9,7 +9,7 @@
 // Either way it emits a single normalized state-change event upward; it never
 // calls PolySession directly (one-way coupling).
 
-const { LEG_STATES, isValidState } = require("./states");
+const { LEG_STATES, isValidState, isTeardown } = require("./states");
 const { LEG_INTENTS, LEG_EVENTS } = require("./ports");
 const { assertIntentLegal, behaviorFor } = require("./LegStateBehavior");
 
@@ -79,8 +79,14 @@ class SessionLeg {
         assertIntentLegal(this.state, LEG_INTENTS.CONNECT);
         if (this.state === LEG_STATES.CONNECTED) return;
         this.setState(LEG_STATES.CONNECTING, { reason: "connect", from: "self" });
-        await this._tx(() => this.negotiation.connect({ leg: this, ...ctx }));
-        this.setState(LEG_STATES.CONNECTED, { reason: "connected", from: "self" });
+        const result = await this._tx(() => this.negotiation.connect({ leg: this, ...ctx }));
+        // Transports that establish synchronously settle to CONNECTED now. A
+        // transport that only fires an out-of-band invite (a callee FCM session
+        // offer) returns { deferred: true } and stays CONNECTING until its
+        // transport-open ingress (the data channel opening) arrives.
+        if (!result || result.deferred !== true) {
+            this.setState(LEG_STATES.CONNECTED, { reason: "connected", from: "self" });
+        }
     }
 
     async ring(ctx = {}) {
@@ -90,11 +96,18 @@ class SessionLeg {
         await this._tx(() => this.negotiation.ring({ leg: this, ...ctx }));
     }
 
-    // Acknowledge this endpoint's ring request to its own client. No state change:
-    // it's a wire-level "I heard you" so the client stops re-offering. P decides
-    // WHEN (reconcile emits it); the transport decides HOW and stays idempotent.
-    async ack(ctx = {}) {
-        assertIntentLegal(this.state, LEG_INTENTS.ACK);
+    // Ack the caller's ring once it is connected (so its client stops re-offering).
+    // No state change: a wire-level "I heard you". P decides WHEN (reconcile emits
+    // it on the fresh CALLING event); the transport decides HOW.
+    async ackConnected(ctx = {}) {
+        assertIntentLegal(this.state, LEG_INTENTS.ACK_CONNECTED);
+        await this._tx(() => this.negotiation.ackConnected?.({ leg: this, ...ctx }));
+    }
+
+    // Tell the caller the peer is actually ringing now. webrtc => no-op; sip => 180.
+    // No state change; P decides WHEN (on the peer's RINGING event).
+    async ackRing(ctx = {}) {
+        assertIntentLegal(this.state, LEG_INTENTS.ACK_RING);
         await this._tx(() => this.negotiation.ackRing?.({ leg: this, ...ctx }));
     }
 
@@ -152,7 +165,19 @@ class SessionLeg {
                 }
                 return;
             case LEG_EVENTS.TRANSPORT_CLOSE:
-                this.setState(LEG_STATES.DISCONNECTED, { reason: "transport-close", from: "self" });
+                // Transport dropped. If we are not already settled/tearing down
+                // (a graceful end already ran), this is an abnormal loss -> FAILED
+                // (a teardown state) so PolySession ends the peer. We never go back
+                // to DISCONNECTED here: that is the initial state, and treating a
+                // drop as initial would let reconcile try to re-connect a dead leg.
+                if (
+                    !isTeardown(this.state)
+                    && this.state !== LEG_STATES.ENDED
+                    && this.state !== LEG_STATES.CANCELED
+                    && this.state !== LEG_STATES.REJECTED
+                ) {
+                    this.setState(LEG_STATES.FAILED, { reason: "transport-close", from: "self" });
+                }
                 return;
             case LEG_EVENTS.OFFER:
                 // An offer while already in-call is an in-call renegotiation
@@ -167,10 +192,36 @@ class SessionLeg {
                 this.setState(LEG_STATES.CALLING, { reason: "client-offer", from: "self", payload: event.payload });
                 return;
             case LEG_EVENTS.ANSWER:
-                // This endpoint picked up: apply its answer and settle to in-call.
-                // PolySession reacts to (inCall vs ringing/calling) to bridge media.
-                await this._tx(() => this.negotiation.applyAnswer?.({ leg: this, ...event }));
-                this.setState(LEG_STATES.IN_CALL, { reason: "client-answer", from: "self", payload: event.payload });
+                // Two different answers arrive on the SAME wire action; the leg's
+                // own state disambiguates (the user's "session answer vs call
+                // answer" distinction):
+                //   connecting -> a session-establishment answer: the callee
+                //     answered our session offer to bring its PC/DC up. We have NOT
+                //     presented the call yet, so apply the remote SDP and stay put
+                //     (the DC can only open after this, advancing us to connected).
+                //     The session answer always lands while still connecting, so
+                //     this is an unambiguous discriminator.
+                //   connected/ringing/... -> a real call accept (the user picked
+                //     up): apply it and settle in-call so PolySession bridges media.
+                if (this.state === LEG_STATES.CONNECTING) {
+                    await this._tx(() => this.negotiation.applySessionAnswer?.({ leg: this, ...event }));
+                    return;
+                }
+                // A real accept only makes sense once the call has been presented
+                // (the transport is up / we are calling or ringing). An answer in
+                // any other state (e.g. still disconnected, or already ended) is
+                // stray -> ignore it rather than forcing in-call.
+                if (
+                    this.state === LEG_STATES.CONNECTED
+                    || this.state === LEG_STATES.CALLING
+                    || this.state === LEG_STATES.RINGING
+                    || this.state === LEG_STATES.ANSWERING
+                ) {
+                    await this._tx(() => this.negotiation.applyAnswer?.({ leg: this, ...event }));
+                    this.setState(LEG_STATES.IN_CALL, { reason: "client-answer", from: "self", payload: event.payload });
+                    return;
+                }
+                this.logger.log(`[${this.id}] ignoring stray answer in state ${this.state}`);
                 return;
             case LEG_EVENTS.END:
             case LEG_EVENTS.END_RENEGOTIATION:

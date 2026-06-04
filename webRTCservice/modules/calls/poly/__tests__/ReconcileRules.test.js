@@ -19,12 +19,18 @@ function mediaOps(actions) {
     return actions.filter((x) => x.kind === "media").map((x) => x.op);
 }
 
-test("teardown beats progress: inCall vs disconnected ends the inCall side, stops media", () => {
-    const actions = reconcile(snap(S.IN_CALL, S.DISCONNECTED, true));
+test("teardown beats progress: inCall vs failed (dropped) ends the inCall side, stops media", () => {
+    const actions = reconcile(snap(S.IN_CALL, S.FAILED, true));
     assert.deepEqual(mediaOps(actions), ["disconnect"]);
     const ends = intents(actions);
     assert.equal(ends.length, 1);
     assert.deepEqual(ends[0], { kind: "intent", leg: "a", intent: I.END, from: "b" });
+});
+
+test("initial disconnected is NOT a teardown: inCall vs disconnected does not end the call", () => {
+    // A peer that simply never connected must not be mistaken for a drop.
+    const actions = reconcile(snap(S.IN_CALL, S.DISCONNECTED, true));
+    assert.deepEqual(intents(actions), []);
 });
 
 test("teardown: ending side does not get re-ended; peer (ringing) gets ended", () => {
@@ -41,23 +47,36 @@ test("no double disconnect / no throw when both sides tear down", () => {
     assert.equal(intents(actions).length, 0);
 });
 
-test("fresh ring: acks the caller once, then rings the connected side", () => {
+test("fresh ring: ackConnected the caller once, then rings the connected side", () => {
     const actions = reconcile(snap(S.CALLING, S.CONNECTED, false), ringEvent);
     assert.deepEqual(intents(actions), [
-        { kind: "intent", leg: "a", intent: I.ACK, from: "self" },
+        { kind: "intent", leg: "a", intent: I.ACK_CONNECTED, from: "self" },
         { kind: "intent", leg: "b", intent: I.RING, from: "a" },
     ]);
     assert.deepEqual(mediaOps(actions), []);
 });
 
+test("fresh ring with a disconnected peer: ackConnected, then connect the peer first", () => {
+    const actions = reconcile(snap(S.CALLING, S.DISCONNECTED, false), ringEvent);
+    assert.deepEqual(intents(actions), [
+        { kind: "intent", leg: "a", intent: I.ACK_CONNECTED, from: "self" },
+        { kind: "intent", leg: "b", intent: I.CONNECT, from: "a" },
+    ]);
+});
+
+test("peer just rang: ackRing the caller (gated on the RINGING event)", () => {
+    const actions = reconcile(snap(S.CALLING, S.RINGING, false), { state: S.RINGING });
+    assert.deepEqual(intents(actions), [{ kind: "intent", leg: "a", intent: I.ACK_RING, from: "b" }]);
+});
+
 test("no fresh-ring event: do not ack (a later pass must not re-ack the same ring)", () => {
-    const actions = reconcile(snap(S.CALLING, S.CONNECTED, false), { state: S.RINGING });
+    const actions = reconcile(snap(S.CALLING, S.CONNECTED, false), { state: S.CONNECTED });
     assert.deepEqual(intents(actions), [{ kind: "intent", leg: "b", intent: I.RING, from: "a" }]);
 });
 
-test("ack-on-ring: a calling leg is acked even when the peer is not yet reachable", () => {
+test("ackConnected fires even when the peer is not yet reachable", () => {
     const actions = reconcile(snap(S.CALLING, S.CONNECTING, false), ringEvent);
-    assert.deepEqual(intents(actions), [{ kind: "intent", leg: "a", intent: I.ACK, from: "self" }]);
+    assert.deepEqual(intents(actions), [{ kind: "intent", leg: "a", intent: I.ACK_CONNECTED, from: "self" }]);
 });
 
 test("progress: ringing vs ended (reusable) rings the reusable side", () => {
