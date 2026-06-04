@@ -84,6 +84,30 @@ test("ackEnd answers the client's end-call offer (audio off) and reports CONNECT
     assert.equal(result.state, "connected", "the leg returns to connected, transport kept");
 });
 
+test("ackEnd with no offer yet (bare call/end arrived first) returns CONNECTED without answering", async () => {
+    // iOS sends the bare `call`/`end` signal BEFORE its end-call reneg offer, so
+    // ackEnd can fire with no offer to answer. It must NOT try to createAnswer.
+    const { neg, signaling } = build();
+    const result = await neg.ackEnd({});
+    assert.equal(result.state, "connected", "leg returns to connected; reneg offer is answered later");
+    assert.equal(
+        signaling.lastOfType("signaling", "answer"),
+        undefined,
+        "no offer to answer => no end-call answer is sent",
+    );
+});
+
+test("endCall remote with a bare signal (no SDP) does NOT re-initiate an end-call offer", async () => {
+    const { neg, signaling } = build();
+    const result = await neg.endCall({ mode: "remote", payload: { msgType: "call", action: "end" } });
+    assert.equal(result, undefined, "remote bare end never returns deferred (it must not initiate)");
+    assert.equal(
+        signaling.lastOfType("signaling", "offer"),
+        undefined,
+        "a bare remote end must not emit a fresh end-call offer",
+    );
+});
+
 test("getMediaEndpoint returns a media leg bound to the peer connection", () => {
     const { neg, session } = build();
     const ep = neg.getMediaEndpoint();

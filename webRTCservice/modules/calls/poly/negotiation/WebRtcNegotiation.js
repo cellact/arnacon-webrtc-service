@@ -267,9 +267,16 @@ class WebRtcNegotiation extends CallNegotiationPort {
     // The client asked to end (sent us its end-call reneg offer). Answer it
     // inactive (audio off, data channel/transport kept) -> the leg returns to
     // CONNECTED, reusable for a future call. Driven by PolySession's ACK_END.
+    //
+    // The iOS client sends a bare `call`/`end` signal (no SDP) BEFORE its end-call
+    // reneg offer. That bare signal drives the leg to END_REQUESTED, so ackEnd can
+    // run before any offer is available. Without an offer there is nothing to
+    // answer (createAnswer would fail): just return to CONNECTED. The reneg offer
+    // that follows is answered via the remote-absorb path while CONNECTED.
     async ackEnd(ctx = {}) {
         const pc = this.pc;
-        if (pc) await this._answerEndCallOffer(pc, ctx.payload || {});
+        const payload = ctx.payload || {};
+        if (pc && payload.sdp) await this._answerEndCallOffer(pc, payload);
         return { state: LEG_STATES.CONNECTED };
     }
 
@@ -283,20 +290,22 @@ class WebRtcNegotiation extends CallNegotiationPort {
         if (!pc) return; // already gone
         const payload = ctx.payload || {};
 
-        if (ctx.mode === "remote" && payload.type === "answer") {
-            // The peer answered the end-call offer WE sent -> the data-only
-            // renegotiation is complete (its audio is released). Now send the
-            // call-level END signal: the reneg only tears down audio; the iOS
-            // client ends the call (CallKit/UI) only on this `call`/`end`.
-            if (payload.sdp) {
-                await pc.setRemoteDescription(new this.p.RTCSessionDescription(payload.sdp, "answer"));
+        if (ctx.mode === "remote") {
+            // Client drove the end. NEVER (re)initiate an end-call offer here.
+            if (payload.type === "answer") {
+                // The peer answered the end-call offer WE sent -> the data-only
+                // renegotiation is complete (its audio is released). Now send the
+                // call-level END signal: the reneg only tears down audio; the iOS
+                // client ends the call (CallKit/UI) only on this `call`/`end`.
+                if (payload.sdp) {
+                    await pc.setRemoteDescription(new this.p.RTCSessionDescription(payload.sdp, "answer"));
+                }
+                this.signaling.send({ msgType: "call", action: "end" });
+            } else if (payload.sdp) {
+                // client sent an inactive offer -> answer it inactive (reusable).
+                await this._answerEndCallOffer(pc, payload);
             }
-            this.signaling.send({ msgType: "call", action: "end" });
-            return;
-        }
-        if (ctx.mode === "remote" && payload.sdp) {
-            // client sent an inactive offer -> answer it inactive (reusable).
-            await this._answerEndCallOffer(pc, payload);
+            // bare `call`/`end` signal (no SDP): nothing to negotiate at the SDP layer.
             return;
         }
 
