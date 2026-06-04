@@ -5,6 +5,7 @@
 // identically to a WebRTC end.
 
 const { CallNegotiationPort, LEG_EVENTS } = require("../ports");
+const { LEG_STATES } = require("../states");
 const { SipLeg: MediaSipLeg } = require("../../../media/legs/SipLeg");
 
 class SipNegotiation extends CallNegotiationPort {
@@ -66,9 +67,13 @@ class SipNegotiation extends CallNegotiationPort {
 
     async applyAnswer() {}
 
+    // A SIP end is a BYE: the dialog is gone, so the leg cannot stay "connected"
+    // like webrtc -> settle DISCONNECTED. A future call needs a fresh INVITE.
     async endCall() {
-        if (!this.session.sipConnection) return;
-        await this.sip.close(this.session.sessionId, { reason: "end-call" });
+        if (this.session.sipConnection) {
+            await this.sip.close(this.session.sessionId, { reason: "end-call" });
+        }
+        return { state: LEG_STATES.DISCONNECTED };
     }
 
     async handleAux(ctx = {}) {

@@ -18,7 +18,7 @@ function buildPoly(legAInfo, legBInfo) {
     return { poly, media };
 }
 
-test("webrtc<->webrtc happy path: connect, ring, answer, media GO; then end tears down", async () => {
+test("webrtc<->webrtc happy path: connect, ring, answer, media GO; then end returns both to connected", async () => {
     const a = makeWebRtcLeg("alice");
     const b = makeWebRtcLeg("bob");
     const { poly, media } = buildPoly(a, b);
@@ -43,14 +43,19 @@ test("webrtc<->webrtc happy path: connect, ring, answer, media GO; then end tear
     assert.equal(media.connects.length, 1);
     assert.equal(media.disconnects.length, 0);
 
-    // alice ends -> media stops, bob gets end-call from alice
+    // alice's client ends -> alice END_REQUESTED. P acks alice (-> connected) and
+    // ends bob (-> ending), media stops.
     await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END));
-    assert.equal(a.leg.state, S.ENDED);
-    assert.equal(b.leg.state, S.ENDED);
+    assert.equal(a.leg.state, S.CONNECTED, "ender returns to connected after ackEnd");
+    assert.equal(b.leg.state, S.ENDING, "peer is ending until its client answers");
     assert.equal(media.disconnects.length, 1);
+    assert.equal(a.negotiation.named("ackEnd").length, 1, "P drove ackEnd on the ender");
     const bEnds = b.negotiation.named("endCall");
-    assert.equal(bEnds.length, 1);
-    assert.equal(bEnds[0].from, "alice");
+    assert.equal(bEnds[0].from, "alice", "peer end attributed to alice");
+
+    // bob's client answers the end-call offer -> bob back to connected (reusable).
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "end-ans" }));
+    assert.equal(b.leg.state, S.CONNECTED);
 });
 
 test("secnum<->secnum two-phase callee: connect -> session-answer -> ring -> accept -> media GO", async () => {
@@ -97,6 +102,32 @@ test("secnum<->secnum two-phase callee: connect -> session-answer -> ring -> acc
     assert.equal(media.connects.length, 1);
 });
 
+test("end-call staged flow: inCall/inCall -> endRequested/inCall -> connected/ending -> connected/connected", async () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeWebRtcLeg("bob");
+    const { poly, media } = buildPoly(a, b);
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o" }));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "ans" }));
+    assert.equal(a.leg.state, S.IN_CALL);
+    assert.equal(b.leg.state, S.IN_CALL);
+    assert.equal(media.connects.length, 1);
+
+    // alice's client sends its end-call reneg offer. In one reconcile pass: media
+    // down, ackEnd(alice) -> connected, end(bob) -> ending. (endRequested is the
+    // transient alice passes through before ackEnd lands.)
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END, { type: "offer", sdp: "end-offer" }));
+    assert.equal(a.leg.state, S.CONNECTED);
+    assert.equal(b.leg.state, S.ENDING);
+    assert.equal(media.disconnects.length, 1);
+
+    // bob's client answers our end-call offer -> connected. Both reusable.
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "end-ans" }));
+    assert.equal(a.leg.state, S.CONNECTED);
+    assert.equal(b.leg.state, S.CONNECTED);
+});
+
 test("media is connected exactly once across repeated reconcile passes", async () => {
     const a = makeWebRtcLeg("alice");
     const b = makeWebRtcLeg("bob");
@@ -120,9 +151,14 @@ test("one side disconnects mid-call: peer is ended, media stops, disconnected si
     await poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "ans" }));
 
     await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_CLOSE));
-    assert.equal(b.leg.state, S.FAILED);
-    assert.equal(a.leg.state, S.ENDED);
+    assert.equal(b.leg.state, S.FAILED, "dropped side stays failed");
+    assert.equal(a.leg.state, S.ENDING, "surviving peer is ended (waiting for its client answer)");
     assert.equal(media.disconnects.length, 1);
+
+    // a's client answers the end-call offer -> a back to connected, b left failed.
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "end-ans" }));
+    assert.equal(a.leg.state, S.CONNECTED);
+    assert.equal(b.leg.state, S.FAILED);
 });
 
 test("webrtc<->sip: remote BYE on sip leg ends the webrtc caller", async () => {
@@ -136,10 +172,14 @@ test("webrtc<->sip: remote BYE on sip leg ends the webrtc caller", async () => {
     assert.equal(media.connects.length, 1);
 
     await poly.onIngress("b", makeLegEvent(LEG_EVENTS.REMOTE_BYE));
-    assert.equal(b.leg.state, S.ENDED);
-    assert.equal(a.leg.state, S.ENDED);
+    assert.equal(b.leg.state, S.DISCONNECTED, "sip dialog gone -> disconnected, not connected");
+    assert.equal(a.leg.state, S.ENDING, "webrtc caller ended (waiting for its client answer)");
     assert.equal(a.negotiation.named("endCall")[0].from, "+15551234");
     assert.equal(media.disconnects.length, 1);
+
+    // webrtc caller's client answers the end-call offer -> back to connected.
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "end-ans" }));
+    assert.equal(a.leg.state, S.CONNECTED);
 });
 
 test("reject before answer: caller is ended, no media ever bridged", async () => {
@@ -153,7 +193,9 @@ test("reject before answer: caller is ended, no media ever bridged", async () =>
 
     await poly.onIngress("b", makeLegEvent(LEG_EVENTS.REJECT));
     assert.equal(b.leg.state, S.REJECTED);
-    assert.equal(a.leg.state, S.ENDED);
+    // The caller is ended off its ring (webrtc -> ending until its client answers).
+    assert.equal(a.leg.state, S.ENDING);
+    assert.equal(a.negotiation.named("endCall").length, 1);
     assert.equal(media.connects.length, 0);
 });
 
@@ -183,11 +225,15 @@ test("second call reuse: after end, a fresh offer rings the peer again", async (
     await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
     await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o" }));
     await poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "ans" }));
-    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END));
-    assert.equal(a.leg.state, S.ENDED);
-    assert.equal(b.leg.state, S.ENDED);
 
-    // new call on the existing (ended==connected-idle) transports
+    // graceful end: alice's client ends, then both clients answer the reneg ->
+    // both legs back to connected, transports kept.
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "end-ans" }));
+    assert.equal(a.leg.state, S.CONNECTED);
+    assert.equal(b.leg.state, S.CONNECTED);
+
+    // new call on the existing (connected) transports
     await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o2" }));
     assert.equal(a.leg.state, S.CALLING);
     assert.equal(b.leg.state, S.RINGING);

@@ -18,6 +18,9 @@ const LEGALITY = Object.freeze({
     [LEG_STATES.RINGING]: [I.RING, I.ACK_CONNECTED, I.ACK_RING, I.ANSWER, I.END, I.CANCEL, I.REJECT],
     [LEG_STATES.ANSWERING]: [I.ANSWER, I.END, I.CANCEL],
     [LEG_STATES.IN_CALL]: [I.END],
+    // Client asked to end -> P acks it (and may end the peer). Tolerate END too
+    // (teardown glare), which is idempotent on the leg.
+    [LEG_STATES.END_REQUESTED]: [I.ACK_END, I.END],
     [LEG_STATES.ENDING]: [I.END],
     [LEG_STATES.ENDED]: [I.CONNECT, I.RING],
     [LEG_STATES.CANCELING]: [I.CANCEL],

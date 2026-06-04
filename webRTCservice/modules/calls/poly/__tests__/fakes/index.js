@@ -2,6 +2,7 @@
 // so every test is deterministic and runs in-process.
 
 const { CallNegotiationPort, MediaControllerPort } = require("../../ports");
+const { LEG_STATES } = require("../../states");
 const { WebRtcLeg } = require("../../legs/WebRtcLeg");
 const { SipLeg } = require("../../legs/SipLeg");
 
@@ -12,10 +13,13 @@ const silentLogger = { log() {}, error() {}, warn() {} };
 class FakeNegotiation extends CallNegotiationPort {
     // deferConnect: model a callee whose connect only fires an invite and waits
     // for its transport to open (returns { deferred: true }).
-    constructor({ id, deferConnect = false } = {}) {
+    // endResult: what a P-initiated endCall returns -- webrtc defers (waits for
+    // the client's end-call answer), sip settles disconnected.
+    constructor({ id, deferConnect = false, endResult = { deferred: true } } = {}) {
         super();
         this.id = id;
         this.deferConnect = deferConnect;
+        this.endResult = endResult;
         this.calls = [];
         this.mediaEndpoint = { id: id || "ep", kind: "fake-media" };
     }
@@ -29,10 +33,13 @@ class FakeNegotiation extends CallNegotiationPort {
     async ackConnected(ctx) { this._record("ackConnected", ctx); }
     async ackRing(ctx) { this._record("ackRing", ctx); }
     async answer(ctx) { this._record("answer", ctx); }
+    async ackEnd(ctx) { this._record("ackEnd", ctx); return { state: LEG_STATES.CONNECTED }; }
     async applyOffer(ctx) { this._record("applyOffer", ctx); }
     async applyAnswer(ctx) { this._record("applyAnswer", ctx); }
     async applySessionAnswer(ctx) { this._record("applySessionAnswer", ctx); }
-    async endCall(ctx) { this._record("endCall", ctx); }
+    // P-initiated end returns the transport's resolution; a remote (completing /
+    // absorbing) call only applies SDP, leaving state to the leg's ingress.
+    async endCall(ctx) { this._record("endCall", ctx); return ctx?.mode === "remote" ? undefined : this.endResult; }
     async handleAux(ctx) { this._record("aux", ctx); }
     getMediaEndpoint() { return this.mediaEndpoint; }
     async dispose(ctx) { this._record("dispose", ctx); }
@@ -69,7 +76,8 @@ function makeWebRtcLeg(id, opts = {}) {
 }
 
 function makeSipLeg(id) {
-    const negotiation = new FakeNegotiation({ id });
+    // SIP cannot stay connected after a BYE -> a P-initiated end disconnects it.
+    const negotiation = new FakeNegotiation({ id, endResult: { state: LEG_STATES.DISCONNECTED } });
     const leg = new SipLeg({ id, endpoint: id, negotiation, logger: silentLogger });
     return { leg, negotiation };
 }

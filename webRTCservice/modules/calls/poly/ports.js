@@ -17,6 +17,10 @@ const LEG_INTENTS = Object.freeze({
     ACK_CONNECTED: "ackConnected",
     ACK_RING: "ackRing",
     ANSWER: "answer",
+    // Acknowledge the client's end-call request: the leg answers its end-call
+    // reneg offer (audio off, transport kept) and returns to CONNECTED. P decides
+    // WHEN (a leg entered END_REQUESTED); the transport decides HOW.
+    ACK_END: "ackEnd",
     END: "endCall",
     CANCEL: "cancel",
     REJECT: "reject",
@@ -101,6 +105,13 @@ class CallNegotiationPort {
     // eslint-disable-next-line no-unused-vars
     async answer(ctx) { notImplemented("CallNegotiationPort", "answer"); }
 
+    // Acknowledge a client-initiated end: answer its end-call reneg offer (audio
+    // off, transport kept). Optional: only the transports that can stay connected
+    // after a call implement it (webrtc). Returns the resulting leg state, e.g.
+    // { state: "connected" }.
+    // eslint-disable-next-line no-unused-vars
+    async ackEnd(ctx) { /* optional */ }
+
     // eslint-disable-next-line no-unused-vars
     async applyOffer(ctx) { notImplemented("CallNegotiationPort", "applyOffer"); }
 
@@ -112,6 +123,9 @@ class CallNegotiationPort {
     // eslint-disable-next-line no-unused-vars
     async applySessionAnswer(ctx) { /* optional */ }
 
+    // End the call toward this endpoint. Returns the resulting leg state, or
+    // { deferred: true } if the leg should stay in ENDING until the client's
+    // end-call answer arrives (webrtc). SIP returns { state: "disconnected" }.
     // eslint-disable-next-line no-unused-vars
     async endCall(ctx) { notImplemented("CallNegotiationPort", "endCall"); }
 

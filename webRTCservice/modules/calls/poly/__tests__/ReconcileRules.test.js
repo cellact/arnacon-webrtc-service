@@ -27,10 +27,37 @@ test("teardown beats progress: inCall vs failed (dropped) ends the inCall side, 
     assert.deepEqual(ends[0], { kind: "intent", leg: "a", intent: I.END, from: "b" });
 });
 
-test("initial disconnected is NOT a teardown: inCall vs disconnected does not end the call", () => {
-    // A peer that simply never connected must not be mistaken for a drop.
+test("inCall vs disconnected (peer gone, e.g. sip BYE) ends the inCall side, stops media", () => {
+    // You cannot be in a call by yourself: a disconnected peer ends the inCall leg.
     const actions = reconcile(snap(S.IN_CALL, S.DISCONNECTED, true));
+    assert.deepEqual(mediaOps(actions), ["disconnect"]);
+    assert.deepEqual(intents(actions), [{ kind: "intent", leg: "a", intent: I.END, from: "b" }]);
+});
+
+test("inCall vs connected (idle peer) ends the inCall side", () => {
+    const actions = reconcile(snap(S.CONNECTED, S.IN_CALL, false));
+    assert.deepEqual(intents(actions), [{ kind: "intent", leg: "b", intent: I.END, from: "a" }]);
+});
+
+test("inCall vs ringing is allowed (pickup in flight): the inCall side is NOT ended", () => {
+    // s1 ringing + s2 inCall is a legitimate setup transient -- never end s2.
+    const actions = reconcile(snap(S.RINGING, S.IN_CALL, false));
+    assert.equal(intents(actions).some((x) => x.intent === I.END), false, "no end while ringing");
+});
+
+test("end-requested: P acks the ender and ends the in-call peer, media down", () => {
+    const actions = reconcile(snap(S.END_REQUESTED, S.IN_CALL, true));
+    assert.deepEqual(mediaOps(actions), ["disconnect"]);
+    assert.deepEqual(intents(actions), [
+        { kind: "intent", leg: "a", intent: I.ACK_END, from: "self" },
+        { kind: "intent", leg: "b", intent: I.END, from: "a" },
+    ]);
+});
+
+test("settled after end: connected + ending does nothing more (no loop)", () => {
+    const actions = reconcile(snap(S.CONNECTED, S.ENDING, false));
     assert.deepEqual(intents(actions), []);
+    assert.deepEqual(mediaOps(actions), []);
 });
 
 test("teardown: ending side does not get re-ended; peer (ringing) gets ended", () => {

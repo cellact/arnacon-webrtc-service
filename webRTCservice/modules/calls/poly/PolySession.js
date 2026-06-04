@@ -119,6 +119,7 @@ class PolySession {
                 case LEG_INTENTS.ACK_CONNECTED: return await leg.ackConnected(ctx);
                 case LEG_INTENTS.ACK_RING: return await leg.ackRing(ctx);
                 case LEG_INTENTS.ANSWER: return await leg.answer(ctx);
+                case LEG_INTENTS.ACK_END: return await leg.ackEnd(ctx);
                 case LEG_INTENTS.END: return await leg.endCall(ctx);
                 case LEG_INTENTS.CANCEL: return await leg.cancel(ctx);
                 case LEG_INTENTS.REJECT: return await leg.reject(ctx);

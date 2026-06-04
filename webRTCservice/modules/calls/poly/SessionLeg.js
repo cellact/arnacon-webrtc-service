@@ -127,12 +127,27 @@ class SessionLeg {
         this.setState(LEG_STATES.IN_CALL, { reason: "answered", from: ctx.from ?? null });
     }
 
+    // Ack a client-initiated end: the transport answers the client's end-call
+    // reneg offer (audio off, transport kept) and tells us the resulting state.
+    // webrtc -> CONNECTED (reusable); P decides WHEN (a leg entered END_REQUESTED).
+    async ackEnd(ctx = {}) {
+        assertIntentLegal(this.state, LEG_INTENTS.ACK_END);
+        const result = await this._tx(() => this.negotiation.ackEnd?.({ leg: this, payload: this._pendingEndOffer, ...ctx }));
+        this._pendingEndOffer = null;
+        this.setState(result?.state || LEG_STATES.CONNECTED, { reason: "ack-end", from: ctx.from ?? "self" });
+    }
+
+    // P-initiated end toward this leg. The transport returns either { deferred:
+    // true } (webrtc: send the end-call offer and stay ENDING until the client's
+    // end-call answer ingress lands -> CONNECTED) or { state } (sip: BYE the dialog
+    // -> DISCONNECTED). No graceful end lands on ENDED anymore.
     async endCall(ctx = {}) {
         assertIntentLegal(this.state, LEG_INTENTS.END);
-        if (this.state === LEG_STATES.ENDED) return;
+        if (this.state === LEG_STATES.ENDING || this._isTerminal()) return; // already ending/settled
         this.setState(LEG_STATES.ENDING, { reason: ctx.reason || "end", from: ctx.from ?? null });
-        await this._tx(() => this.negotiation.endCall({ leg: this, ...ctx }));
-        this.setState(LEG_STATES.ENDED, { reason: ctx.reason || "ended", from: ctx.from ?? null });
+        const result = await this._tx(() => this.negotiation.endCall({ leg: this, ...ctx }));
+        if (result && result.deferred === true) return; // wait for the client's end-call answer
+        this.setState(result?.state || LEG_STATES.DISCONNECTED, { reason: ctx.reason || "ended", from: ctx.from ?? null });
     }
 
     async cancel(ctx = {}) {
@@ -215,6 +230,14 @@ class SessionLeg {
                     await this._tx(() => this.negotiation.applySessionAnswer?.({ leg: this, ...event }));
                     return;
                 }
+                // While ENDING we sent an end-call offer; an answer here completes
+                // that teardown (whether the client labels it end-call or a plain
+                // answer) -> back to CONNECTED, transport kept.
+                if (this.state === LEG_STATES.ENDING) {
+                    await this._tx(() => this.negotiation.endCall?.({ leg: this, mode: "remote", ...event }));
+                    this.setState(LEG_STATES.CONNECTED, { reason: "end-complete", from: "self" });
+                    return;
+                }
                 // A real accept only makes sense once the call has been presented
                 // (the transport is up / we are calling or ringing). An answer in
                 // any other state (e.g. still disconnected, or already ended) is
@@ -232,27 +255,46 @@ class SessionLeg {
                 this.logger.log(`[${this.id}] ignoring stray answer in state ${this.state}`);
                 return;
             case LEG_EVENTS.END:
-            case LEG_EVENTS.END_RENEGOTIATION:
-            case LEG_EVENTS.REMOTE_BYE:
-                // Teardown glare is normal: when a call ends, BOTH the client
-                // (hang-up) and PolySession (ending the peer) drive teardown, and
-                // the end-call renegotiation answer/offer the client sends to
-                // complete the handshake arrives AFTER we have already settled. If
-                // we are already tearing down / done, absorb that trailing SDP
-                // WITHOUT re-emitting a state change -- otherwise every stray
-                // end-call message bounces us ended<->ending and re-triggers
-                // reconcile (the cascade we saw in the logs). We still let the
-                // negotiation answer the client's end-call offer so its PC closes
-                // cleanly; we just don't churn state.
-                if (this._isTerminal() || this.state === LEG_STATES.ENDING) {
+            case LEG_EVENTS.END_RENEGOTIATION: {
+                const ptype = event.payload?.type;
+                // (1) Completing a P-initiated end: the client's end-call ANSWER to
+                // the offer WE sent (we are ENDING) -> apply it and settle back to
+                // CONNECTED (transport kept, audio off, reusable).
+                if (this.state === LEG_STATES.ENDING && ptype === "answer") {
+                    await this._tx(() => this.negotiation.endCall?.({ leg: this, mode: "remote", ...event }));
+                    this.setState(LEG_STATES.CONNECTED, { reason: "end-complete", from: "self" });
+                    return;
+                }
+                // (2) Already settled / mid-teardown / idle stray: absorb the SDP so
+                // the client PC closes cleanly, but do NOT churn state (this is the
+                // teardown glare that used to cascade ended<->ending).
+                if (
+                    this._isTerminal()
+                    || this.state === LEG_STATES.ENDING
+                    || this.state === LEG_STATES.END_REQUESTED
+                    || this.state === LEG_STATES.CONNECTED
+                    || this.state === LEG_STATES.DISCONNECTED
+                ) {
                     await this._tx(() => this.negotiation.endCall?.({ leg: this, mode: "remote", ...event }));
                     return;
                 }
-                // First teardown: drive ourselves to a settled state. The ENDING
-                // emit lets PolySession coordinate the peer in parallel.
-                this.setState(LEG_STATES.ENDING, { reason: event.type, from: "self", payload: event.payload });
-                await this._tx(() => this.negotiation.endCall({ leg: this, mode: "remote", ...event }));
-                this.setState(LEG_STATES.ENDED, { reason: event.type, from: "self" });
+                // (3) First client-initiated end while a call is up: record the offer
+                // and ask PolySession to ack it (P decides WHEN; the transport
+                // decides HOW). No inline SDP -- ackEnd answers it and lands us on
+                // CONNECTED, and P ends the peer in the same pass.
+                this._pendingEndOffer = event.payload;
+                this.setState(LEG_STATES.END_REQUESTED, { reason: "client-end", from: "self", payload: event.payload });
+                return;
+            }
+            case LEG_EVENTS.REMOTE_BYE:
+                // SIP peer hung up: the dialog is gone, so the leg cannot stay
+                // connected -> DISCONNECTED. Idempotent if already settled.
+                if (this._isTerminal() || this.state === LEG_STATES.DISCONNECTED) {
+                    await this._tx(() => this.negotiation.endCall?.({ leg: this, mode: "remote", ...event }));
+                    return;
+                }
+                await this._tx(() => this.negotiation.endCall?.({ leg: this, mode: "remote", ...event }));
+                this.setState(LEG_STATES.DISCONNECTED, { reason: "remote-bye", from: "self" });
                 return;
             case LEG_EVENTS.CANCEL:
                 if (this._isTerminal() || this.state === LEG_STATES.CANCELING) {

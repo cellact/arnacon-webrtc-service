@@ -53,14 +53,27 @@ test("endCall (remote inactive offer) replies with an end-call answer, audio kep
     assert.match(msg.payload.sdp, /m=audio 9 /);
 });
 
-test("endCall (initiator) sends an inactive end-call offer", async () => {
+test("endCall (initiator) sends an inactive end-call offer and defers", async () => {
     const { neg, signaling } = build({ offerSdp: "v=0\r\nm=audio 0 UDP\r\na=mid:0\r\na=inactive\r\n" });
-    await neg.endCall({ from: "bob.secnum.global" });
+    const result = await neg.endCall({ from: "bob.secnum.global" });
     const msg = signaling.lastOfType("signaling");
     assert.equal(msg.action, "end-call");
     assert.equal(msg.payload.type, "offer");
     assert.equal(msg.payload.from, "bob");
     assert.match(msg.payload.sdp, /m=audio 9 /);
+    assert.deepEqual(result, { deferred: true }, "the leg stays ENDING until the client's end-call answer");
+});
+
+test("ackEnd answers the client's end-call offer (audio off) and reports CONNECTED", async () => {
+    const { neg, signaling } = build({ answerSdp: "v=0\r\nm=audio 0 UDP\r\na=mid:0\r\na=inactive\r\n" });
+    const result = await neg.ackEnd({
+        payload: { type: "offer", sdp: "v=0\r\na=group:BUNDLE 0\r\nm=audio 0 UDP\r\na=mid:0\r\na=inactive\r\n" },
+    });
+    const msg = signaling.lastOfType("signaling");
+    assert.equal(msg.action, "end-call");
+    assert.equal(msg.payload.type, "answer");
+    assert.match(msg.payload.sdp, /m=audio 9 /);
+    assert.equal(result.state, "connected", "the leg returns to connected, transport kept");
 });
 
 test("getMediaEndpoint returns a media leg bound to the peer connection", () => {

@@ -8,7 +8,7 @@
 //   2. progress  - someone is trying to reach the other (calling/ringing/answering)
 //   3. steady    - both in call (keep media) / both idle (do nothing)
 
-const { LEG_STATES, isTeardown, needsEnding, canBeRung } = require("./states");
+const { LEG_STATES, isTeardown, needsEnding, canBeRung, callViable } = require("./states");
 
 // A leg that wants a call (driving the peer toward it).
 function isCaller(state) {
@@ -31,19 +31,31 @@ function reconcile(snapshot, event = null) {
     const { a, b, mediaConnected } = snapshot;
     const actions = [];
 
-    // ---- 1. Teardown ------------------------------------------------------
-    const aTear = isTeardown(a.state);
-    const bTear = isTeardown(b.state);
-    if (aTear || bTear) {
-        if (mediaConnected) actions.push(media("disconnect"));
-        // If a leg is tearing down and the peer still holds an active call, end
-        // the peer's call, attributing it to the tearing side. We don't care WHY
-        // the side dropped -- the priority is to stop the peer from "being in a
-        // call" with no one on the other end.
-        if (aTear && needsEnding(b.state)) actions.push(intent("b", LEG_INTENTS.END, "a"));
-        if (bTear && needsEnding(a.state)) actions.push(intent("a", LEG_INTENTS.END, "b"));
-        return actions;
+    // ---- 1. Teardown / end-of-call (highest priority) ---------------------
+    const teardown = [];
+    // Media is up only while the full call is up. Any other shape -> drop it.
+    if (mediaConnected && !(a.state === LEG_STATES.IN_CALL && b.state === LEG_STATES.IN_CALL)) {
+        teardown.push(media("disconnect"));
     }
+    // A client asked to end -> P acks it (the leg answers the end-call reneg and
+    // returns to connected). The transport decides HOW; P decides WHEN.
+    if (a.state === LEG_STATES.END_REQUESTED) teardown.push(intent("a", LEG_INTENTS.ACK_END, "self"));
+    if (b.state === LEG_STATES.END_REQUESTED) teardown.push(intent("b", LEG_INTENTS.ACK_END, "self"));
+    // End a leg whose call can no longer work. Two triggers, deduped:
+    //   - the peer is tearing down and this leg still holds an active call
+    //     (covers pre-answer cancel/reject + a mid-call drop), OR
+    //   - this leg is IN_CALL but the peer is no longer call-viable (idle
+    //     connected / failed / disconnected / end-requested) -- you cannot be in a
+    //     call by yourself. A ringing/answering peer IS viable (pickup in flight).
+    const toEnd = new Set();
+    if (isTeardown(a.state) && needsEnding(b.state)) toEnd.add("b");
+    if (isTeardown(b.state) && needsEnding(a.state)) toEnd.add("a");
+    if (a.state === LEG_STATES.IN_CALL && !callViable(b.state)) toEnd.add("a");
+    if (b.state === LEG_STATES.IN_CALL && !callViable(a.state)) toEnd.add("b");
+    for (const ref of toEnd) {
+        teardown.push(intent(ref, LEG_INTENTS.END, ref === "a" ? "b" : "a"));
+    }
+    if (teardown.length) return teardown;
 
     // ---- 2. Progress ------------------------------------------------------
     // (2a) Ack a *fresh* ring (caller's client offered -> CALLING). A leg only

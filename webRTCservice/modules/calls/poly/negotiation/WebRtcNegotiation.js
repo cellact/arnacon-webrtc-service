@@ -6,6 +6,7 @@
 // and free of global reaches.
 
 const { CallNegotiationPort } = require("../ports");
+const { LEG_STATES } = require("../states");
 const { WebRtcClientLeg } = require("../../../media/legs/WebRtcClientLeg");
 const {
     normalizeEndCallOfferSdp,
@@ -263,8 +264,19 @@ class WebRtcNegotiation extends CallNegotiationPort {
         this.signaling.send({ msgType: "call", action: "ack", ackFor: "answer" });
     }
 
-    // Teardown. mode "remote" => the client drove the end (we answer its inactive
-    // offer); otherwise we initiate the end-call renegotiation toward this leg.
+    // The client asked to end (sent us its end-call reneg offer). Answer it
+    // inactive (audio off, data channel/transport kept) -> the leg returns to
+    // CONNECTED, reusable for a future call. Driven by PolySession's ACK_END.
+    async ackEnd(ctx = {}) {
+        const pc = this.pc;
+        if (pc) await this._answerEndCallOffer(pc, ctx.payload || {});
+        return { state: LEG_STATES.CONNECTED };
+    }
+
+    // Teardown. mode "remote" => the client drove the end (completing/absorbing:
+    // we apply its answer, or answer its trailing offer). Otherwise WE initiate the
+    // end-call renegotiation: send an inactive offer and defer -- the leg stays
+    // ENDING until the client's end-call answer ingress lands -> CONNECTED.
     // Ported from RenegotiateCallUseCase.
     async endCall(ctx = {}) {
         const pc = this.pc;
@@ -277,27 +289,13 @@ class WebRtcNegotiation extends CallNegotiationPort {
         }
         if (ctx.mode === "remote" && payload.sdp) {
             // client sent an inactive offer -> answer it inactive (reusable).
-            await pc.setRemoteDescription(new this.p.RTCSessionDescription(payload.sdp, "offer"));
-            await this._setAudioInactive(pc);
-            const answer = await pc.createAnswer();
-            const answerSdp = alignEndCallAnswerSdp(answer.sdp, payload.sdp);
-            await pc.setLocalDescription(new this.p.RTCSessionDescription(answerSdp, "answer"));
-            this.p.logSdp?.(this.id, "END-CALL ANSWER SDP", answerSdp);
-            this.signaling.send({
-                msgType: "signaling",
-                action: "end-call",
-                payload: {
-                    type: "answer",
-                    from: identityLabel(this.session.toIdentity || this.session.callerEns),
-                    to: identityLabel(this.session.callerEns),
-                    sessionId: this.session.sessionId,
-                    sdp: answerSdp,
-                },
-            });
+            await this._answerEndCallOffer(pc, payload);
             return;
         }
 
-        // Initiated by us toward this leg: send an inactive end-call offer.
+        // Initiated by us toward this leg: send an inactive end-call offer, then
+        // wait for the client's end-call answer (handled as an END ingress -> the
+        // leg settles CONNECTED). Stay ENDING in the meantime.
         await this._setAudioInactive(pc);
         const offer = await pc.createOffer();
         const offerSdp = normalizeEndCallOfferSdp(offer.sdp);
@@ -312,6 +310,31 @@ class WebRtcNegotiation extends CallNegotiationPort {
                 to: this.session.toIdentity,
                 sessionId: this.session.sessionId,
                 sdp: offerSdp,
+            },
+        });
+        return { deferred: true };
+    }
+
+    // Answer a client's inactive end-call offer (audio off, transport kept) and
+    // send the end-call answer back. Shared by ackEnd + the remote-absorb path.
+    async _answerEndCallOffer(pc, payload = {}) {
+        if (payload.sdp) {
+            await pc.setRemoteDescription(new this.p.RTCSessionDescription(payload.sdp, "offer"));
+        }
+        await this._setAudioInactive(pc);
+        const answer = await pc.createAnswer();
+        const answerSdp = alignEndCallAnswerSdp(answer.sdp, payload.sdp || answer.sdp);
+        await pc.setLocalDescription(new this.p.RTCSessionDescription(answerSdp, "answer"));
+        this.p.logSdp?.(this.id, "END-CALL ANSWER SDP", answerSdp);
+        this.signaling.send({
+            msgType: "signaling",
+            action: "end-call",
+            payload: {
+                type: "answer",
+                from: identityLabel(this.session.toIdentity || this.session.callerEns),
+                to: identityLabel(this.session.callerEns),
+                sessionId: this.session.sessionId,
+                sdp: answerSdp,
             },
         });
     }
