@@ -152,16 +152,24 @@ class WebRtcNegotiation extends CallNegotiationPort {
         const label = isIceRestart ? "ICE-RESTART ANSWER SDP" : "ANSWER SDP";
         const answerSdp = await this.p.createAnswerSdp(pc, this.id, label);
         this.session.lastAnswerSdp = answerSdp;
-        this.signaling.send({
-            msgType: "signaling",
-            payload: {
-                type: "answer",
-                from: identityLabel(this.session.callerEns),
-                to: this.session.toIdentity,
-                sessionId: this.session.sessionId,
-                sdp: answerSdp,
-            },
-        });
+        // In-call renegotiation (ICE restart) answers immediately. For a fresh
+        // ring we hold the answer: the caller must not see "connected" until the
+        // peer actually picks up. PolySession fires answer() (peer reached
+        // in-call) and we flush the held SDP then.
+        if (isIceRestart) {
+            this.signaling.send({
+                msgType: "signaling",
+                payload: {
+                    type: "answer",
+                    from: identityLabel(this.session.callerEns),
+                    to: this.session.toIdentity,
+                    sessionId: this.session.sessionId,
+                    sdp: answerSdp,
+                },
+            });
+            return;
+        }
+        this._pendingAnswerSdp = answerSdp;
     }
 
     // This endpoint's client answered our ring: apply its answer. Ported from
@@ -174,8 +182,24 @@ class WebRtcNegotiation extends CallNegotiationPort {
         this.signaling.send({ msgType: "call", action: "ack", ackFor: "answer" });
     }
 
-    // PolySession told us the peer picked up: acknowledge on this side.
+    // PolySession told us the peer picked up. Flush the answer SDP we held back
+    // during the ring (so the caller only now negotiates audio / shows connected),
+    // then ack. If there is no held answer (e.g. ICE-restart already answered),
+    // just ack.
     async answer() {
+        if (this._pendingAnswerSdp) {
+            this.signaling.send({
+                msgType: "signaling",
+                payload: {
+                    type: "answer",
+                    from: identityLabel(this.session.callerEns),
+                    to: this.session.toIdentity,
+                    sessionId: this.session.sessionId,
+                    sdp: this._pendingAnswerSdp,
+                },
+            });
+            this._pendingAnswerSdp = null;
+        }
         this.signaling.send({ msgType: "call", action: "ack", ackFor: "answer" });
     }
 

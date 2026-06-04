@@ -88,6 +88,19 @@ test("ice-restart applyOffer answers without re-adding the local audio track", a
     assert.ok(signaling.lastOfType("signaling", "answer"), "expected an answer back for the restart");
 });
 
+test("ring offer holds the answer until the peer picks up, then flushes it on answer()", async () => {
+    const { neg, signaling } = build({ answerSdp: "v=0\r\nm=audio 9 UDP\r\na=mid:0\r\na=sendrecv\r\n" });
+    await neg.applyOffer({ mode: "ring", payload: { sdp: "v=0\r\nm=audio 9 UDP\r\na=mid:0\r\na=sendrecv\r\n" } });
+    assert.equal(
+        signaling.lastOfType("signaling", "answer"),
+        undefined,
+        "answer must NOT be sent while the call is only ringing",
+    );
+    await neg.answer();
+    assert.ok(signaling.lastOfType("signaling", "answer"), "answer should be flushed once the peer picks up");
+    assert.ok(signaling.lastOfType("call", "ack"));
+});
+
 test("callee leg ring delegates to inviteCallee and binds the returned leg session", async () => {
     const signaling = new FakeSignaling();
     const legSession = {
