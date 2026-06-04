@@ -20,7 +20,9 @@ function media(op) {
 }
 
 // `snapshot` = { a: {state, kind}, b: {state, kind}, mediaConnected }
-function reconcile(snapshot) {
+// `event` = the leg state-change that triggered this pass ({ state, cause, ... }),
+//           used to fire one-shot reactions (e.g. ack a fresh ring).
+function reconcile(snapshot, event = null) {
     const { a, b, mediaConnected } = snapshot;
     const actions = [];
 
@@ -39,11 +41,14 @@ function reconcile(snapshot) {
     }
 
     // ---- 2. Progress ------------------------------------------------------
-    // Ack a client that offered/rang us (CALLING) so it stops re-offering while
-    // we reach the peer. P decides WHEN (here); the leg decides HOW and is
-    // idempotent, so emitting this on every pass while CALLING is safe.
-    if (a.state === LEG_STATES.CALLING) actions.push(intent("a", LEG_INTENTS.ACK, "self"));
-    if (b.state === LEG_STATES.CALLING) actions.push(intent("b", LEG_INTENTS.ACK, "self"));
+    // Ack a *new* ring. A leg only enters CALLING from a client offer, so an
+    // event whose state is CALLING marks exactly one fresh ring -> ack it once.
+    // Later passes (ring/answer/...) carry a different event, so we never re-ack
+    // the same ring, and there is no persistent guard: two rings => two acks.
+    if (event && event.state === LEG_STATES.CALLING) {
+        if (a.state === LEG_STATES.CALLING) actions.push(intent("a", LEG_INTENTS.ACK, "self"));
+        if (b.state === LEG_STATES.CALLING) actions.push(intent("b", LEG_INTENTS.ACK, "self"));
+    }
 
     // One side reached in-call while the peer is still ringing/calling -> they
     // picked up: finalize the peer (send ack / apply answer) and bridge media.

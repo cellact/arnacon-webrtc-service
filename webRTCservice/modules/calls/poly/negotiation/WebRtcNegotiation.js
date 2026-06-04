@@ -176,11 +176,10 @@ class WebRtcNegotiation extends CallNegotiationPort {
     }
 
     // HOW to ack this endpoint's ring (P decides WHEN via the ACK intent).
-    // Idempotent: the caller stops re-offering after one ack, and reconcile may
-    // re-emit ACK on every pass while the leg is CALLING.
+    // No persistent guard: every ring P tells us to ack gets an ack. P already
+    // emits the ACK intent exactly once per ring (gated on the CALLING event),
+    // so two rings => two acks, even when this leg is reused across calls.
     async ackRing() {
-        if (this._ackedRing) return;
-        this._ackedRing = true;
         this.signaling.send({ msgType: "call", action: "ack", ackFor: "ring" });
     }
 

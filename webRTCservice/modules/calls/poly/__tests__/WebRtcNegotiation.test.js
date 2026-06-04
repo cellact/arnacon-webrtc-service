@@ -103,15 +103,13 @@ test("applyOffer (ring) holds the answer AND does not ack: P decides when", asyn
     );
 });
 
-test("ackRing acks the ring once and is idempotent (HOW only; P decides WHEN)", async () => {
+test("ackRing sends a ring ack on every call (no persistent guard; P gates frequency)", async () => {
     const { neg, signaling } = build();
     await neg.applyOffer({ mode: "ring", payload: { sdp: "v=0\r\nm=audio 9 UDP\r\na=mid:0\r\na=sendrecv\r\n" } });
     await neg.ackRing();
-    let acks = signaling.sent.filter((m) => m.msgType === "call" && m.action === "ack" && m.ackFor === "ring");
-    assert.equal(acks.length, 1, "first ackRing sends the ring ack");
     await neg.ackRing();
-    acks = signaling.sent.filter((m) => m.msgType === "call" && m.action === "ack" && m.ackFor === "ring");
-    assert.equal(acks.length, 1, "repeated ackRing is a no-op (idempotent)");
+    const acks = signaling.sent.filter((m) => m.msgType === "call" && m.action === "ack" && m.ackFor === "ring");
+    assert.equal(acks.length, 2, "each ackRing sends a ring ack -- two rings => two acks");
 });
 
 test("answer() flushes the held answer once the peer picks up", async () => {

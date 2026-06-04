@@ -9,6 +9,9 @@ function snap(aState, bState, mediaConnected = false) {
     return { a: { state: aState, kind: "webrtc" }, b: { state: bState, kind: "webrtc" }, mediaConnected };
 }
 
+// A reconcile pass triggered by a leg entering CALLING (a fresh client ring).
+const ringEvent = { state: S.CALLING, cause: { reason: "client-offer" } };
+
 function intents(actions) {
     return actions.filter((x) => x.kind === "intent");
 }
@@ -38,8 +41,8 @@ test("no double disconnect / no throw when both sides tear down", () => {
     assert.equal(intents(actions).length, 0);
 });
 
-test("progress: calling vs connected acks the caller, then rings the connected side", () => {
-    const actions = reconcile(snap(S.CALLING, S.CONNECTED, false));
+test("fresh ring: acks the caller once, then rings the connected side", () => {
+    const actions = reconcile(snap(S.CALLING, S.CONNECTED, false), ringEvent);
     assert.deepEqual(intents(actions), [
         { kind: "intent", leg: "a", intent: I.ACK, from: "self" },
         { kind: "intent", leg: "b", intent: I.RING, from: "a" },
@@ -47,8 +50,13 @@ test("progress: calling vs connected acks the caller, then rings the connected s
     assert.deepEqual(mediaOps(actions), []);
 });
 
+test("no fresh-ring event: do not ack (a later pass must not re-ack the same ring)", () => {
+    const actions = reconcile(snap(S.CALLING, S.CONNECTED, false), { state: S.RINGING });
+    assert.deepEqual(intents(actions), [{ kind: "intent", leg: "b", intent: I.RING, from: "a" }]);
+});
+
 test("ack-on-ring: a calling leg is acked even when the peer is not yet reachable", () => {
-    const actions = reconcile(snap(S.CALLING, S.CONNECTING, false));
+    const actions = reconcile(snap(S.CALLING, S.CONNECTING, false), ringEvent);
     assert.deepEqual(intents(actions), [{ kind: "intent", leg: "a", intent: I.ACK, from: "self" }]);
 });
 
