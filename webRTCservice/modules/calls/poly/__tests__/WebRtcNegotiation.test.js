@@ -64,6 +64,14 @@ test("endCall (initiator) sends an inactive end-call offer and defers", async ()
     assert.deepEqual(result, { deferred: true }, "the leg stays ENDING until the client's end-call answer");
 });
 
+test("endCall completion (peer answered our offer) applies the answer AND sends the call/end signal", async () => {
+    const { neg, signaling, session } = build();
+    await neg.endCall({ mode: "remote", payload: { type: "answer", sdp: "end-ans-sdp" } });
+    assert.equal(session.peerConnection.remoteDescription.type, "answer", "the end-call answer is applied");
+    const endSignal = signaling.sent.find((m) => m.msgType === "call" && m.action === "end");
+    assert.ok(endSignal, "the call-level END signal must be sent so the client's UI actually ends");
+});
+
 test("ackEnd answers the client's end-call offer (audio off) and reports CONNECTED", async () => {
     const { neg, signaling } = build({ answerSdp: "v=0\r\nm=audio 0 UDP\r\na=mid:0\r\na=inactive\r\n" });
     const result = await neg.ackEnd({

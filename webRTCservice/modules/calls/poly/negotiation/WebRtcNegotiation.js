@@ -284,7 +284,14 @@ class WebRtcNegotiation extends CallNegotiationPort {
         const payload = ctx.payload || {};
 
         if (ctx.mode === "remote" && payload.type === "answer") {
-            await pc.setRemoteDescription(new this.p.RTCSessionDescription(payload.sdp, "answer"));
+            // The peer answered the end-call offer WE sent -> the data-only
+            // renegotiation is complete (its audio is released). Now send the
+            // call-level END signal: the reneg only tears down audio; the iOS
+            // client ends the call (CallKit/UI) only on this `call`/`end`.
+            if (payload.sdp) {
+                await pc.setRemoteDescription(new this.p.RTCSessionDescription(payload.sdp, "answer"));
+            }
+            this.signaling.send({ msgType: "call", action: "end" });
             return;
         }
         if (ctx.mode === "remote" && payload.sdp) {
