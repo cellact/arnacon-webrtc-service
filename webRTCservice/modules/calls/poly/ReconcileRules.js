@@ -39,6 +39,12 @@ function reconcile(snapshot) {
     }
 
     // ---- 2. Progress ------------------------------------------------------
+    // Ack a client that offered/rang us (CALLING) so it stops re-offering while
+    // we reach the peer. P decides WHEN (here); the leg decides HOW and is
+    // idempotent, so emitting this on every pass while CALLING is safe.
+    if (a.state === LEG_STATES.CALLING) actions.push(intent("a", LEG_INTENTS.ACK, "self"));
+    if (b.state === LEG_STATES.CALLING) actions.push(intent("b", LEG_INTENTS.ACK, "self"));
+
     // One side reached in-call while the peer is still ringing/calling -> they
     // picked up: finalize the peer (send ack / apply answer) and bridge media.
     const aReaching = b.state === LEG_STATES.RINGING || b.state === LEG_STATES.CALLING;

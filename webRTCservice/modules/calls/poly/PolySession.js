@@ -116,6 +116,7 @@ class PolySession {
         try {
             switch (action.intent) {
                 case LEG_INTENTS.RING: return await leg.ring(ctx);
+                case LEG_INTENTS.ACK: return await leg.ack(ctx);
                 case LEG_INTENTS.ANSWER: return await leg.answer(ctx);
                 case LEG_INTENTS.END: return await leg.endCall(ctx);
                 case LEG_INTENTS.CANCEL: return await leg.cancel(ctx);

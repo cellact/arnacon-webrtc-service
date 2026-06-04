@@ -9,6 +9,7 @@
 const LEG_INTENTS = Object.freeze({
     CONNECT: "connect",
     RING: "ring",
+    ACK: "ack",
     ANSWER: "answer",
     END: "endCall",
     CANCEL: "cancel",
@@ -80,6 +81,11 @@ class NotificationPort {
 class CallNegotiationPort {
     // eslint-disable-next-line no-unused-vars
     async ring(ctx) { notImplemented("CallNegotiationPort", "ring"); }
+
+    // Acknowledge receipt of this endpoint's ring to its client (P decides WHEN;
+    // the transport decides HOW). Optional + idempotent: SIP has no DC ack.
+    // eslint-disable-next-line no-unused-vars
+    async ackRing(ctx) { /* optional */ }
 
     // eslint-disable-next-line no-unused-vars
     async answer(ctx) { notImplemented("CallNegotiationPort", "answer"); }

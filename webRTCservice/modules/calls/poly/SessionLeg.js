@@ -90,6 +90,14 @@ class SessionLeg {
         await this._tx(() => this.negotiation.ring({ leg: this, ...ctx }));
     }
 
+    // Acknowledge this endpoint's ring request to its own client. No state change:
+    // it's a wire-level "I heard you" so the client stops re-offering. P decides
+    // WHEN (reconcile emits it); the transport decides HOW and stays idempotent.
+    async ack(ctx = {}) {
+        assertIntentLegal(this.state, LEG_INTENTS.ACK);
+        await this._tx(() => this.negotiation.ackRing?.({ leg: this, ...ctx }));
+    }
+
     async answer(ctx = {}) {
         assertIntentLegal(this.state, LEG_INTENTS.ANSWER);
         if (this.state === LEG_STATES.IN_CALL) return;

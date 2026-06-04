@@ -38,10 +38,18 @@ test("no double disconnect / no throw when both sides tear down", () => {
     assert.equal(intents(actions).length, 0);
 });
 
-test("progress: calling vs connected rings the connected side, from the caller", () => {
+test("progress: calling vs connected acks the caller, then rings the connected side", () => {
     const actions = reconcile(snap(S.CALLING, S.CONNECTED, false));
-    assert.deepEqual(intents(actions), [{ kind: "intent", leg: "b", intent: I.RING, from: "a" }]);
+    assert.deepEqual(intents(actions), [
+        { kind: "intent", leg: "a", intent: I.ACK, from: "self" },
+        { kind: "intent", leg: "b", intent: I.RING, from: "a" },
+    ]);
     assert.deepEqual(mediaOps(actions), []);
+});
+
+test("ack-on-ring: a calling leg is acked even when the peer is not yet reachable", () => {
+    const actions = reconcile(snap(S.CALLING, S.CONNECTING, false));
+    assert.deepEqual(intents(actions), [{ kind: "intent", leg: "a", intent: I.ACK, from: "self" }]);
 });
 
 test("progress: ringing vs ended (reusable) rings the reusable side", () => {

@@ -169,7 +169,19 @@ class WebRtcNegotiation extends CallNegotiationPort {
             });
             return;
         }
+        // Hold the answer SDP until PolySession fires answer() (peer picked up).
+        // We do NOT ack here: P decides WHEN to ack (reconcile emits the ACK
+        // intent); this adapter only knows HOW (ackRing below).
         this._pendingAnswerSdp = answerSdp;
+    }
+
+    // HOW to ack this endpoint's ring (P decides WHEN via the ACK intent).
+    // Idempotent: the caller stops re-offering after one ack, and reconcile may
+    // re-emit ACK on every pass while the leg is CALLING.
+    async ackRing() {
+        if (this._ackedRing) return;
+        this._ackedRing = true;
+        this.signaling.send({ msgType: "call", action: "ack", ackFor: "ring" });
     }
 
     // This endpoint's client answered our ring: apply its answer. Ported from

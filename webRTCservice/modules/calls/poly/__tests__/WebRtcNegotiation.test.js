@@ -88,7 +88,7 @@ test("ice-restart applyOffer answers without re-adding the local audio track", a
     assert.ok(signaling.lastOfType("signaling", "answer"), "expected an answer back for the restart");
 });
 
-test("ring offer holds the answer until the peer picks up, then flushes it on answer()", async () => {
+test("applyOffer (ring) holds the answer AND does not ack: P decides when", async () => {
     const { neg, signaling } = build({ answerSdp: "v=0\r\nm=audio 9 UDP\r\na=mid:0\r\na=sendrecv\r\n" });
     await neg.applyOffer({ mode: "ring", payload: { sdp: "v=0\r\nm=audio 9 UDP\r\na=mid:0\r\na=sendrecv\r\n" } });
     assert.equal(
@@ -96,6 +96,27 @@ test("ring offer holds the answer until the peer picks up, then flushes it on an
         undefined,
         "answer must NOT be sent while the call is only ringing",
     );
+    assert.equal(
+        signaling.lastOfType("call", "ack"),
+        undefined,
+        "applyOffer must NOT ack on its own -- PolySession decides when via the ACK intent",
+    );
+});
+
+test("ackRing acks the ring once and is idempotent (HOW only; P decides WHEN)", async () => {
+    const { neg, signaling } = build();
+    await neg.applyOffer({ mode: "ring", payload: { sdp: "v=0\r\nm=audio 9 UDP\r\na=mid:0\r\na=sendrecv\r\n" } });
+    await neg.ackRing();
+    let acks = signaling.sent.filter((m) => m.msgType === "call" && m.action === "ack" && m.ackFor === "ring");
+    assert.equal(acks.length, 1, "first ackRing sends the ring ack");
+    await neg.ackRing();
+    acks = signaling.sent.filter((m) => m.msgType === "call" && m.action === "ack" && m.ackFor === "ring");
+    assert.equal(acks.length, 1, "repeated ackRing is a no-op (idempotent)");
+});
+
+test("answer() flushes the held answer once the peer picks up", async () => {
+    const { neg, signaling } = build({ answerSdp: "v=0\r\nm=audio 9 UDP\r\na=mid:0\r\na=sendrecv\r\n" });
+    await neg.applyOffer({ mode: "ring", payload: { sdp: "v=0\r\nm=audio 9 UDP\r\na=mid:0\r\na=sendrecv\r\n" } });
     await neg.answer();
     assert.ok(signaling.lastOfType("signaling", "answer"), "answer should be flushed once the peer picks up");
     assert.ok(signaling.lastOfType("call", "ack"));
