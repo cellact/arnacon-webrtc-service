@@ -219,6 +219,16 @@ function createBlockchainApi({
         return /^0x[0-9a-fA-F]{40}$/.test(str);
     }
 
+    // Some clients (Android SDK envelope signing) double-prefix the hex sig as
+    // "0x0x...". Collapse repeated leading 0x so verifyMessage can parse it.
+    function normalizeSignature(sig) {
+        let s = String(sig || "").trim();
+        while (/^0x0x/i.test(s)) {
+            s = s.slice(2);
+        }
+        return s;
+    }
+
     function normalizeEnsDomain(ens) {
         if (!providerPolicy || typeof providerPolicy.normalizeEnsDomain !== "function") {
             return String(ens || "");
@@ -324,7 +334,7 @@ function createBlockchainApi({
         let recoveredSigner;
         try {
             recoveredSigner = ethers.utils.getAddress(
-                ethers.utils.verifyMessage(String(xdata), String(xsign)),
+                ethers.utils.verifyMessage(String(xdata), normalizeSignature(xsign)),
             );
         } catch (err) {
             throw createHttpError(401, `Invalid xsign for xdata: ${err.message}`);
@@ -346,7 +356,7 @@ function createBlockchainApi({
         let recoveredSigner;
         try {
             recoveredSigner = ethers.utils.getAddress(
-                ethers.utils.verifyMessage(String(xdata), String(xsign)),
+                ethers.utils.verifyMessage(String(xdata), normalizeSignature(xsign)),
             );
         } catch (err) {
             throw createHttpError(401, `Invalid xsign for xdata: ${err.message}`);
@@ -403,7 +413,7 @@ function createBlockchainApi({
         let recoveredSigner;
         try {
             recoveredSigner = ethers.utils.getAddress(
-                ethers.utils.verifyMessage(String(xdata), String(xsign)),
+                ethers.utils.verifyMessage(String(xdata), normalizeSignature(xsign)),
             );
         } catch (err) {
             throw createHttpError(401, `Invalid xsign for xdata: ${err.message}`);
