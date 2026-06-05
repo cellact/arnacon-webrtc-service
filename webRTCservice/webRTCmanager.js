@@ -897,6 +897,22 @@ function polyWebrtcRef(poly, session, channelRole) {
     return "a";
 }
 
+// Strict: does this poly actually own `session` (live transport), no fallback?
+// Used to tell a brand-new ring on a fresh transport from an in-call message on
+// the poly's own transport, and to stop a stale transport's close from tearing
+// down a freshly rebuilt poly.
+function polyOwnsSession(poly, session, channelRole) {
+    if (!poly || !session) return false;
+    const isCallee = channelRole === "callee-webrtc";
+    for (const ref of ["a", "b"]) {
+        const leg = poly.legs[ref];
+        if (!leg || leg.kind !== "webrtc") continue;
+        const ns = leg.negotiation?.session;
+        if (isCallee ? ns === session.outboundWebrtc : ns === session) return true;
+    }
+    return false;
+}
+
 function polySipRef(poly) {
     if (poly.legs.a.kind === "sip") return "a";
     if (poly.legs.b.kind === "sip") return "b";
@@ -998,6 +1014,10 @@ function onDataChannelOpen(sessionId, meta = {}) {
     // The callee's outbound DC reuses the caller's sessionId, so the channelRole
     // (set by WebRtcOutboundLegFactory) is what tells us which leg just opened.
     const channelRole = meta.channelRole || "caller-webrtc";
+    // Only mark transport-open if this poly owns the channel. A new transport whose
+    // DC opens before its RING resolves to a stale poly by identity; the ring will
+    // rebuild that poly fresh, so touching its frozen legs here would be wrong.
+    if (!polyOwnsSession(poly, session, channelRole)) return;
     const ref = polyWebrtcRef(poly, session, channelRole);
     poly.onIngress(ref, makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN)).catch((err) => {
         console.error(`[${sessionId}] poly transport-open (${channelRole}) failed: ${err.message}`);
@@ -1031,18 +1051,33 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
         return;
     }
 
-    // First (active) signaling offer with no existing PolySession == the RING.
-    if (
+    // An active (non-inactive) signaling offer is a RING. It is a brand-new call
+    // when no poly owns this transport: either there is no poly for the pair, or a
+    // stale poly lingers from a prior call (left CONNECTED, bound to a dead
+    // transport). In the stale case we destroy it so the pair is rebuilt from
+    // scratch -- fresh SessionLegs at DISCONNECTED with correct roles -- instead of
+    // reusing frozen roles + dead data-channel refs. We never reset legs in place.
+    const isActiveOffer =
         msg.msgType === "signaling" &&
         msg.payload?.type === "offer" &&
-        !isInactiveOffer(msg.payload.sdp) &&
-        !polyForSession(session)
-    ) {
-        onDcRing(sessionId, msg.payload).catch((err) => {
-            console.error(`[${sessionId}] ring routing failed: ${err.message}`);
-            sendDataChannelMessage(sessionId, { msgType: "call", action: "end", reason: "ring-failed" });
-        });
-        return;
+        !isInactiveOffer(msg.payload.sdp);
+    if (isActiveOffer) {
+        const existing = polyForSession(session);
+        if (!existing || !polyOwnsSession(existing, session, channelRole)) {
+            (async () => {
+                if (existing) {
+                    await polyRegistry.destroy(
+                        polyRegistry.keyForPair(existing.legs.a.endpoint, existing.legs.b.endpoint),
+                        "new-ring-reset",
+                    );
+                }
+                await onDcRing(sessionId, msg.payload);
+            })().catch((err) => {
+                console.error(`[${sessionId}] ring routing failed: ${err.message}`);
+                sendDataChannelMessage(sessionId, { msgType: "call", action: "end", reason: "ring-failed" });
+            });
+            return;
+        }
     }
 
     const poly = polyForSession(session);
@@ -1132,7 +1167,11 @@ function isSessionInCall(session) {
 async function onTransportClosed(sessionId, event = {}) {
     const session = sessions.get(sessionId);
     const poly = polyForSession(session);
-    if (poly) {
+    // Only tear the poly down if it actually owns this closing transport. A stale
+    // PC closing after a new-ring rebuild resolves (by identity) to the freshly
+    // built poly for the same pair -- which we must NOT kill. Just clean its
+    // SessionStore entry in that case.
+    if (poly && polyOwnsSession(poly, session, "caller-webrtc")) {
         const ref = polyWebrtcRef(poly, session, "caller-webrtc");
         try {
             await poly.onIngress(ref, makeLegEvent(LEG_EVENTS.TRANSPORT_CLOSE));
