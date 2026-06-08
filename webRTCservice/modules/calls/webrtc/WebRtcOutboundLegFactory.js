@@ -158,7 +158,13 @@ class WebRtcOutboundLegFactory {
             return cand.includes("typ srflx") || cand.includes("typ relay");
         });
         const candidatesToEmbed = srflxAndRelay.length > 0 ? srflxAndRelay : gatheredCandidates;
-        const relayCandidates = this.getRelayCandidates(gatheredCandidates);
+        // Send the callee the SAME srflx+relay set the caller gets in our answer --
+        // NOT relay-only. A relay-only callee strips embedded-SDP candidates and only
+        // reads this `candidates` array, so a relay-only list leaves it with just our
+        // TURN relay (134.x). Its sole pair is then callee-relay <-> server-relay, both
+        // on the TURN's own IP, which coturn refuses to hairpin (loopback peer) -> ICE
+        // fails. Our public srflx (the AWS elastic IP) lets it pair callee-relay <->
+        // server-srflx, the exact path the caller leg already connects on.
         const offerSdp = this.embedCandidatesInSdp(baseOfferSdp, candidatesToEmbed);
         const sourceOffer = callerSession.lastRingOfferPayload || null;
 
@@ -167,7 +173,7 @@ class WebRtcOutboundLegFactory {
             to: calleeEns,
             sessionId: signalingSessionId,
             sdp: offerSdp,
-            candidates: relayCandidates,
+            candidates: candidatesToEmbed,
             callNonce: sourceOffer?.callNonce || callerSession.callNonce || null,
             isCall: true,
             extra: {

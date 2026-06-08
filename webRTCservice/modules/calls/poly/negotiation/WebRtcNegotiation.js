@@ -134,7 +134,6 @@ class WebRtcNegotiation extends CallNegotiationPort {
         const gathered = this.p.formatIceCandidates(session).filter((c) => !String(c.candidate || "").toLowerCase().includes(" tcp "));
         const srflxRelay = gathered.filter((c) => c.candidate.includes("typ srflx") || c.candidate.includes("typ relay"));
         const toEmbed = srflxRelay.length > 0 ? srflxRelay : gathered;
-        const relayCandidates = this.p.getRelayCandidates(gathered);
         const offerSdp = this.p.embedCandidatesInSdp(offer.sdp, toEmbed);
         this.p.logSdp?.(this.id, "RING OFFER SDP", offerSdp);
         const fromLabel = identityLabel(session.callerEns);
@@ -150,7 +149,10 @@ class WebRtcNegotiation extends CallNegotiationPort {
                 // to their own session id.
                 sessionId: session.signalingSessionId || session.sessionId,
                 sdp: offerSdp,
-                candidates: relayCandidates,
+                // srflx+relay, not relay-only: a relay-only client can only reach us
+                // via our public srflx (relay<->relay on the same TURN is refused as a
+                // loopback peer). Same reasoning as the outbound invite candidates.
+                candidates: toEmbed,
                 label: fromLabel,
             },
         });
