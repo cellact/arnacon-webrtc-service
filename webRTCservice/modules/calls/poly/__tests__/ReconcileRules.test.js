@@ -27,6 +27,12 @@ test("teardown beats progress: inCall vs failed (dropped) ends the inCall side, 
     assert.deepEqual(ends[0], { kind: "intent", leg: "a", intent: I.END, from: "b" });
 });
 
+test("calling vs failed (e.g. sip ring rejected) ends the calling caller", () => {
+    const actions = reconcile(snap(S.CALLING, S.FAILED, false));
+    assert.deepEqual(mediaOps(actions), []);
+    assert.deepEqual(intents(actions), [{ kind: "intent", leg: "a", intent: I.END, from: "b" }]);
+});
+
 test("inCall vs disconnected (peer gone, e.g. sip BYE) ends the inCall side, stops media", () => {
     // You cannot be in a call by yourself: a disconnected peer ends the inCall leg.
     const actions = reconcile(snap(S.IN_CALL, S.DISCONNECTED, true));

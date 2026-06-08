@@ -182,6 +182,40 @@ test("webrtc<->sip: remote BYE on sip leg ends the webrtc caller", async () => {
     assert.equal(a.leg.state, S.CONNECTED);
 });
 
+test("sip ring failure ends the webrtc caller, then the sip leg recovers for reuse", async () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeSipLeg("+15551234");
+    const { poly, media } = buildPoly(a, b);
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+
+    // The SIP INVITE is rejected before it establishes -> ring() rejects.
+    const realRing = b.negotiation.ring.bind(b.negotiation);
+    b.negotiation.ring = async () => { throw new Error("SIP call terminated before established"); };
+
+    // Caller offers -> P rings the sip leg, which fails -> sip FAILED -> P ends the
+    // caller via an end-call reneg (no media ever bridged).
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o" }));
+    assert.equal(b.leg.state, S.FAILED, "sip leg failed its ring");
+    assert.equal(a.leg.state, S.ENDING, "caller is ended on the failed ring");
+    assert.equal(a.negotiation.named("endCall").length, 1);
+    assert.equal(media.connects.length, 0, "no media bridged for a failed ring");
+
+    // Caller's client answers the end-call offer -> caller back to connected, and
+    // the stuck FAILED sip leg recovers to its idle (DISCONNECTED) so it is reusable.
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "end-ans" }));
+    assert.equal(a.leg.state, S.CONNECTED);
+    assert.equal(b.leg.state, S.DISCONNECTED, "failed sip leg recovered to idle for reuse");
+
+    // Reuse: sip is reachable again -> a fresh offer connects + rings the sip leg
+    // (a blocking INVITE that answers -> both in-call, media bridged).
+    b.negotiation.ring = realRing;
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o2" }));
+    assert.equal(a.leg.state, S.IN_CALL);
+    assert.equal(b.leg.state, S.IN_CALL, "sip leg rung again on reuse");
+    assert.equal(media.connects.length, 1, "media bridged on the reused call");
+});
+
 test("reject before answer: caller is ended, no media ever bridged", async () => {
     const a = makeWebRtcLeg("alice");
     const b = makeWebRtcLeg("bob");

@@ -7,8 +7,21 @@
 
 const { reconcile } = require("./ReconcileRules");
 const { LEG_INTENTS } = require("./ports");
+const { LEG_STATES, isActiveCall } = require("./states");
 
 const MAX_RECONCILE_PASSES = 50;
+
+// Intents that drive a call toward the peer. If one of these throws (e.g. the SIP
+// INVITE is rejected during `ring`), the leg can no longer carry the call -> mark
+// it FAILED so reconcile ends the caller (end-call reneg). Teardown intents are
+// excluded: failing a teardown into more teardown would loop.
+const FAIL_ON_ERROR_INTENTS = new Set([
+    LEG_INTENTS.RING,
+    LEG_INTENTS.CONNECT,
+    LEG_INTENTS.ANSWER,
+    LEG_INTENTS.ACK_CONNECTED,
+    LEG_INTENTS.ACK_RING,
+]);
 
 class PolySession {
     constructor({ id, legA, legB, mediaController, rules = reconcile, teardownHooks = [], logger = console } = {}) {
@@ -95,6 +108,7 @@ class PolySession {
                 for (const action of actions) {
                     await this._execute(action);
                 }
+                this._recoverFailedLegs();
             }
         } finally {
             this._running = false;
@@ -129,8 +143,31 @@ class PolySession {
             }
         } catch (err) {
             this.logger.error(`[${this.id}] intent ${action.intent} on leg ${leg.id} failed: ${err.message}`);
+            // A reaching intent failed -> the leg cannot carry the call. Fail it so
+            // reconcile drives the peer into an end-call reneg (a FAILED leg is a
+            // teardown trigger). Idempotent: no-op if already FAILED/torn down.
+            if (FAIL_ON_ERROR_INTENTS.has(action.intent) && leg.state !== LEG_STATES.FAILED) {
+                leg.setState(LEG_STATES.FAILED, { reason: `intent-failed:${action.intent}`, from: "self" });
+            }
         }
         return undefined;
+    }
+
+    // Once the call is over, a transportless leg left FAILED (e.g. a SIP INVITE that
+    // was rejected during ring) is stuck: FAILED is not rungable, so the next call
+    // would stall. Reset it to its idle (DISCONNECTED) so reconcile can re-drive it
+    // (the SIP leg rebuilds its INVITE per call). Scoped to SIP: a webrtc leg's
+    // FAILED means its actual PC died, so it must NOT be silently revived here.
+    // Only when the peer is no longer in an active call, so we never wipe a leg
+    // whose end-call reneg is still in flight.
+    _recoverFailedLegs() {
+        for (const ref of ["a", "b"]) {
+            const leg = this.legs[ref];
+            const peer = this.legs[ref === "a" ? "b" : "a"];
+            if (leg.kind === "sip" && leg.state === LEG_STATES.FAILED && !isActiveCall(peer.state)) {
+                leg.setState(LEG_STATES.DISCONNECTED, { reason: "failed-leg-recovery", from: "self" });
+            }
+        }
     }
 
     async _executeMedia(action) {

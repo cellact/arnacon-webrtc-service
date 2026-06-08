@@ -1166,6 +1166,15 @@ function isSessionInCall(session) {
 // Terminal PC state -> tear the pair down and clean up.
 async function onTransportClosed(sessionId, event = {}) {
     const session = sessions.get(sessionId);
+    // A 2nd call reuses the same sessionId on a fresh transport. The old call's PC
+    // can fire `closed` after the new session is already bound under this id. If the
+    // closing transport is no longer the session's current caller/callee PC, it is
+    // superseded -> ignore it entirely so we don't tear down the fresh session.
+    if (session && event.pc &&
+        event.pc !== session.peerConnection &&
+        event.pc !== session.outboundWebrtc?.peerConnection) {
+        return;
+    }
     const poly = polyForSession(session);
     // Only tear the poly down if it actually owns this closing transport. A stale
     // PC closing after a new-ring rebuild resolves (by identity) to the freshly

@@ -39,14 +39,14 @@ function createPeerConnectionFactory({
             s.connectionState = state;
             session.connectionState = state;
             if (shouldRequestDestroy && (state === "failed" || state === "closed")) {
-                onSessionDestroyRequested(sessionId, { source: "webrtc", reason: `peer-connection-${state}`, notify: true });
+                onSessionDestroyRequested(sessionId, { source: "webrtc", reason: `peer-connection-${state}`, notify: true, pc });
             } else if (state === "disconnected") {
                 if (!s.disconnectTimer) {
                     s.disconnectTimer = setTimeout(() => {
                         s.disconnectTimer = null;
                         const current = sessions.get(sessionId);
                         if (shouldRequestDestroy && current && session.peerConnection === pc && session.connectionState === "disconnected") {
-                            onSessionDestroyRequested(sessionId, { source: "webrtc", reason: "peer-connection-disconnected", notify: true });
+                            onSessionDestroyRequested(sessionId, { source: "webrtc", reason: "peer-connection-disconnected", notify: true, pc });
                         }
                     }, 5000);
                 }
