@@ -47,13 +47,14 @@ function applyPolyfills({ fixSdpForWerift = null, logger = console } = {}) {
         payloadType: 0,
     });
     const defaultAudioCodecs = [PCMA_CODEC, PCMU_CODEC, OPUS_CODEC];
-    // Pin werift's ICE/media UDP ports to a range the host firewall actually opens.
-    // werift otherwise binds anywhere in the OS ephemeral range (~32768-60999); any port
-    // above the firewall's open max is silently dropped, so the relayed ICE checks never
-    // arrive and the connection intermittently fails. Keep the range fully within the open
-    // firewall range and open exactly the same range in the security group.
-    const ICE_PORT_MIN = Number(process.env.WEBRTC_ICE_PORT_MIN) || 49152;
-    const ICE_PORT_MAX = Number(process.env.WEBRTC_ICE_PORT_MAX) || 60000;
+    // Pin werift's ICE/media UDP ports to the range the host firewall / AWS security
+    // group actually opens inbound (20000-40000 here). werift otherwise binds anywhere
+    // in the OS ephemeral range (~32768-60999); any port outside the open band is
+    // silently dropped, so the relayed ICE checks never arrive and srflx connectivity
+    // fails. MUST stay fully within the SG's open inbound UDP range. If you change the
+    // SG, change this (or set WEBRTC_ICE_PORT_MIN/MAX) to match.
+    const ICE_PORT_MIN = Number(process.env.WEBRTC_ICE_PORT_MIN) || 20000;
+    const ICE_PORT_MAX = Number(process.env.WEBRTC_ICE_PORT_MAX) || 40000;
     const WrappedRTCPeerConnection = function (config = {}) {
         if (!config.icePortRange) config.icePortRange = [ICE_PORT_MIN, ICE_PORT_MAX];
         if (!config.codecs) config.codecs = {};
