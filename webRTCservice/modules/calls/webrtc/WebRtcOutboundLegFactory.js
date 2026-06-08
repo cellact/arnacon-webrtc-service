@@ -79,7 +79,13 @@ class WebRtcOutboundLegFactory {
         const callerEns = callerSession.callerEns;
         const callerNumberLabel = getCallerNumberLabel(callerEns);
         const calleeNumberLabel = getCallerNumberLabel(calleeEns);
-        const signalingSessionId = `${callerNumberLabel}|${calleeNumberLabel}`;
+        // Advertise the session under the SAME order-independent key the server's
+        // PolySessionRegistry (pairKey) and the clients (stableSessionId) use: a
+        // sorted "labelA|labelB". Using caller|callee here made the wire sessionId
+        // direction-dependent, so when the caller's label sorted AFTER the callee's
+        // the client couldn't match the offer to its existing (sorted-keyed) session
+        // -> failed reuse + duplicate sessions. Sorting keeps it direction-agnostic.
+        const signalingSessionId = [callerNumberLabel, calleeNumberLabel].sort().join("|");
         const walletKey = String(calleeWallet || "").toLowerCase();
         if (!calleeWallet || !calleeEns) {
             throw new Error("WebRTC destination missing callee wallet/ENS");
