@@ -359,8 +359,22 @@ const messagingFlowApi = createMessagingFlow({
     createHttpError: (...args) => createHttpError(...args),
 });
 
-// ─── ICE Servers (disabled) ─────────────────────────────────
-const ICE_SERVERS = [];
+// ─── ICE Servers ────────────────────────────────────────────
+// Give werift the SAME TURN the mobile clients use so the server can gather its
+// own `relay` candidate. Without this the server only offers host (private) +
+// srflx (public IP:port), and a relay-only client can only connect via the
+// srflx -- which silently dies whenever that UDP port isn't open inbound on the
+// cloud firewall. With a relay candidate the pair becomes client-relay <->
+// server-relay (both reachable outbound through TURN), independent of inbound SG.
+// Overridable via env for ops; defaults to the cellact coturn (test/test).
+const TURN_URL = process.env.WEBRTC_TURN_URL || "turn:t1.cellact.nl:3478";
+const TURN_USERNAME = process.env.WEBRTC_TURN_USERNAME || "test";
+const TURN_CREDENTIAL = process.env.WEBRTC_TURN_CREDENTIAL || "test";
+const STUN_URL = process.env.WEBRTC_STUN_URL || "stun:t1.cellact.nl:3478";
+const ICE_SERVERS = [
+    { urls: STUN_URL },
+    { urls: TURN_URL, username: TURN_USERNAME, credential: TURN_CREDENTIAL },
+];
 
 // ─── Modular APIs (DI wiring) ───────────────────────────────
 const blockchainApi = createBlockchainApi({
