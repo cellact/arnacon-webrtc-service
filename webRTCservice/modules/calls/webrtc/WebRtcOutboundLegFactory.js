@@ -78,14 +78,16 @@ class WebRtcOutboundLegFactory {
         const calleeEns = destination.ensName || calleeWallet;
         const callerEns = callerSession.callerEns;
         const callerNumberLabel = getCallerNumberLabel(callerEns);
-        const calleeNumberLabel = getCallerNumberLabel(calleeEns);
-        // Advertise the session under the SAME order-independent key the server's
-        // PolySessionRegistry (pairKey) and the clients (stableSessionId) use: a
-        // sorted "labelA|labelB". Using caller|callee here made the wire sessionId
-        // direction-dependent, so when the caller's label sorted AFTER the callee's
-        // the client couldn't match the offer to its existing (sorted-keyed) session
-        // -> failed reuse + duplicate sessions. Sorting keeps it direction-agnostic.
-        const signalingSessionId = [callerNumberLabel, calleeNumberLabel].sort().join("|");
+        // Build the wire sessionId in the RECIPIENT's (callee's) own convention:
+        // every client keys a session as sort(ownFullEns, peerBareNumber) -- it
+        // stores ITSELF as the full ENS and the peer as the bare number. So the
+        // callee must receive sort(calleeEns, callerNumberLabel), NOT a bare|bare
+        // key. Otherwise the incoming session is stored as "488|490" while the
+        // callee's own next outgoing call computes "488.ens|490" -> keys never match
+        // -> the parked session isn't reused and a fresh PC is built every time.
+        // Server-internal matching is unaffected: PolySessionRegistry.pairKey strips
+        // the ENS to bare on both sides regardless of the wire string.
+        const signalingSessionId = [calleeEns, callerNumberLabel].sort().join("|");
         const walletKey = String(calleeWallet || "").toLowerCase();
         if (!calleeWallet || !calleeEns) {
             throw new Error("WebRTC destination missing callee wallet/ENS");
