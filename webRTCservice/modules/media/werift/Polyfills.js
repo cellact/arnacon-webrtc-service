@@ -47,7 +47,15 @@ function applyPolyfills({ fixSdpForWerift = null, logger = console } = {}) {
         payloadType: 0,
     });
     const defaultAudioCodecs = [PCMA_CODEC, PCMU_CODEC, OPUS_CODEC];
+    // Pin werift's ICE/media UDP ports to a range the host firewall actually opens.
+    // werift otherwise binds anywhere in the OS ephemeral range (~32768-60999); any port
+    // above the firewall's open max is silently dropped, so the relayed ICE checks never
+    // arrive and the connection intermittently fails. Keep the range fully within the open
+    // firewall range and open exactly the same range in the security group.
+    const ICE_PORT_MIN = Number(process.env.WEBRTC_ICE_PORT_MIN) || 49152;
+    const ICE_PORT_MAX = Number(process.env.WEBRTC_ICE_PORT_MAX) || 60000;
     const WrappedRTCPeerConnection = function (config = {}) {
+        if (!config.icePortRange) config.icePortRange = [ICE_PORT_MIN, ICE_PORT_MAX];
         if (!config.codecs) config.codecs = {};
         if (!config.codecs.audio) {
             config.codecs.audio = defaultAudioCodecs;
