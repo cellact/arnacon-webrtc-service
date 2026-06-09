@@ -43,10 +43,20 @@ function createPolyCore(deps = {}) {
 
     const mediaController = new MediaController({ mediaGraphFactory, logger });
 
-    const webRtcNegotiationFactory = ({ id, endpoint, session, role = "caller", destination = null, callerSessionId = null }) => {
-        const inviteCallee = role === "callee" && typeof outboundInvite === "function"
-            ? async ({ destination: d } = {}) => outboundInvite({ callerSessionId, destination: d || destination })
-            : null;
+    const webRtcNegotiationFactory = ({ id, endpoint, session, role = "caller", destination = null, callerSessionId = null, adoptSession = false }) => {
+        let inviteCallee = null;
+        if (role === "callee") {
+            inviteCallee = adoptSession
+                // Inbound (sip->secnum): the FCM session offer was already sent
+                // out-of-band by the inbound flow. connect() must NOT re-invite --
+                // just adopt the existing PC1 session and stay deferred (CONNECTING)
+                // until its data channel opens, so the client's session answer is
+                // applied as a session answer, not a premature pickup.
+                ? async () => session
+                : (typeof outboundInvite === "function"
+                    ? async ({ destination: d } = {}) => outboundInvite({ callerSessionId, destination: d || destination })
+                    : null);
+        }
         return new WebRtcNegotiation({
             id,
             endpoint,

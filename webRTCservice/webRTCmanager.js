@@ -737,10 +737,15 @@ async function handleInboundCallRequest(data, serviceContext = null) {
         const session = sessions.get(result.sessionId);
         if (session) {
             // sip->secnum: legA = SIP gateway (PSTN dialing in), legB = secnum
-            // webrtc callee. The FCM invite is already out, so seed states directly:
-            // sip CALLING (caller side), webrtc RINGING (waiting for pickup). When the
-            // callee answers (HTTP), legB -> IN_CALL and reconcile answers the sip leg
-            // (openInbound) + bridges media.
+            // webrtc callee. P seeds the *real* starting condition and lets reconcile
+            // drive -- it never hand-sets a leg state. The PSTN INVITE is delivered as
+            // the sip caller's OFFER ingress (-> CALLING); the webrtc callee is a
+            // deferred callee leg that ADOPTS the already-sent FCM session offer
+            // (adoptSession) so reconcile runs: connect (adopt -> stay CONNECTING) ->
+            // the client's session answer lands while CONNECTING (applySessionAnswer,
+            // NOT a pickup) -> DC opens -> CONNECTED -> ring (audio offer) -> the
+            // human pickup is a separate answer -> IN_CALL -> ANSWER the sip leg
+            // (openInbound) + bridge. This mirrors the proven secnum<->secnum callee.
             const calleeEns = result.ensName || session.toIdentity;
             // phoneNumber = the callee's own number we REGISTER as on Kamailio to
             // pull back the suspended SBC INVITE (openInbound). It is NOT the leg's
@@ -754,11 +759,19 @@ async function handleInboundCallRequest(data, serviceContext = null) {
             try {
                 const { poly } = polyRegistry.resolve({
                     a: { endpoint: callerNumber, kind: "sip", role: "inbound", phoneNumber, session },
-                    b: { endpoint: calleeEns, kind: "webrtc", session },
+                    b: {
+                        endpoint: calleeEns,
+                        kind: "webrtc",
+                        role: "callee",
+                        session, // PC1 (already created + FCM-invited by the inbound flow)
+                        adoptSession: true, // connect() adopts the pre-sent invite, stays deferred
+                        destination: { ensName: calleeEns },
+                    },
                     target: "a",
                 });
-                poly.legs.a.setState(LEG_STATES.CALLING, { reason: "pstn-inbound", from: "self" });
-                poly.legs.b.setState(LEG_STATES.RINGING, { reason: "fcm-invite-sent", from: "a" });
+                // Seed via ingress only: the PSTN INVITE is the sip caller's offer.
+                // Reconcile takes it from here (connect -> ring -> answer + bridge).
+                await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER));
             } catch (err) {
                 console.error(`[${result.sessionId}] inbound poly seed failed: ${err.message}`);
             }

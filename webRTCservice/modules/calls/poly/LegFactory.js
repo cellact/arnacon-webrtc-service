@@ -14,7 +14,7 @@ class LegFactory {
         this.logger = logger;
     }
 
-    createWebRtc({ id, endpoint, session, transport, role = "caller", destination = null, callerSessionId = null } = {}) {
+    createWebRtc({ id, endpoint, session, transport, role = "caller", destination = null, callerSessionId = null, adoptSession = false } = {}) {
         const legId = id || endpoint;
         const negotiation = this.webRtcNegotiationFactory({
             id: legId,
@@ -24,6 +24,7 @@ class LegFactory {
             role,
             destination,
             callerSessionId,
+            adoptSession,
             logger: this.logger,
         });
         return new WebRtcLeg({ id: legId, endpoint, negotiation, logger: this.logger });
