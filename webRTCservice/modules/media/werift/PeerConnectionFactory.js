@@ -92,15 +92,20 @@ function createPeerConnectionFactory({
             }
             // Never tear down off ICE transients before the call is up.
             if (!s.everConnected) return;
-            if (shouldRequestDestroy && (state === "failed" || state === "closed")) {
-                onSessionDestroyRequested(sessionId, { source: "webrtc-ice", reason: `ice-${state}`, notify: true, pc });
+            // We always report the terminal/lost transport; `destroyOnTerminalState`
+            // tells the handler WHAT to do. A primary PC (caller) destroys the
+            // session; a non-destroy PC (the callee leg's PC-callee) must instead
+            // just mark its leg's transport closed so the next call re-invites it
+            // (notification/VoIP push) rather than ringing a dead data channel.
+            if (state === "failed" || state === "closed") {
+                onSessionDestroyRequested(sessionId, { source: "webrtc-ice", reason: `ice-${state}`, notify: true, pc, destroyOnTerminalState: shouldRequestDestroy });
             } else if (state === "disconnected") {
                 if (!s.iceDisconnectTimer) {
                     s.iceDisconnectTimer = setTimeout(() => {
                         s.iceDisconnectTimer = null;
                         const current = sessions.get(sessionId);
-                        if (shouldRequestDestroy && current && session.peerConnection === pc && session.iceConnectionState === "disconnected") {
-                            onSessionDestroyRequested(sessionId, { source: "webrtc-ice", reason: "ice-disconnected", notify: true, pc });
+                        if (current && session.peerConnection === pc && session.iceConnectionState === "disconnected") {
+                            onSessionDestroyRequested(sessionId, { source: "webrtc-ice", reason: "ice-disconnected", notify: true, pc, destroyOnTerminalState: shouldRequestDestroy });
                         }
                     }, 5000);
                 }

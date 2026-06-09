@@ -1211,6 +1211,24 @@ async function onTransportClosed(sessionId, event = {}) {
         event.pc !== session.outboundWebrtc?.peerConnection) {
         return;
     }
+    // A callee leg's PC (created destroyOnTerminalState:false) that drops while the
+    // session lives must NOT destroy the session -- it only means that endpoint's
+    // transport is gone. Mark the callee leg's transport closed so it settles to
+    // DISCONNECTED; reconcile then re-invites (notifies/VoIP) it on the next call
+    // instead of ringing a dead data channel. Mid-call, the callee leg -> FAILED
+    // also ends the caller via reconcile, so the drop still reaches the peer.
+    if (event.destroyOnTerminalState === false) {
+        const calleePoly = polyForSession(session);
+        if (calleePoly && polyOwnsSession(calleePoly, session, "callee-webrtc")) {
+            const ref = polyWebrtcRef(calleePoly, session, "callee-webrtc");
+            try {
+                await calleePoly.onIngress(ref, makeLegEvent(LEG_EVENTS.TRANSPORT_CLOSE));
+            } catch (err) {
+                console.error(`[${sessionId}] poly callee transport-close failed: ${err.message}`);
+            }
+        }
+        return;
+    }
     const poly = polyForSession(session);
     // Only tear the poly down if it actually owns this closing transport. A stale
     // PC closing after a new-ring rebuild resolves (by identity) to the freshly
