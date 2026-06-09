@@ -742,10 +742,18 @@ async function handleInboundCallRequest(data, serviceContext = null) {
             // callee answers (HTTP), legB -> IN_CALL and reconcile answers the sip leg
             // (openInbound) + bridges media.
             const calleeEns = result.ensName || session.toIdentity;
+            // phoneNumber = the callee's own number we REGISTER as on Kamailio to
+            // pull back the suspended SBC INVITE (openInbound). It is NOT the leg's
+            // identity: the SIP leg represents the PSTN caller, so its endpoint must
+            // be the gateway caller number. Using phoneNumber here would make both
+            // legs normalize to the callee -> degenerate pair key (callee|callee),
+            // misrouting the client's answer onto the SIP leg and skipping
+            // openInbound (no sipPeerConnection -> media bridge fails).
             const phoneNumber = session.inboundCall?.toNumber || payload.to;
+            const callerNumber = session.inboundCall?.fromNumber || session.callerEns;
             try {
                 const { poly } = polyRegistry.resolve({
-                    a: { endpoint: phoneNumber, kind: "sip", role: "inbound", phoneNumber, session },
+                    a: { endpoint: callerNumber, kind: "sip", role: "inbound", phoneNumber, session },
                     b: { endpoint: calleeEns, kind: "webrtc", session },
                     target: "a",
                 });
