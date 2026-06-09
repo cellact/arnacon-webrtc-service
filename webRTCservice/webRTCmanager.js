@@ -139,7 +139,7 @@ const { ParticipantFactory } = require("./modules/participants/ParticipantFactor
 const { createPolyCore } = require("./modules/calls/poly/createPolyCore");
 const { WebRtcOutboundLegFactory } = require("./modules/calls/webrtc/WebRtcOutboundLegFactory");
 const { LEG_EVENTS, makeLegEvent } = require("./modules/calls/poly/ports");
-const { LEG_STATES, isActiveCall } = require("./modules/calls/poly/states");
+const { LEG_STATES } = require("./modules/calls/poly/states");
 const { isInactiveOffer } = require("./modules/calls/poly/negotiation/sdp");
 const { routeToCodecPolicy } = require("./modules/media/negotiation/CodecPolicy");
 const { narrowAudioOfferForCodecPolicy } = require("./modules/media/negotiation/SdpCodecNegotiator");
@@ -759,7 +759,7 @@ async function handleInboundCallRequest(data, serviceContext = null) {
             const callerNumber = session.inboundCall?.fromNumber || session.callerEns;
             try {
                 const { poly } = polyRegistry.resolve({
-                    a: { endpoint: callerNumber, kind: "sip", role: "inbound", phoneNumber, session },
+                    a: { endpoint: callerNumber, kind: "sip", phoneNumber, session },
                     b: {
                         endpoint: calleeEns,
                         kind: "webrtc",
@@ -1018,7 +1018,6 @@ async function onDcRing(callerSessionId, payload) {
         b = {
             endpoint: sipTo,
             kind: "sip",
-            role: "outbound",
             session,
         };
     }
@@ -1104,20 +1103,7 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
         // moment consent failed). Reconcile then re-CONNECTs that leg (notification/
         // VoIP wake) before ringing -- we do NOT rebuild the whole poly. We only
         // rebuild when no poly owns this transport (brand-new call or stale poly).
-        //
-        // EXCEPTION: a SIP leg cannot idle between calls (no persistent transport)
-        // and its negotiation role is frozen at build time to the original call's
-        // direction (inbound vs outbound). So a poly holding a now-idle SIP leg must
-        // NOT be reused on a redial: reusing it re-runs the old direction's ring,
-        // which for an inbound-built leg is a no-op (never places the outbound
-        // INVITE). The registry also keys SIP pairs order-independently, so resolve()
-        // would hand back the same role-locked poly. Tear it down so onDcRing
-        // reconstructs the SIP leg with the correct role for THIS call's direction.
-        const hasIdleSipLeg =
-            existing &&
-            ((existing.legs.a.kind === "sip" && !isActiveCall(existing.legs.a.state)) ||
-                (existing.legs.b.kind === "sip" && !isActiveCall(existing.legs.b.state)));
-        if (!existing || !polyOwnsSession(existing, session, channelRole) || hasIdleSipLeg) {
+        if (!existing || !polyOwnsSession(existing, session, channelRole)) {
             (async () => {
                 if (existing) {
                     await polyRegistry.destroy(

@@ -31,17 +31,18 @@ class SipLeg extends SessionLeg {
         return this._invite(ctx);
     }
 
-    // The one SIP "reach the peer" action. The outbound INVITE is a blocking
-    // handshake: openOutbound resolves only once the SBC answers
-    // (SessionState.Established), so a completed ring means the SIP side is already
-    // in-call -> advance past RINGING so PolySession bridges. An inbound gateway leg
-    // is the caller side (PSTN dialing in): it stays ringing until the secnum callee
-    // answers, at which point PolySession issues the ANSWER intent (openInbound).
+    // The one SIP "reach the peer" action (connect/ring). The outbound INVITE is a
+    // blocking handshake: negotiation.ring (openOutbound) resolves only once the SBC
+    // answers (SessionState.Established), so a completed ring means the SIP side is
+    // already in-call -> advance past RINGING so PolySession bridges. P only routes
+    // here for a SIP leg that is the callee being dialed; a SIP-caller leg is seeded
+    // CALLING and driven via answer() instead, so this path is unambiguously the
+    // originate side -- no inbound/outbound role to consult.
     async _invite(ctx = {}) {
         if (this.state === LEG_STATES.RINGING || this.state === LEG_STATES.IN_CALL) return;
         this.setState(LEG_STATES.RINGING, { reason: "sip-invite", from: ctx.from ?? null });
         await this._tx(() => this.negotiation.ring({ leg: this, ...ctx }));
-        if (this.negotiation.role !== "inbound" && this.state === LEG_STATES.RINGING) {
+        if (this.state === LEG_STATES.RINGING) {
             this.setState(LEG_STATES.IN_CALL, { reason: "sip-answered", from: ctx.from ?? null });
         }
     }

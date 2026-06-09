@@ -71,11 +71,10 @@ function createPolyCore(deps = {}) {
         });
     };
 
-    const sipNegotiationFactory = ({ id, endpoint, session, role = "outbound", phoneNumber = null }) => new SipNegotiation({
+    const sipNegotiationFactory = ({ id, endpoint, session, phoneNumber = null }) => new SipNegotiation({
         id,
         endpoint,
         session,
-        role,
         phoneNumber,
         sip: sipPort,
         logger,

@@ -30,9 +30,9 @@ class LegFactory {
         return new WebRtcLeg({ id: legId, endpoint, negotiation, logger: this.logger });
     }
 
-    createSip({ id, endpoint, session, sip, role = "outbound", phoneNumber = null } = {}) {
+    createSip({ id, endpoint, session, sip, phoneNumber = null } = {}) {
         const legId = id || endpoint;
-        const negotiation = this.sipNegotiationFactory({ id: legId, endpoint, session, sip, role, phoneNumber, logger: this.logger });
+        const negotiation = this.sipNegotiationFactory({ id: legId, endpoint, session, sip, phoneNumber, logger: this.logger });
         return new SipLeg({ id: legId, endpoint, negotiation, logger: this.logger });
     }
 

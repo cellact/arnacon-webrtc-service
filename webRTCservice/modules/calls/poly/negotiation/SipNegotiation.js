@@ -13,8 +13,11 @@ class SipNegotiation extends CallNegotiationPort {
         id,
         endpoint,
         session,
-        role = "outbound", // "outbound": secnum->sip INVITE; "inbound": sip->secnum gateway
-        phoneNumber = null, // inbound role: number to REGISTER as and await the resumed INVITE
+        // Number to REGISTER as when accepting an inbound (PSTN-originated) call and
+        // pull back the suspended SBC INVITE. Pure context for answer()/openInbound;
+        // it is NOT a direction switch -- direction is decided by which intent P
+        // fires (ring => originate, answer => accept), never stored on the leg.
+        phoneNumber = null,
         sip, // { openOutbound, openInbound, close, sendDtmf, setHold, resolveCallerId }
         logger = console,
     } = {}) {
@@ -23,7 +26,6 @@ class SipNegotiation extends CallNegotiationPort {
         if (!sip) throw new Error("SipNegotiation requires a sip port");
         this.id = id;
         this.endpoint = endpoint;
-        this.role = role;
         this.phoneNumber = phoneNumber;
         this.session = session;
         this.sip = sip;
@@ -34,12 +36,12 @@ class SipNegotiation extends CallNegotiationPort {
         // SIP registration/INVITE happens on ring()/answer(); nothing to pre-establish.
     }
 
-    // PolySession asks the SIP side to start.
-    //   outbound: place the INVITE toward the PSTN/SBC (blocks until answered).
-    //   inbound : nothing to do on ring -- the PSTN is the caller; we wait for the
-    //             secnum callee to pick up, then answer() registers + accepts.
+    // P presents the call to the SIP side => originate: place the INVITE toward the
+    // PSTN/SBC (blocks until answered). P only fires ring on a SIP leg that is the
+    // CALLEE (it was DISCONNECTED and the peer is calling it); a SIP leg that is the
+    // caller is seeded CALLING and is driven via answer(), never ring -- so there is
+    // no stored "outbound vs inbound" to check, the intent itself is the decision.
     async ring(ctx = {}) {
-        if (this.role === "inbound") return;
         if (this.session.sipConnection) return; // already up -> idempotent
         await this.sip.openOutbound(this.session.sessionId, {
             target: this.endpoint,
@@ -49,12 +51,10 @@ class SipNegotiation extends CallNegotiationPort {
         });
     }
 
-    // Peer picked up.
-    //   outbound: media flows once the INVITE is answered; nothing more here.
-    //   inbound : register as the callee number and accept the resumed INVITE
-    //             from Kamailio (porting openInboundSipSession trigger).
+    // The peer picked up => accept: register as the callee number and accept the
+    // resumed INVITE from Kamailio. P only fires answer on a SIP leg that is the
+    // CALLER (a PSTN call dialed in and our WebRTC side just answered it).
     async answer(ctx = {}) {
-        if (this.role !== "inbound") return;
         if (this.session.sipConnection) return; // idempotent
         await this.sip.openInbound(this.session.sessionId, {
             phoneNumber: this.phoneNumber || ctx.phoneNumber || null,

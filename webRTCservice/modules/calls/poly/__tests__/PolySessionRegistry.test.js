@@ -77,7 +77,7 @@ test("routing-driven peer kind: webrtc<->webrtc vs webrtc<->sip produce the righ
 
     const sbc = reg.resolve({
         a: { endpoint: "alice", kind: "webrtc" },
-        b: { endpoint: "+15551230000", kind: "sip", role: "outbound" },
+        b: { endpoint: "+15551230000", kind: "sip" },
         target: "a",
     });
     assert.equal(sbc.poly.legs.a.kind, "webrtc");
