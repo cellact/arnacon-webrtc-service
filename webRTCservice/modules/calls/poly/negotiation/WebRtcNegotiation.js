@@ -178,6 +178,7 @@ class WebRtcNegotiation extends CallNegotiationPort {
             offerSdp = this.p.patchInactiveToSendrecv(offerSdp);
         }
         await pc.setRemoteDescription(new this.p.RTCSessionDescription(offerSdp, "offer"));
+        await this.p.addIceCandidates?.(pc, payload.candidates || []);
         // On ICE restart the track set is unchanged; only the caller-ring path
         // needs to (re)attach the local audio track.
         if (!isIceRestart && this.p.ensureLocalAudioTrack) {
@@ -233,6 +234,11 @@ class WebRtcNegotiation extends CallNegotiationPort {
         if (!pc) throw new Error(`[${this.id}] cannot apply session answer without a peer connection`);
         const payload = ctx.payload || {};
         await pc.setRemoteDescription(new this.p.RTCSessionDescription(payload.sdp, "answer"));
+        // The client bundles its ICE candidates in a separate `candidates` array
+        // (its answer SDP carries no a=candidate lines). They MUST be added or
+        // werift never installs the TURN permission for a relay-only client's
+        // relay address -> its connectivity checks are dropped -> ICE fails.
+        await this.p.addIceCandidates?.(pc, payload.candidates || []);
     }
 
     // This endpoint's client accepted the call (answer to our ring's audio offer):
@@ -242,6 +248,7 @@ class WebRtcNegotiation extends CallNegotiationPort {
         if (!pc) throw new Error(`[${this.id}] cannot apply answer without a peer connection`);
         const payload = ctx.payload || {};
         await pc.setRemoteDescription(new this.p.RTCSessionDescription(payload.sdp, "answer"));
+        await this.p.addIceCandidates?.(pc, payload.candidates || []);
         this.signaling.send({ msgType: "call", action: "ack", ackFor: "answer" });
     }
 

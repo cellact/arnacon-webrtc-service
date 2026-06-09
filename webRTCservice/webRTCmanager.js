@@ -682,6 +682,7 @@ const polyCore = createPolyCore({
         waitForIceGathering: (...args) => waitForIceGathering(...args),
         formatIceCandidates: (...args) => formatIceCandidates(...args),
         getRelayCandidates: (...args) => getRelayCandidates(...args),
+        addIceCandidates: (...args) => addIceCandidates(...args),
         embedCandidatesInSdp: (...args) => embedCandidatesInSdp(...args),
         patchInactiveToSendrecv: (...args) => patchInactiveToSendrecv(...args),
         ensureLocalAudioTrack: (...args) => ensureLocalAudioTrack(...args),
