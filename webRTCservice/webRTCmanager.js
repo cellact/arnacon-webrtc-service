@@ -1099,16 +1099,12 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
         !isInactiveOffer(msg.payload.sdp);
     if (isActiveOffer) {
         const existing = polyForSession(session);
-        // The caller may reuse its own live transport while the CALLEE's transport
-        // has silently died (its app closed). The leg state lags reality -- it only
-        // flips to DISCONNECTED once consent-freshness + debounce catch up (~10s),
-        // and a recall inside that window would RING a dead data channel instead of
-        // re-inviting. So if the callee leg's transport is already known-dead, treat
-        // this as a brand-new ring: rebuild fresh so reconcile re-CONNECTs (FCM/VoIP
-        // wake) the callee rather than ringing the corpse.
-        const calleeIce = session.outboundWebrtc?.iceConnectionState;
-        const calleeTransportDead = calleeIce === "disconnected" || calleeIce === "failed" || calleeIce === "closed";
-        if (!existing || !polyOwnsSession(existing, session, channelRole) || calleeTransportDead) {
+        // A reused poly is fine here: the caller keeps its live transport and the
+        // callee leg, if its own transport died, is already DISCONNECTED (marked the
+        // moment consent failed). Reconcile then re-CONNECTs that leg (notification/
+        // VoIP wake) before ringing -- we do NOT rebuild the whole poly. We only
+        // rebuild when no poly owns this transport (brand-new call or stale poly).
+        if (!existing || !polyOwnsSession(existing, session, channelRole)) {
             (async () => {
                 if (existing) {
                     await polyRegistry.destroy(

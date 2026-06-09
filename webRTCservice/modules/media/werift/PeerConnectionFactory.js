@@ -100,12 +100,23 @@ function createPeerConnectionFactory({
             if (state === "failed" || state === "closed") {
                 onSessionDestroyRequested(sessionId, { source: "webrtc-ice", reason: `ice-${state}`, notify: true, pc, destroyOnTerminalState: shouldRequestDestroy });
             } else if (state === "disconnected") {
-                if (!s.iceDisconnectTimer) {
+                if (!shouldRequestDestroy) {
+                    // Non-destroy (callee leg) PC: flip its leg to DISCONNECTED the
+                    // MOMENT consent fails, no debounce. A redial must see the callee
+                    // leg as DISCONNECTED so reconcile re-CONNECTs (notification/VoIP
+                    // wake) it instead of ringing a data channel that is already gone.
+                    // werift only emits "disconnected" after a consent check failed
+                    // (not a sub-second blip), and this only closes the leg (never
+                    // destroys the session), so a false positive costs one re-invite.
+                    onSessionDestroyRequested(sessionId, { source: "webrtc-ice", reason: "ice-disconnected", notify: true, pc, destroyOnTerminalState: false });
+                } else if (!s.iceDisconnectTimer) {
+                    // Primary PC: debounce -- acting here destroys the whole session,
+                    // so we must not kill a live call on a transient blip.
                     s.iceDisconnectTimer = setTimeout(() => {
                         s.iceDisconnectTimer = null;
                         const current = sessions.get(sessionId);
                         if (current && session.peerConnection === pc && session.iceConnectionState === "disconnected") {
-                            onSessionDestroyRequested(sessionId, { source: "webrtc-ice", reason: "ice-disconnected", notify: true, pc, destroyOnTerminalState: shouldRequestDestroy });
+                            onSessionDestroyRequested(sessionId, { source: "webrtc-ice", reason: "ice-disconnected", notify: true, pc, destroyOnTerminalState: true });
                         }
                     }, 5000);
                 }
