@@ -139,7 +139,7 @@ const { ParticipantFactory } = require("./modules/participants/ParticipantFactor
 const { createPolyCore } = require("./modules/calls/poly/createPolyCore");
 const { WebRtcOutboundLegFactory } = require("./modules/calls/webrtc/WebRtcOutboundLegFactory");
 const { LEG_EVENTS, makeLegEvent } = require("./modules/calls/poly/ports");
-const { LEG_STATES } = require("./modules/calls/poly/states");
+const { LEG_STATES, canBeRung, isActiveCall } = require("./modules/calls/poly/states");
 const { isInactiveOffer } = require("./modules/calls/poly/negotiation/sdp");
 const { routeToCodecPolicy } = require("./modules/media/negotiation/CodecPolicy");
 const { narrowAudioOfferForCodecPolicy } = require("./modules/media/negotiation/SdpCodecNegotiator");
@@ -730,9 +730,67 @@ console.log("[poly] PolySession core is the live coordinator");
 // HTTP SERVER — ENTRY POINT
 // ═════════════════════════════════════════════════════════════
 
+// Inbound reuse: if the PSTN callee already has a live, connected webrtc leg that
+// is paired with THIS PSTN caller (idle from a prior call between the two), there
+// is nothing to FCM-wake. Seed the PSTN INVITE as the SIP caller's OFFER into the
+// EXISTING poly and let reconcile ring the connected callee over its open data
+// channel -- byte-for-byte the webrtc<->webrtc redial path. Same S, same P; no
+// fresh session, no notification. Returns the reuse result, or null to fall back
+// to the cold (FCM-wake) flow when the callee isn't reachably connected.
+async function tryInboundReuse(payload) {
+    const calleeLabel = pLabel(String(payload.to || "").toLowerCase());
+    const callerLabel = pLabel(String(payload.from || "").replace(/^\+/, "").toLowerCase());
+    if (!calleeLabel || !callerLabel) return null;
+
+    const poly = polyRegistry.getByEndpoint(payload.to);
+    if (!poly) return null;
+
+    const sipRef = polySipRef(poly);
+    const webRef = poly.legs.a.kind === "webrtc" ? "a" : (poly.legs.b.kind === "webrtc" ? "b" : null);
+    if (!sipRef || !webRef) return null; // not a webrtc<->sip poly
+
+    const webLeg = poly.legs[webRef];
+    const sipLeg = poly.legs[sipRef];
+
+    // The webrtc leg must be the callee (this `to`) and the sip leg this `from`,
+    // else the existing poly belongs to a different conversation.
+    if (pLabel(String(webLeg.endpoint || "").toLowerCase()) !== calleeLabel) return null;
+    if (pLabel(String(sipLeg.endpoint || "").toLowerCase()) !== callerLabel) return null;
+
+    // Only reuse a callee whose transport is actually rungable, and only if the
+    // sip leg is idle (no call already in flight on this poly).
+    if (!canBeRung(webLeg.state)) return null;
+    if (isActiveCall(sipLeg.state)) return null;
+
+    const hostSession = webLeg.negotiation?.session;
+    if (!hostSession || !hostSession.peerConnection) return null;
+
+    // Inject the per-call SIP context onto the reused session: the callee's own
+    // number to REGISTER as (openInbound pulls the suspended SBC INVITE) and the
+    // inbound metadata. Direction is decided by P firing answer() on the sip leg,
+    // never stored on the leg.
+    hostSession.inboundCall = { fromNumber: payload.from, toNumber: payload.to, callId: payload.callId };
+    if (sipLeg.negotiation) sipLeg.negotiation.phoneNumber = payload.to;
+
+    console.log(`[${hostSession.sessionId}] inbound reuse: ringing connected callee ${calleeLabel} over existing DC (caller ${callerLabel})`);
+    try {
+        // Seed the PSTN INVITE as the sip caller's OFFER -> CALLING. Reconcile then
+        // sees sip CALLING + webrtc CONNECTED -> ring(webrtc) over its DC; on pickup
+        // -> answer(sip) (openInbound) + media bridge.
+        await poly.onIngress(sipRef, makeLegEvent(LEG_EVENTS.OFFER));
+    } catch (err) {
+        console.error(`[${hostSession.sessionId}] inbound reuse seed failed: ${err.message}`);
+        return null;
+    }
+    return { ok: true, sessionId: hostSession.sessionId, reused: true };
+}
+
 async function handleInboundCallRequest(data, serviceContext = null) {
     const payload = serviceContext?.serviceId ? { ...data, serviceId: serviceContext.serviceId } : data;
-    // The inbound flow creates the session + PC1 and FCM-invites the secnum callee.
+    // Fast path: reuse a connected callee's existing transport (P rings over DC).
+    const reused = await tryInboundReuse(payload);
+    if (reused) return reused;
+    // Cold path: the inbound flow creates the session + PC1 and FCM-invites the secnum callee.
     const result = await inboundCallFlowApi.handleInboundCallRequest(payload);
     if (result?.ok && result.sessionId) {
         const session = sessions.get(result.sessionId);
@@ -758,6 +816,14 @@ async function handleInboundCallRequest(data, serviceContext = null) {
             const phoneNumber = session.inboundCall?.toNumber || payload.to;
             const callerNumber = session.inboundCall?.fromNumber || session.callerEns;
             try {
+                // The registry keys polys by an order-independent pair key, so a
+                // stale poly from a prior call between these two parties (e.g. an
+                // earlier W->SIP attempt) resolves to the SAME key. Reusing it is
+                // wrong here: its leg layout (a/b) and bound session belong to that
+                // old call, so the hardcoded onIngress("a") would hit the wrong leg.
+                // An inbound call always brings a fresh session + FCM wake, so it
+                // must own a fresh poly -> tear any stale one down first.
+                await polyRegistry.destroy(polyRegistry.keyForPair(callerNumber, calleeEns), "inbound-fresh-call");
                 const { poly } = polyRegistry.resolve({
                     a: { endpoint: callerNumber, kind: "sip", phoneNumber, session },
                     b: {
