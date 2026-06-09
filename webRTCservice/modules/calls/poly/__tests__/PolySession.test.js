@@ -141,7 +141,7 @@ test("media is connected exactly once across repeated reconcile passes", async (
     assert.equal(media.connects.length, 1);
 });
 
-test("one side disconnects mid-call: peer is ended, media stops, disconnected side left as-is", async () => {
+test("one side disconnects mid-call: peer is ended, media stops, dropped side settles to disconnected", async () => {
     const a = makeWebRtcLeg("alice");
     const b = makeWebRtcLeg("bob");
     const { poly, media } = buildPoly(a, b);
@@ -155,10 +155,12 @@ test("one side disconnects mid-call: peer is ended, media stops, disconnected si
     assert.equal(a.leg.state, S.ENDING, "surviving peer is ended (waiting for its client answer)");
     assert.equal(media.disconnects.length, 1);
 
-    // a's client answers the end-call offer -> a back to connected, b left failed.
+    // a's client answers the end-call offer -> a back to connected. Now that the
+    // peer is no longer in an active call, the dropped leg is collapsed from its
+    // transient FAILED (teardown trigger) to idle DISCONNECTED so it is reusable.
     await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "end-ans" }));
     assert.equal(a.leg.state, S.CONNECTED);
-    assert.equal(b.leg.state, S.FAILED);
+    assert.equal(b.leg.state, S.DISCONNECTED);
 });
 
 test("webrtc<->sip: remote BYE on sip leg ends the webrtc caller", async () => {

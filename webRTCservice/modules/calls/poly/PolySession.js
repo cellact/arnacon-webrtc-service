@@ -153,18 +153,21 @@ class PolySession {
         return undefined;
     }
 
-    // Once the call is over, a transportless leg left FAILED (e.g. a SIP INVITE that
-    // was rejected during ring) is stuck: FAILED is not rungable, so the next call
-    // would stall. Reset it to its idle (DISCONNECTED) so reconcile can re-drive it
-    // (the SIP leg rebuilds its INVITE per call). Scoped to SIP: a webrtc leg's
-    // FAILED means its actual PC died, so it must NOT be silently revived here.
-    // Only when the peer is no longer in an active call, so we never wipe a leg
-    // whose end-call reneg is still in flight.
+    // Once the call is over, a leg left FAILED is stuck (FAILED is not rungable, so
+    // the next call would stall) and reads as a permanent error rather than an idle
+    // endpoint. Settle it back to its idle (DISCONNECTED) so it is reusable. This is
+    // deliberately deferred until the peer is no longer in an active call: FAILED is
+    // the teardown trigger that drives the peer's end-call reneg, so we MUST keep it
+    // long enough for reconcile to end the peer first -- only then do we collapse the
+    // dead leg to DISCONNECTED. (isActiveCall excludes ENDING, so a reneg still in
+    // flight holds this off.) Applies to both transports: a SIP leg rebuilds its
+    // INVITE per call, and a dropped webrtc leg's PC is gone + its session is being
+    // destroyed, so DISCONNECTED is the correct idle resting state for both.
     _recoverFailedLegs() {
         for (const ref of ["a", "b"]) {
             const leg = this.legs[ref];
             const peer = this.legs[ref === "a" ? "b" : "a"];
-            if (leg.kind === "sip" && leg.state === LEG_STATES.FAILED && !isActiveCall(peer.state)) {
+            if (leg.state === LEG_STATES.FAILED && !isActiveCall(peer.state)) {
                 leg.setState(LEG_STATES.DISCONNECTED, { reason: "failed-leg-recovery", from: "self" });
             }
         }

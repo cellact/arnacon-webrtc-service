@@ -60,6 +60,38 @@ function createPeerConnectionFactory({
                 }
             }
         });
+        // werift only drives the aggregate connectionState at fixed lifecycle
+        // points (post-DTLS connect / explicit close). A peer that vanishes
+        // mid-call (app force-closed) is detected ONLY by ICE consent-freshness,
+        // which surfaces on iceConnectionStateChange -> "disconnected" and never
+        // touches connectionState. Without this subscription the server would log
+        // nothing and leak the session. Mirror the connectionState teardown here.
+        pc.iceConnectionStateChange.subscribe((state) => {
+            logger.log(`[${sessionId}] ${pcLabel} ICE connection state: ${state}`);
+            const s = sessions.get(sessionId);
+            if (!s || s.destroying || session.destroying) return;
+            if (session.peerConnection !== pc) return;
+            s.iceConnectionState = state;
+            session.iceConnectionState = state;
+            if (shouldRequestDestroy && (state === "failed" || state === "closed")) {
+                onSessionDestroyRequested(sessionId, { source: "webrtc-ice", reason: `ice-${state}`, notify: true, pc });
+            } else if (state === "disconnected") {
+                if (!s.iceDisconnectTimer) {
+                    s.iceDisconnectTimer = setTimeout(() => {
+                        s.iceDisconnectTimer = null;
+                        const current = sessions.get(sessionId);
+                        if (shouldRequestDestroy && current && session.peerConnection === pc && session.iceConnectionState === "disconnected") {
+                            onSessionDestroyRequested(sessionId, { source: "webrtc-ice", reason: "ice-disconnected", notify: true, pc });
+                        }
+                    }, 5000);
+                }
+            } else if (state === "connected" || state === "completed") {
+                if (s.iceDisconnectTimer) {
+                    clearTimeout(s.iceDisconnectTimer);
+                    s.iceDisconnectTimer = null;
+                }
+            }
+        });
         pc.onTrack.subscribe((track) => {
             logger.log(`[${sessionId}] ${pcLabel} remote track received: ${track.kind}`);
             session.remoteTracks.push(track);

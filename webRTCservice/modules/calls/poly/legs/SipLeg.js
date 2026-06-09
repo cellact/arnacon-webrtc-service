@@ -4,23 +4,43 @@
 // the peer identically regardless of transport.
 
 const { SessionLeg } = require("../SessionLeg");
-const { LEG_EVENTS } = require("../ports");
+const { LEG_EVENTS, LEG_INTENTS } = require("../ports");
 const { LEG_STATES } = require("../states");
+const { assertIntentLegal } = require("../LegStateBehavior");
 
 class SipLeg extends SessionLeg {
     constructor({ id, endpoint, negotiation, logger = console } = {}) {
         super({ id, kind: "sip", endpoint, negotiation, logger });
     }
 
-    // SIP INVITE is a blocking handshake: the gateway's openOutbound resolves
-    // only once the SBC answers (SessionState.Established). So a completed ring
-    // means the SIP side is already in-call; advance past RINGING so PolySession
-    // bridges media. (WebRTC, by contrast, stays RINGING until a separate answer.)
+    // SIP has NO transport to pre-establish and NO "connected" idle state: there is
+    // no persistent peer connection between calls, each call is a fresh INVITE.
+    // So a connect intent (reconcile bringing the peer up) must NOT settle on
+    // CONNECTED the way a webrtc leg does -- it collapses straight into the INVITE.
+    // The leg lifecycle is DISCONNECTED -> RINGING -> IN_CALL -> DISCONNECTED.
+    async connect(ctx = {}) {
+        assertIntentLegal(this.state, LEG_INTENTS.CONNECT);
+        return this._invite(ctx);
+    }
+
+    // P presents the call to the SIP side. Same INVITE path as connect (SIP never
+    // separates "transport up" from "ring"); kept distinct so a rungable leg can
+    // still be re-rung legally.
     async ring(ctx = {}) {
-        await super.ring(ctx);
-        // Only the outbound INVITE is a blocking handshake. An inbound gateway leg
-        // is the caller side (PSTN dialing in): it stays ringing until the secnum
-        // callee answers, at which point PolySession issues the ANSWER intent.
+        assertIntentLegal(this.state, LEG_INTENTS.RING);
+        return this._invite(ctx);
+    }
+
+    // The one SIP "reach the peer" action. The outbound INVITE is a blocking
+    // handshake: openOutbound resolves only once the SBC answers
+    // (SessionState.Established), so a completed ring means the SIP side is already
+    // in-call -> advance past RINGING so PolySession bridges. An inbound gateway leg
+    // is the caller side (PSTN dialing in): it stays ringing until the secnum callee
+    // answers, at which point PolySession issues the ANSWER intent (openInbound).
+    async _invite(ctx = {}) {
+        if (this.state === LEG_STATES.RINGING || this.state === LEG_STATES.IN_CALL) return;
+        this.setState(LEG_STATES.RINGING, { reason: "sip-invite", from: ctx.from ?? null });
+        await this._tx(() => this.negotiation.ring({ leg: this, ...ctx }));
         if (this.negotiation.role !== "inbound" && this.state === LEG_STATES.RINGING) {
             this.setState(LEG_STATES.IN_CALL, { reason: "sip-answered", from: ctx.from ?? null });
         }
@@ -32,6 +52,10 @@ class SipLeg extends SessionLeg {
             await this.negotiation.handleAux?.({ leg: this, ...event });
             return;
         }
+        // SIP has no data-channel transport-open and no CONNECTED state, so a
+        // transport-open ingress is meaningless here -> ignore it (never enter
+        // CONNECTED). All other events flow through the shared base.
+        if (event.type === LEG_EVENTS.TRANSPORT_OPEN) return;
         return super.handleIngress(event);
     }
 }
