@@ -51,6 +51,11 @@ function createPeerConnectionFactory({
                     }, 5000);
                 }
             } else if (state === "connected") {
+                // The call is established. Record it so the ICE-level teardown
+                // below knows it is allowed to act: ICE transients before this
+                // point are part of setup, not a drop.
+                s.everConnected = true;
+                session.everConnected = true;
                 if (s.disconnectTimer) {
                     clearTimeout(s.disconnectTimer);
                     s.disconnectTimer = null;
@@ -65,7 +70,12 @@ function createPeerConnectionFactory({
         // mid-call (app force-closed) is detected ONLY by ICE consent-freshness,
         // which surfaces on iceConnectionStateChange -> "disconnected" and never
         // touches connectionState. Without this subscription the server would log
-        // nothing and leak the session. Mirror the connectionState teardown here.
+        // nothing and leak the session. We mirror the connectionState teardown,
+        // but ONLY after the PC has reached "connected" at least once: ICE is a
+        // noisy, explicitly-transient layer that bounces through disconnected/
+        // failed DURING setup (e.g. a callee still ringing whose transport idles),
+        // and acting on those would tear down a call that hasn't connected yet.
+        // Setup-phase terminal failures are already handled by connectionState.
         pc.iceConnectionStateChange.subscribe((state) => {
             logger.log(`[${sessionId}] ${pcLabel} ICE connection state: ${state}`);
             const s = sessions.get(sessionId);
@@ -73,6 +83,15 @@ function createPeerConnectionFactory({
             if (session.peerConnection !== pc) return;
             s.iceConnectionState = state;
             session.iceConnectionState = state;
+            if (state === "connected" || state === "completed") {
+                if (s.iceDisconnectTimer) {
+                    clearTimeout(s.iceDisconnectTimer);
+                    s.iceDisconnectTimer = null;
+                }
+                return;
+            }
+            // Never tear down off ICE transients before the call is up.
+            if (!s.everConnected) return;
             if (shouldRequestDestroy && (state === "failed" || state === "closed")) {
                 onSessionDestroyRequested(sessionId, { source: "webrtc-ice", reason: `ice-${state}`, notify: true, pc });
             } else if (state === "disconnected") {
@@ -84,11 +103,6 @@ function createPeerConnectionFactory({
                             onSessionDestroyRequested(sessionId, { source: "webrtc-ice", reason: "ice-disconnected", notify: true, pc });
                         }
                     }, 5000);
-                }
-            } else if (state === "connected" || state === "completed") {
-                if (s.iceDisconnectTimer) {
-                    clearTimeout(s.iceDisconnectTimer);
-                    s.iceDisconnectTimer = null;
                 }
             }
         });
