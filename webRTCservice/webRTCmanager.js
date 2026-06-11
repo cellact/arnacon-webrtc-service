@@ -1049,6 +1049,9 @@ async function onDcRing(callerSessionId, payload) {
 
     const a = { endpoint: session.callerEns, kind: "webrtc", session };
     let b;
+    // Minute metering is SBC/PSTN-outbound only; resolved in the sip branch below.
+    let minuteCounterSettings = null;
+    let minuteCounterIdentity = null;
     if (destination.route === "webrtc") {
         b = {
             endpoint: destination.ensName || destination.wallet,
@@ -1086,9 +1089,63 @@ async function onDcRing(callerSessionId, payload) {
             kind: "sip",
             session,
         };
+
+        // Minute metering for SBC/PSTN outbound. The poly cutover orphaned the
+        // legacy SbcRouteStrategy where start()/assertCanStart() lived, so wire it
+        // here at SIP-leg origination: gate on the per-service monthly cap, then (on
+        // resolve) stamp session.minuteCounter so the registry teardown hook's
+        // finish() records the elapsed seconds. Pure caller-side billing.
+        minuteCounterSettings = minuteCounterPolicy.getSettings(serviceId);
+        minuteCounterIdentity = minuteCounterPolicy.getIdentity(parsedFrom, session);
+        if (minuteCounterApi && minuteCounterSettings?.limitSeconds) {
+            try {
+                minuteCounterApi.assertCanStart({
+                    serviceId: minuteCounterSettings.serviceId,
+                    identity: minuteCounterIdentity,
+                    limitSeconds: minuteCounterSettings.limitSeconds,
+                });
+            } catch (err) {
+                console.log(`[${callerSessionId}] minute limit reached for ${minuteCounterIdentity}: ${err.message}`);
+                sendDataChannelMessage(callerSessionId, { msgType: "call", action: "end", reason: "minute-limit" });
+                return;
+            }
+            // Prepaid cutoff: when the caller is low on monthly balance (< 5 min
+            // left) tell Kamailio how many seconds THIS call is allowed via a "Limit"
+            // header. Kamailio arms a dialog timer, BYEs both legs at expiry, and
+            // strips the header before the SBC. The service decides the budget;
+            // Kamailio enforces it. (remaining > 0 here -- assertCanStart already
+            // rejected an exhausted balance.)
+            const usedSeconds = minuteCounterApi.getUsedSeconds({
+                serviceId: minuteCounterSettings.serviceId,
+                identity: minuteCounterIdentity,
+            });
+            const remainingSeconds = minuteCounterSettings.limitSeconds - usedSeconds;
+            if (remainingSeconds > 0 && remainingSeconds < 300) {
+                session.sipDirective.headers = {
+                    ...(session.sipDirective.headers || {}),
+                    Limit: String(remainingSeconds),
+                };
+                console.log(`[${callerSessionId}] low balance: capping call at ${remainingSeconds}s for ${minuteCounterIdentity}`);
+            }
+        }
     }
 
     const { poly } = polyRegistry.resolve({ a, b, target: "a" });
+    if (b.kind === "sip" && minuteCounterApi && minuteCounterSettings?.limitSeconds) {
+        // Bill only the answered conversation: PolySession fires onCallStart when
+        // both legs reach IN_CALL and onCallEnd when they leave it -- so the counter
+        // starts at answer and stops on ANY end (hangup either side, failure,
+        // transport drop), independent of poly disposal/reuse. finish() is
+        // idempotent (the dispose teardown hook remains a backstop).
+        poly.setCallActivityHooks({
+            onCallStart: () => minuteCounterApi.start(session, {
+                serviceId: minuteCounterSettings.serviceId,
+                identity: minuteCounterIdentity,
+                limitSeconds: minuteCounterSettings.limitSeconds,
+            }),
+            onCallEnd: () => minuteCounterApi.finish(session),
+        });
+    }
     // Caller transport is already up (HTTP handshake). The SIP leg has no transport
     // to negotiate (openOutbound happens on ring), so mark it usable too. A webrtc
     // callee, by contrast, starts disconnected: reconcile will connect() it (FCM
