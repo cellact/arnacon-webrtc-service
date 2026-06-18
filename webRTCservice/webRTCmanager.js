@@ -242,6 +242,7 @@ const config = {
     domain: commonConfig.domain,
     kamailioWssHost: commonConfig.kamailioWssHost,
     kamailioWssPort: commonConfig.kamailioWssPort,
+    kamailioWssScheme: commonConfig.kamailioWssScheme,
     bindIp: commonConfig.bindIp,
     tlsCertPath: commonConfig.tlsCertPath,
     roflBaseUrl: pickRuntimeConfig("roflBaseUrl"),
@@ -276,9 +277,15 @@ function getServiceRuntime(serviceId = null) {
 }
 
 // Kamailio SIP config
-const KAMAILIO_WSS_URL = `ws://${config.kamailioWssHost || config.domain}:${config.kamailioWssPort}`;
+// Transport scheme is configurable: env > config.json > default "wss".
+// Use "ws" only for trusted/co-located hops; "wss" for cross-host.
+const KAMAILIO_WSS_SCHEME = process.env.KAMAILIO_WSS_SCHEME || config.kamailioWssScheme || "wss";
+const KAMAILIO_WSS_HOST = process.env.KAMAILIO_WSS_HOST || config.kamailioWssHost || config.domain;
+const KAMAILIO_WSS_PORT = Number(process.env.KAMAILIO_WSS_PORT || config.kamailioWssPort || 8443);
+const KAMAILIO_WSS_URL = `${KAMAILIO_WSS_SCHEME}://${KAMAILIO_WSS_HOST}:${KAMAILIO_WSS_PORT}`;
 const KAMAILIO_DOMAIN = config.domain;
 const KAMAILIO_REGISTER_EXPIRES = 300;
+console.log(`[Startup] SIP WSS target: ${KAMAILIO_WSS_URL}`);
 
 const INTERNAL_BIND_IP = config.bindIp || "127.0.0.1";
 const OPENAI_SIP_CONFIG = {
@@ -881,7 +888,7 @@ for (const serviceRuntime of activeServiceRuntimes) {
     console.log(
         `[Startup] service=${serviceRuntime.id} provider=${serviceRuntime.providerId} deployEnv=${deployEnv} ` +
         `domain=${config.domain || ""} notifyPort=${serviceRuntime.notifyPort} ` +
-        `callbackPort=${serviceRuntime.callbackPort} domains=${configuredDomains}`,
+        `callbackPort=https:${serviceRuntime.callbackPort} domains=${configuredDomains}`,
     );
     const handlers = createHandlers({
         buildSignalingContextFromNotify,
@@ -1030,6 +1037,90 @@ function polyRefByEndpoint(poly, endpoint) {
 }
 
 // Resolve routing at the audio RING and create the PolySession for the pair.
+// Prepaid minute gate for an SBC/SIP outbound. Resolves the per-service budget
+// and asserts the caller may still start a call. Returns { allowed, settings,
+// identity }: allowed=false means the monthly cap is exhausted (the caller has
+// already been told to end). No active policy => allowed with settings=null.
+function checkSbcMinuteBudget({ session, callerSessionId, parsedFrom, serviceId }) {
+    const settings = minuteCounterPolicy.getSettings(serviceId);
+    const identity = minuteCounterPolicy.getIdentity(parsedFrom, session);
+    if (!minuteCounterApi || !settings?.limitSeconds) return { allowed: true, settings: null, identity };
+    try {
+        minuteCounterApi.assertCanStart({
+            serviceId: settings.serviceId,
+            identity,
+            limitSeconds: settings.limitSeconds,
+        });
+    } catch (err) {
+        console.log(`[${callerSessionId}] minute limit reached for ${identity}: ${err.message}`);
+        sendDataChannelMessage(callerSessionId, { msgType: "call", action: "end", reason: "minute-limit" });
+        return { allowed: false, settings, identity };
+    }
+    return { allowed: true, settings, identity };
+}
+
+// Service-side prepaid per-call cutoff. The minute counter owns the budget, so
+// we enforce the low-balance cap here instead of stamping a "Limit" SIP header
+// for the SIP proxy to enforce (SIPhon no longer carries that header). At answer
+// we arm a timer that BYEs both legs when the caller's remaining balance for THIS
+// call runs out, and we bill via the start/finish hooks. No-op without policy.
+function applySbcMinuteCap({ session, callerSessionId, poly, settings, identity }) {
+    if (!minuteCounterApi || !settings?.limitSeconds) return;
+
+    const clearCutoff = () => {
+        if (session._minuteCutoffTimer) {
+            clearTimeout(session._minuteCutoffTimer);
+            session._minuteCutoffTimer = null;
+        }
+    };
+
+    // Bill only the answered conversation: PolySession fires onCallStart when both
+    // legs reach IN_CALL and onCallEnd when they leave it -- so the counter starts
+    // at answer and stops on ANY end (hangup either side, failure, transport drop),
+    // independent of poly disposal/reuse. finish() is idempotent.
+    poly.setCallActivityHooks({
+        onCallStart: () => {
+            minuteCounterApi.start(session, {
+                serviceId: settings.serviceId,
+                identity,
+                limitSeconds: settings.limitSeconds,
+            });
+            // Remaining balance is measured at answer. Only a low-balance caller
+            // is capped per-call (mirrors the previous <300s Limit-header gate);
+            // higher balances are bounded across calls by assertCanStart().
+            const usedSeconds = minuteCounterApi.getUsedSeconds({
+                serviceId: settings.serviceId,
+                identity,
+            });
+            const remainingSeconds = settings.limitSeconds - usedSeconds;
+            clearCutoff();
+            if (remainingSeconds > 0 && remainingSeconds < 300) {
+                console.log(`[${callerSessionId}] low balance: capping call at ${remainingSeconds}s for ${identity}`);
+                session._minuteCutoffTimer = setTimeout(() => {
+                    session._minuteCutoffTimer = null;
+                    // Prepaid is the SIP/SBC leg's concern: the service decides this
+                    // leg is out of balance and ends the SIP (S) leg of the poly.
+                    // The S leg sets itself to ENDING (BYEs the SBC) and the poly
+                    // propagates the teardown to the caller leg.
+                    const sipRef = polySipRef(poly);
+                    if (!sipRef) {
+                        console.warn(`[${callerSessionId}] minute cap reached but poly has no SIP leg -- skipping`);
+                        return;
+                    }
+                    console.log(`[${callerSessionId}] minute cap reached (${remainingSeconds}s) -- ending SIP leg for ${identity}`);
+                    poly.onIngress(sipRef, makeLegEvent(LEG_EVENTS.END)).catch((err) => {
+                        console.error(`[${callerSessionId}] minute-cap hangup failed: ${err.message}`);
+                    });
+                }, remainingSeconds * 1000);
+            }
+        },
+        onCallEnd: () => {
+            clearCutoff();
+            minuteCounterApi.finish(session);
+        },
+    });
+}
+
 async function onDcRing(callerSessionId, payload) {
     const session = sessions.get(callerSessionId);
     if (!session || !session.peerConnection) return;
@@ -1091,60 +1182,18 @@ async function onDcRing(callerSessionId, payload) {
         };
 
         // Minute metering for SBC/PSTN outbound. The poly cutover orphaned the
-        // legacy SbcRouteStrategy where start()/assertCanStart() lived, so wire it
-        // here at SIP-leg origination: gate on the per-service monthly cap, then (on
-        // resolve) stamp session.minuteCounter so the registry teardown hook's
-        // finish() records the elapsed seconds. Pure caller-side billing.
-        minuteCounterSettings = minuteCounterPolicy.getSettings(serviceId);
-        minuteCounterIdentity = minuteCounterPolicy.getIdentity(parsedFrom, session);
-        if (minuteCounterApi && minuteCounterSettings?.limitSeconds) {
-            try {
-                minuteCounterApi.assertCanStart({
-                    serviceId: minuteCounterSettings.serviceId,
-                    identity: minuteCounterIdentity,
-                    limitSeconds: minuteCounterSettings.limitSeconds,
-                });
-            } catch (err) {
-                console.log(`[${callerSessionId}] minute limit reached for ${minuteCounterIdentity}: ${err.message}`);
-                sendDataChannelMessage(callerSessionId, { msgType: "call", action: "end", reason: "minute-limit" });
-                return;
-            }
-            // Prepaid cutoff: when the caller is low on monthly balance (< 5 min
-            // left) tell Kamailio how many seconds THIS call is allowed via a "Limit"
-            // header. Kamailio arms a dialog timer, BYEs both legs at expiry, and
-            // strips the header before the SBC. The service decides the budget;
-            // Kamailio enforces it. (remaining > 0 here -- assertCanStart already
-            // rejected an exhausted balance.)
-            const usedSeconds = minuteCounterApi.getUsedSeconds({
-                serviceId: minuteCounterSettings.serviceId,
-                identity: minuteCounterIdentity,
-            });
-            const remainingSeconds = minuteCounterSettings.limitSeconds - usedSeconds;
-            if (remainingSeconds > 0 && remainingSeconds < 300) {
-                session.sipDirective.headers = {
-                    ...(session.sipDirective.headers || {}),
-                    Limit: String(remainingSeconds),
-                };
-                console.log(`[${callerSessionId}] low balance: capping call at ${remainingSeconds}s for ${minuteCounterIdentity}`);
-            }
-        }
+        // legacy SbcRouteStrategy where start()/assertCanStart() lived, so gate on
+        // the per-service monthly cap here at SIP-leg origination. The cap header +
+        // billing hooks are applied below once the poly exists.
+        const budget = checkSbcMinuteBudget({ session, callerSessionId, parsedFrom, serviceId });
+        if (!budget.allowed) return;
+        minuteCounterSettings = budget.settings;
+        minuteCounterIdentity = budget.identity;
     }
 
     const { poly } = polyRegistry.resolve({ a, b, target: "a" });
-    if (b.kind === "sip" && minuteCounterApi && minuteCounterSettings?.limitSeconds) {
-        // Bill only the answered conversation: PolySession fires onCallStart when
-        // both legs reach IN_CALL and onCallEnd when they leave it -- so the counter
-        // starts at answer and stops on ANY end (hangup either side, failure,
-        // transport drop), independent of poly disposal/reuse. finish() is
-        // idempotent (the dispose teardown hook remains a backstop).
-        poly.setCallActivityHooks({
-            onCallStart: () => minuteCounterApi.start(session, {
-                serviceId: minuteCounterSettings.serviceId,
-                identity: minuteCounterIdentity,
-                limitSeconds: minuteCounterSettings.limitSeconds,
-            }),
-            onCallEnd: () => minuteCounterApi.finish(session),
-        });
+    if (b.kind === "sip") {
+        applySbcMinuteCap({ session, callerSessionId, poly, settings: minuteCounterSettings, identity: minuteCounterIdentity });
     }
     // Caller transport is already up (HTTP handshake). The SIP leg has no transport
     // to negotiate (openOutbound happens on ring), so mark it usable too. A webrtc
@@ -1240,6 +1289,19 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
                 sendDataChannelMessage(sessionId, { msgType: "call", action: "end", reason: "ring-failed" });
             });
             return;
+        }
+        // Reused poly: the caller is redialing over its live transport, so onDcRing
+        // (and its minute gate) is bypassed. Re-run the prepaid gate here for SBC/SIP
+        // redials so an out-of-balance caller is blocked and the per-call cutoff
+        // timer is re-armed every call -- not just the first. Otherwise a stale cap
+        // (or none) from a prior call would carry over on the reused poly.
+        const sipRef = polySipRef(existing);
+        if (sipRef) {
+            const serviceId = session.serviceId || null;
+            const parsedFrom = parseAddress(session.callerEns, serviceId);
+            const budget = checkSbcMinuteBudget({ session, callerSessionId: sessionId, parsedFrom, serviceId });
+            if (!budget.allowed) return;
+            applySbcMinuteCap({ session, callerSessionId: sessionId, poly: existing, settings: budget.settings, identity: budget.identity });
         }
     }
 
