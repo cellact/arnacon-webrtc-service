@@ -35,16 +35,6 @@ class PolySession {
         // billing). Kept as a list so callers compose without subclassing.
         this._teardownHooks = teardownHooks.filter((h) => typeof h === "function");
         this._teardownRan = false;
-        // Call-lifecycle hooks, fired on the active<->inactive edge derived from leg
-        // states (a call is "active" while either leg isActiveCall). This is the
-        // single robust seam for per-call side-effects that must bracket the call
-        // itself -- NOT the poly's disposal -- so they fire once per call on EVERY
-        // end path (hangup either side, mid-call failure, transport drop, reject)
-        // and again on a reused poly's next call. Used for minute-counter
-        // start/finish so billing always stops regardless of how the call ends.
-        this._onCallStart = null;
-        this._onCallEnd = null;
-        this._callActive = false;
         this.logger = logger;
 
         this.mediaHandle = null;
@@ -120,36 +110,9 @@ class PolySession {
                 }
                 this._recoverFailedLegs();
             }
-            await this._settleCallActivity();
         } finally {
             this._running = false;
         }
-    }
-
-    // Detect the in-call edge from the quiesced leg states and fire the lifecycle
-    // hooks once per transition. "In call" = BOTH legs are IN_CALL, i.e. the actual
-    // answered conversation (the media-bridged window) -- ring/setup/teardown are
-    // deliberately excluded. The falling edge is the reliable "conversation is over"
-    // signal that fires on every end path (hangup either side, mid-call failure,
-    // transport drop) while the poly itself survives for reuse.
-    async _settleCallActivity() {
-        const active = this.legs.a.state === LEG_STATES.IN_CALL && this.legs.b.state === LEG_STATES.IN_CALL;
-        if (active === this._callActive) return;
-        this._callActive = active;
-        const hook = active ? this._onCallStart : this._onCallEnd;
-        if (typeof hook !== "function") return;
-        try {
-            await hook(this);
-        } catch (err) {
-            this.logger.error(`[${this.id}] call-${active ? "start" : "end"} hook failed: ${err.message}`);
-        }
-    }
-
-    // Inject per-call lifecycle side-effects (e.g. minuteCounter start/finish).
-    // Idempotent to set; safe to (re)assign on a reused poly before its next call.
-    setCallActivityHooks({ onCallStart = null, onCallEnd = null } = {}) {
-        if (onCallStart !== undefined) this._onCallStart = typeof onCallStart === "function" ? onCallStart : null;
-        if (onCallEnd !== undefined) this._onCallEnd = typeof onCallEnd === "function" ? onCallEnd : null;
     }
 
     async _execute(action) {

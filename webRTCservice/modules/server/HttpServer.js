@@ -61,14 +61,13 @@ function createPublicServer({
 }
 
 function createInternalServer({
-    tlsOptions,
     internalHttpPort,
     internalBindIp,
     handlers,
     sendJsonError,
     logger = console,
 }) {
-    const internalHandler = async (req, res) => {
+    const internalServer = http.createServer(async (req, res) => {
         logger.log(`[Internal] Incoming request: ${req.method} ${req.url} from ${req.socket.remoteAddress}`);
         if (req.method !== "POST") {
             sendJsonError(res, 404, "Not found");
@@ -79,11 +78,10 @@ function createInternalServer({
             return;
         }
         await handlers.handleInboundCall(req, res);
-    };
-    const internalServer = https.createServer(tlsOptions, internalHandler);
+    });
     function start() {
         internalServer.listen(internalHttpPort, internalBindIp, () => {
-            logger.log(`WebRTCManager internal HTTPS listening on ${internalBindIp}:${internalHttpPort}`);
+            logger.log(`WebRTCManager internal HTTP listening on ${internalBindIp}:${internalHttpPort}`);
         });
     }
     function stop() {
@@ -111,7 +109,6 @@ function createHttpServers({
         verifyExternalRequest,
     });
     const internalServer = createInternalServer({
-        tlsOptions,
         internalHttpPort,
         internalBindIp,
         handlers,
