@@ -17,6 +17,7 @@
   "files": [
     "webRTCservice/**/*",
     "services/**/*",
+    "config.json",
     "globalserviceconfig.json",
     "demoAudio/**/*"
   ],

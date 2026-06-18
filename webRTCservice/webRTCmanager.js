@@ -272,7 +272,7 @@ function pickRuntimeConfig(key, fallback = undefined) {
 }
 
 const config = {
-    // Source-of-truth stays in Kamailio config.json (no duplication in globalserviceconfig.json).
+    // Source-of-truth is this package config.json (or an on-host file-location override).
     domain: commonConfig.domain,
     kamailioWssHost: commonConfig.kamailioWssHost,
     kamailioWssPort: commonConfig.kamailioWssPort,

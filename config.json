@@ -1,0 +1,24 @@
+{
+  "development": {
+    "common": {
+      "domain": "test2.cellact.nl",
+      "kamailioWssHost": "test2.cellact.nl",
+      "kamailioWssPort": 8443,
+      "kamailioWssScheme": "wss",
+      "bindIp": "0.0.0.0",
+      "tlsCertPath": "/etc/letsencrypt/live/test2.cellact.nl",
+      "globalServiceConfigPath": "./globalserviceconfig.json"
+    }
+  },
+  "production": {
+    "common": {
+      "domain": "ron1.cellact.nl",
+      "kamailioWssHost": "ron1.cellact.nl",
+      "kamailioWssPort": 8443,
+      "kamailioWssScheme": "wss",
+      "bindIp": "0.0.0.0",
+      "tlsCertPath": "/etc/letsencrypt/live/ron1.cellact.nl",
+      "globalServiceConfigPath": "./globalserviceconfig.json"
+    }
+  }
+}
