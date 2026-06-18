@@ -159,10 +159,34 @@ const { WebSocket: WsWebSocket } = require("ws");
 
 // ─── Load config from config.json + services/*.json ──────────
 const PACKAGE_ROOT = path.resolve(__dirname, "..");
-const CONFIG_OVERRIDE = process.env.WEBRTC_CONFIG_PATH || process.env.ARNACON_WEBRTC_CONFIG_PATH || "";
-const CONFIG_PATH = CONFIG_OVERRIDE
-    ? (path.isAbsolute(CONFIG_OVERRIDE) ? CONFIG_OVERRIDE : path.resolve(process.cwd(), CONFIG_OVERRIDE))
-    : path.join(PACKAGE_ROOT, "config.json");
+function resolveFirstExistingPath(candidates) {
+    for (const p of candidates) {
+        if (p && fs.existsSync(p)) return p;
+    }
+    return "";
+}
+
+function normalizeInputPath(inputPath) {
+    if (!inputPath) return "";
+    return path.isAbsolute(inputPath) ? inputPath : path.resolve(process.cwd(), inputPath);
+}
+
+const CONFIG_PATH = resolveFirstExistingPath([
+    path.resolve(process.cwd(), "config", "config.json"),
+    path.resolve(process.cwd(), "config.json"),
+    path.join(PACKAGE_ROOT, "config", "config.json"),
+    path.join(PACKAGE_ROOT, "config.json"),
+]);
+if (!CONFIG_PATH) {
+    throw new Error(
+        `WebRTC config not found. Checked: ${[
+            path.resolve(process.cwd(), "config", "config.json"),
+            path.resolve(process.cwd(), "config.json"),
+            path.join(PACKAGE_ROOT, "config", "config.json"),
+            path.join(PACKAGE_ROOT, "config.json"),
+        ].filter(Boolean).join(", ")}`
+    );
+}
 const CONFIG_BASE_DIR = path.dirname(CONFIG_PATH);
 const fullConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
 const IVR_DEMO_AUDIO_DIR_RAW = process.env.IVR_DEMO_AUDIO_DIR || "demoAudio";
@@ -173,9 +197,19 @@ console.log(`[IVR-AUDIO] Demo audio directory: ${IVR_DEMO_AUDIO_DIR}`);
 const _deployEnvEarly = process.env.DEPLOY_ENV || "development";
 const _commonEarly = (fullConfig[_deployEnvEarly] || {}).common || {};
 const GLOBAL_CONFIG_OVERRIDE = process.env.WEBRTC_GLOBAL_CONFIG_PATH || process.env.ARNACON_WEBRTC_GLOBAL_CONFIG_PATH || "";
-const GLOBAL_CONFIG_PATH = GLOBAL_CONFIG_OVERRIDE
-    ? (path.isAbsolute(GLOBAL_CONFIG_OVERRIDE) ? GLOBAL_CONFIG_OVERRIDE : path.resolve(process.cwd(), GLOBAL_CONFIG_OVERRIDE))
-    : (_commonEarly.globalServiceConfigPath || path.join(PACKAGE_ROOT, "globalserviceconfig.json"));
+const globalOverridePath = normalizeInputPath(GLOBAL_CONFIG_OVERRIDE);
+const GLOBAL_CONFIG_PATH = resolveFirstExistingPath([
+    globalOverridePath,
+    _commonEarly.globalServiceConfigPath
+        ? (_commonEarly.globalServiceConfigPath.startsWith("/")
+            ? _commonEarly.globalServiceConfigPath
+            : path.resolve(CONFIG_BASE_DIR, _commonEarly.globalServiceConfigPath))
+        : "",
+    path.resolve(process.cwd(), "config", "globalserviceconfig.json"),
+    path.resolve(process.cwd(), "globalserviceconfig.json"),
+    path.join(PACKAGE_ROOT, "config", "globalserviceconfig.json"),
+    path.join(PACKAGE_ROOT, "globalserviceconfig.json"),
+]);
 let fullGlobalConfig = {};
 if (fs.existsSync(GLOBAL_CONFIG_PATH)) {
     fullGlobalConfig = JSON.parse(fs.readFileSync(GLOBAL_CONFIG_PATH, "utf8"));
