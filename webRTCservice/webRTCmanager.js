@@ -317,7 +317,7 @@ const KAMAILIO_WSS_SCHEME = process.env.KAMAILIO_WSS_SCHEME || config.kamailioWs
 const KAMAILIO_WSS_HOST = process.env.KAMAILIO_WSS_HOST || config.kamailioWssHost || config.domain;
 const KAMAILIO_WSS_PORT = Number(process.env.KAMAILIO_WSS_PORT || config.kamailioWssPort || 8443);
 const KAMAILIO_WSS_URL = `${KAMAILIO_WSS_SCHEME}://${KAMAILIO_WSS_HOST}:${KAMAILIO_WSS_PORT}`;
-const KAMAILIO_DOMAIN = config.domain;
+const KAMAILIO_DOMAIN = process.env.KAMAILIO_DOMAIN || KAMAILIO_WSS_HOST || config.domain;
 const KAMAILIO_REGISTER_EXPIRES = 300;
 console.log(`[Startup] SIP WSS target: ${KAMAILIO_WSS_URL}`);
 

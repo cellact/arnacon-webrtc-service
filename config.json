@@ -2,7 +2,7 @@
   "development": {
     "common": {
       "domain": "test2.cellact.nl",
-      "kamailioWssHost": "test2.cellact.nl",
+      "kamailioWssHost": "srv921000.hstgr.cloud",
       "kamailioWssPort": 8443,
       "kamailioWssScheme": "wss",
       "bindIp": "0.0.0.0",
