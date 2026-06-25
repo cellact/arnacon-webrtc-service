@@ -118,6 +118,51 @@ class MidLifecyclePeerConnection extends FakePeerConnection {
     }
 }
 
+class DuplicateTrackOnRecoveryPeerConnection extends FakePeerConnection {
+    constructor({ audioMid = "2", ...opts } = {}) {
+        super(opts);
+        this.transceivers = [
+            { kind: "application", mid: "0", setDirection() {}, sender: { replaceTrack: async () => {} } },
+            { kind: "audio", mid: audioMid, setDirection() {}, sender: { replaceTrack: async () => {}, track: null } },
+        ];
+        this._remoteOfferAudioMid = null;
+    }
+
+    _extractAudioMid(sdp = "") {
+        const sections = String(sdp).split(/\r?\nm=/);
+        for (const rawSection of sections) {
+            const section = rawSection.startsWith("m=") ? rawSection : `m=${rawSection}`;
+            if (!/^m=audio\b/m.test(section)) continue;
+            const mid = section.match(/^a=mid:([^\r\n]+)/m)?.[1];
+            if (mid) return String(mid);
+        }
+        return null;
+    }
+
+    _hasAudioMid(mid) {
+        return this.transceivers.some((t) => t.kind === "audio" && String(t.mid || "") === String(mid || ""));
+    }
+
+    addTrack(track) {
+        const audio = this.transceivers.find((t) => t.kind === "audio");
+        if (audio?.sender?.track === track) {
+            throw new Error("Track already added");
+        }
+        if (audio?.sender) audio.sender.track = track;
+        return { kind: track?.kind || "audio" };
+    }
+
+    async setRemoteDescription(d) {
+        if (d?.type === "offer") {
+            this._remoteOfferAudioMid = this._extractAudioMid(d?.sdp || "");
+            if (this._remoteOfferAudioMid && !this._hasAudioMid(this._remoteOfferAudioMid)) {
+                throw new Error(`Transceiver with mid=${this._remoteOfferAudioMid} not found`);
+            }
+        }
+        this.remoteDescription = d;
+    }
+}
+
 function deepLifecyclePrimitives() {
     const base = fakePrimitives();
     const callSdpUseCases = new CallSdpUseCases({
@@ -472,5 +517,44 @@ test("DEEP BUG REPRO: stale audio MID can fail during setLocalDescription", asyn
     await assert.doesNotReject(
         () => neg.applyOffer({ mode: "ring", payload: { sdp: redialOfferWithAudioMid } }),
         "redial offer should not wedge even when MID mismatch surfaces at setLocalDescription time",
+    );
+});
+
+test("DEEP BUG REPRO: recovery must not throw when local track is already bound", async () => {
+    const signaling = new FakeSignaling();
+    const localTrack = { kind: "audio" };
+    const pc = new DuplicateTrackOnRecoveryPeerConnection({
+        audioMid: "2",
+        answerSdp: "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 8\r\na=mid:1\r\na=sendrecv\r\n",
+    });
+    pc.transceivers.find((t) => t.kind === "audio").sender.track = localTrack;
+    const session = {
+        sessionId: "alice|bob",
+        callerEns: "alice.secnum.global",
+        toIdentity: "bob.secnum.global",
+        peerConnection: pc,
+        localAudioTrack: localTrack,
+    };
+    const neg = new WebRtcNegotiation({
+        id: "alice",
+        endpoint: "alice.secnum.global",
+        session,
+        signaling,
+        primitives: deepLifecyclePrimitives(),
+        logger: silentLogger,
+    });
+
+    const redialOfferWithAudioMid =
+        "v=0\r\n" +
+        "a=group:BUNDLE 0 1\r\n" +
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" +
+        "a=mid:0\r\n" +
+        "m=audio 9 UDP/TLS/RTP/SAVPF 8\r\n" +
+        "a=mid:1\r\n" +
+        "a=sendrecv\r\n";
+
+    await assert.doesNotReject(
+        () => neg.applyOffer({ mode: "ring", payload: { sdp: redialOfferWithAudioMid } }),
+        "recovery should tolerate already-bound tracks and continue",
     );
 });

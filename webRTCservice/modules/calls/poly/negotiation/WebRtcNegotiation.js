@@ -254,6 +254,17 @@ class WebRtcNegotiation extends CallNegotiationPort {
         return /Transceiver with mid=\d+ not found/i.test(msg);
     }
 
+    _isTrackAlreadyAddedError(err) {
+        const msg = String(err?.message || "");
+        return /Track already added/i.test(msg);
+    }
+
+    _isTrackBoundToAudioTransceiver(pc, track) {
+        if (!track) return false;
+        const audioTransceivers = pc.getTransceivers?.().filter((t) => t.kind === "audio") || [];
+        return audioTransceivers.some((t) => t?.sender?.track === track);
+    }
+
     _primeAudioTransceiver(transceiver, track) {
         if (!transceiver) return;
         try { transceiver.setDirection?.("sendrecv"); } catch (_) {}
@@ -303,14 +314,25 @@ class WebRtcNegotiation extends CallNegotiationPort {
         if (!this._offerHasAudioMLine(sdp)) return;
         const force = opts.force === true;
         const audioTransceiver = pc.getTransceivers?.().find((t) => t.kind === "audio");
-        if (audioTransceiver && !force) return;
+        if (audioTransceiver && !force) {
+            this._primeAudioTransceiver(audioTransceiver, this.session.localAudioTrack || null);
+            return;
+        }
 
         if (!this.session.localAudioTrack) {
             this.session.localAudioTrack = new this.MediaStreamTrack({ kind: "audio" });
         }
-        pc.addTrack?.(this.session.localAudioTrack);
+        const track = this.session.localAudioTrack;
+        const alreadyBound = this._isTrackBoundToAudioTransceiver(pc, track);
+        if (!alreadyBound && typeof pc.addTrack === "function") {
+            try {
+                pc.addTrack(track);
+            } catch (err) {
+                if (!this._isTrackAlreadyAddedError(err)) throw err;
+            }
+        }
         const latestAudio = pc.getTransceivers?.().find((t) => t.kind === "audio");
-        if (latestAudio) this._primeAudioTransceiver(latestAudio, this.session.localAudioTrack);
+        if (latestAudio) this._primeAudioTransceiver(latestAudio, track);
     }
 
     // The caller's client offered a ring and we are connected: ack it so the
