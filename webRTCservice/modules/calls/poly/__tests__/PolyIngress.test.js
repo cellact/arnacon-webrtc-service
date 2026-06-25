@@ -65,3 +65,58 @@ test("unsupported action is ignored without throwing", async () => {
     const result = await ingress.deliver(parties, "totally-unknown", {});
     assert.equal(result, null);
 });
+
+test("cancel action routes through registry to caller leg state", async () => {
+    const { ingress, registry } = build();
+    const { poly } = registry.resolve(parties);
+    await poly.onIngress("a", { type: LEG_EVENTS.TRANSPORT_OPEN, payload: {} });
+    await poly.onIngress("b", { type: LEG_EVENTS.TRANSPORT_OPEN, payload: {} });
+    await ingress.deliver(parties, "offer", { sdp: "v=0\r\nm=audio 9 UDP\r\na=sendrecv\r\n" });
+    assert.equal(poly.legs.a.state, S.CALLING);
+    assert.equal(poly.legs.b.state, S.RINGING);
+
+    await ingress.deliver(parties, "cancel", {});
+    assert.equal(poly.legs.a.state, S.CANCELED);
+});
+
+test("reject action delivered to callee transitions to rejected and ends caller", async () => {
+    const { ingress, registry } = build();
+    const { poly } = registry.resolve(parties);
+    await poly.onIngress("a", { type: LEG_EVENTS.TRANSPORT_OPEN, payload: {} });
+    await poly.onIngress("b", { type: LEG_EVENTS.TRANSPORT_OPEN, payload: {} });
+    await ingress.deliver(parties, "offer", { sdp: "v=0\r\nm=audio 9 UDP\r\na=sendrecv\r\n" });
+
+    await ingress.deliver({ ...parties, target: "bob" }, "reject", {});
+    assert.equal(poly.legs.b.state, S.REJECTED);
+    assert.equal(poly.legs.a.state, S.ENDING);
+});
+
+test("end-call answer is routed as END_RENEGOTIATION completion", async () => {
+    const { ingress, registry } = build();
+    const { poly } = registry.resolve(parties);
+    await poly.onIngress("a", { type: LEG_EVENTS.TRANSPORT_OPEN, payload: {} });
+    await poly.onIngress("b", { type: LEG_EVENTS.TRANSPORT_OPEN, payload: {} });
+    await ingress.deliver(parties, "offer", { sdp: "v=0\r\nm=audio 9 UDP\r\na=sendrecv\r\n" });
+    await ingress.deliver({ ...parties, target: "bob" }, "answer", { sdp: "ans" });
+    assert.equal(poly.legs.a.state, S.IN_CALL);
+    assert.equal(poly.legs.b.state, S.IN_CALL);
+
+    await ingress.deliver(parties, "end", {});
+    assert.equal(poly.legs.a.state, S.CONNECTED);
+    assert.equal(poly.legs.b.state, S.ENDING);
+
+    await ingress.deliver({ ...parties, target: "bob" }, "end-call", { type: "answer", sdp: "end-ans" });
+    assert.equal(poly.legs.b.state, S.CONNECTED);
+});
+
+test("ice and ice-batch actions reach aux handler without state churn", async () => {
+    const { ingress, registry } = build();
+    const { poly } = registry.resolve(parties);
+    await poly.onIngress("a", { type: LEG_EVENTS.TRANSPORT_OPEN, payload: {} });
+
+    await ingress.deliver(parties, "ice", { candidates: [{ candidate: "cand-1" }] });
+    await ingress.deliver(parties, "ice-batch", { candidates: [{ candidate: "cand-2" }] });
+
+    assert.equal(poly.legs.a.state, S.CONNECTED);
+    assert.equal(poly.legs.a.negotiation.named("aux").length, 2);
+});

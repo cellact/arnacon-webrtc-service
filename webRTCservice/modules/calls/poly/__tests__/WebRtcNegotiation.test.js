@@ -24,6 +24,36 @@ function build({ offerSdp, answerSdp } = {}) {
     return { neg, signaling, session };
 }
 
+class MidStrictPeerConnection extends FakePeerConnection {
+    constructor(opts = {}) {
+        super(opts);
+        // Model werift's transceiver map keyed by negotiated mids.
+        this.transceivers = [{ kind: "application", mid: "0", setDirection() {}, sender: { replaceTrack: async () => {} } }];
+    }
+
+    addTrack(track) {
+        if (track?.kind === "audio" && !this.transceivers.find((t) => t.kind === "audio")) {
+            this.transceivers.push({
+                kind: "audio",
+                mid: "1",
+                setDirection() {},
+                sender: { replaceTrack: async () => {} },
+            });
+        }
+        return { kind: track?.kind || "audio" };
+    }
+
+    async setRemoteDescription(d) {
+        // Reproduces prod failure:
+        // "Transceiver with mid=1 not found" on redial offer after end/reuse.
+        const hasAudioTransceiver = this.transceivers.some((t) => t.kind === "audio" || t.mid === "1");
+        if (d?.type === "offer" && /a=mid:1/.test(d?.sdp || "") && !hasAudioTransceiver) {
+            throw new Error("Transceiver with mid=1 not found");
+        }
+        this.remoteDescription = d;
+    }
+}
+
 test("ring sends a signaling offer with the caller's bare label", async () => {
     const { neg, signaling } = build();
     await neg.ring({ from: "alice.secnum.global" });
@@ -252,4 +282,38 @@ test("callee leg connect without inviteCallee transport throws", async () => {
         logger: silentLogger,
     });
     await assert.rejects(() => neg.connect({}), /no inviteCallee transport/);
+});
+
+test("BUG REPRO: redial offer after end/reuse must not fail on mid mismatch", async () => {
+    const signaling = new FakeSignaling();
+    const session = {
+        sessionId: "alice|bob",
+        callerEns: "alice.secnum.global",
+        toIdentity: "bob.secnum.global",
+        peerConnection: new MidStrictPeerConnection(),
+        localAudioTrack: null,
+    };
+    const neg = new WebRtcNegotiation({
+        id: "alice",
+        endpoint: "alice.secnum.global",
+        session,
+        signaling,
+        primitives: fakePrimitives(),
+        logger: silentLogger,
+    });
+
+    const redialOfferWithAudioMid =
+        "v=0\r\n" +
+        "a=group:BUNDLE 0 1\r\n" +
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" +
+        "a=mid:0\r\n" +
+        "m=audio 9 UDP/TLS/RTP/SAVPF 8\r\n" +
+        "a=mid:1\r\n" +
+        "a=sendrecv\r\n";
+
+    // RED test first: today this throws exactly like prod logs.
+    await assert.doesNotReject(
+        () => neg.applyOffer({ mode: "ring", payload: { sdp: redialOfferWithAudioMid } }),
+        "redial offer should recover from transceiver mismatch instead of wedging",
+    );
 });

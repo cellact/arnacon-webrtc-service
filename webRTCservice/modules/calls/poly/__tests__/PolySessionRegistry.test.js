@@ -3,6 +3,8 @@ const assert = require("node:assert/strict");
 
 const { PolySessionRegistry, pairKey } = require("../PolySessionRegistry");
 const { LegFactory } = require("../LegFactory");
+const { LEG_EVENTS, makeLegEvent } = require("../ports");
+const { LEG_STATES: S } = require("../states");
 const { FakeNegotiation, FakeMediaController, silentLogger } = require("./fakes");
 
 function buildRegistry() {
@@ -13,6 +15,18 @@ function buildRegistry() {
         logger: silentLogger,
     });
     return new PolySessionRegistry({ legFactory, mediaController: new FakeMediaController(), logger: silentLogger });
+}
+
+function buildRegistryWithMedia() {
+    const negotiationFactory = ({ id }) => new FakeNegotiation({ id });
+    const legFactory = new LegFactory({
+        webRtcNegotiationFactory: negotiationFactory,
+        sipNegotiationFactory: negotiationFactory,
+        logger: silentLogger,
+    });
+    const media = new FakeMediaController();
+    const reg = new PolySessionRegistry({ legFactory, mediaController: media, logger: silentLogger });
+    return { reg, media };
 }
 
 test("same identity pair resolves to one PolySession regardless of order or label form", () => {
@@ -95,4 +109,35 @@ test("getByEndpoint finds the PolySession by either party (label-normalized)", (
     assert.equal(reg.getByEndpoint("972557140015.secnum.global"), poly);
     assert.equal(reg.getByEndpoint("BOB@example.com"), poly);
     assert.equal(reg.getByEndpoint("nobody"), null);
+});
+
+test("supports two simultaneous calls without cross-wiring state/media", async () => {
+    const { reg, media } = buildRegistryWithMedia();
+    const first = reg.resolve({
+        a: { endpoint: "alice", kind: "webrtc" },
+        b: { endpoint: "bob", kind: "webrtc" },
+        target: "a",
+    });
+    const second = reg.resolve({
+        a: { endpoint: "carol", kind: "webrtc" },
+        b: { endpoint: "dave", kind: "webrtc" },
+        target: "a",
+    });
+    assert.notEqual(first.poly, second.poly);
+
+    await first.poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await first.poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await second.poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await second.poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+
+    await first.poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "offer-1" }));
+    await second.poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "offer-2" }));
+    await first.poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "answer-1" }));
+    await second.poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "answer-2" }));
+
+    assert.equal(first.poly.legs.a.state, S.IN_CALL);
+    assert.equal(first.poly.legs.b.state, S.IN_CALL);
+    assert.equal(second.poly.legs.a.state, S.IN_CALL);
+    assert.equal(second.poly.legs.b.state, S.IN_CALL);
+    assert.equal(media.connects.length, 2, "media must bridge each call once");
 });

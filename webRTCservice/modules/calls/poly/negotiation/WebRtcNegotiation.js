@@ -177,7 +177,18 @@ class WebRtcNegotiation extends CallNegotiationPort {
         if (audioDirection(offerSdp) === "inactive" && this.p.patchInactiveToSendrecv) {
             offerSdp = this.p.patchInactiveToSendrecv(offerSdp);
         }
-        await pc.setRemoteDescription(new this.p.RTCSessionDescription(offerSdp, "offer"));
+        if (!isIceRestart) this._ensureAudioReadyForOffer(offerSdp, pc);
+        try {
+            await pc.setRemoteDescription(new this.p.RTCSessionDescription(offerSdp, "offer"));
+        } catch (err) {
+            if (!isIceRestart && this._isMissingMidError(err) && this._offerHasAudioMLine(offerSdp)) {
+                // Recovery for reused sessions that retained DC but lost local m=audio mapping.
+                this._ensureAudioReadyForOffer(offerSdp, pc, { force: true });
+                await pc.setRemoteDescription(new this.p.RTCSessionDescription(offerSdp, "offer"));
+            } else {
+                throw err;
+            }
+        }
         await this.p.addIceCandidates?.(pc, payload.candidates || []);
         // On ICE restart the track set is unchanged; only the caller-ring path
         // needs to (re)attach the local audio track.
@@ -208,6 +219,27 @@ class WebRtcNegotiation extends CallNegotiationPort {
         // We do NOT ack here: P decides WHEN to ack (reconcile emits ACK_CONNECTED
         // on the fresh ring); this adapter only knows HOW (ackConnected above).
         this._pendingAnswerSdp = answerSdp;
+    }
+
+    _offerHasAudioMLine(sdp = "") {
+        return /\bm=audio\b/.test(sdp);
+    }
+
+    _isMissingMidError(err) {
+        const msg = String(err?.message || "");
+        return /Transceiver with mid=\d+ not found/i.test(msg);
+    }
+
+    _ensureAudioReadyForOffer(sdp, pc, opts = {}) {
+        if (!this._offerHasAudioMLine(sdp)) return;
+        const force = opts.force === true;
+        const audioTransceiver = pc.getTransceivers?.().find((t) => t.kind === "audio");
+        if (audioTransceiver && !force) return;
+
+        if (!this.session.localAudioTrack) {
+            this.session.localAudioTrack = new this.MediaStreamTrack({ kind: "audio" });
+        }
+        pc.addTrack?.(this.session.localAudioTrack);
     }
 
     // The caller's client offered a ring and we are connected: ack it so the

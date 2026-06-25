@@ -275,3 +275,77 @@ test("second call reuse: after end, a fresh offer rings the peer again", async (
     assert.equal(b.leg.state, S.RINGING);
     assert.equal(b.negotiation.named("ring").length, 2);
 });
+
+test("caller cancels while callee is still connecting (deferred connect)", async () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeWebRtcLeg("bob", { deferConnect: true });
+    const { poly, media } = buildPoly(a, b);
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o" }));
+    assert.equal(a.leg.state, S.CALLING);
+    assert.equal(b.leg.state, S.CONNECTING);
+
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.CANCEL));
+    assert.equal(a.leg.state, S.CANCELED);
+    assert.equal(b.leg.state, S.CONNECTING, "callee keeps its connect lifecycle");
+    assert.equal(media.connects.length, 0);
+    assert.equal(b.negotiation.named("ring").length, 0);
+
+    // If the callee transport opens later, it must not be auto-rung from stale state.
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    assert.equal(b.leg.state, S.CONNECTED);
+    assert.equal(b.negotiation.named("ring").length, 0);
+});
+
+test("caller transport closes during callee connect: no media, no duplicate teardown intents", async () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeWebRtcLeg("bob", { deferConnect: true });
+    const { poly, media } = buildPoly(a, b);
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o" }));
+    assert.equal(a.leg.state, S.CALLING);
+    assert.equal(b.leg.state, S.CONNECTING);
+
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_CLOSE));
+    assert.equal(a.leg.state, S.DISCONNECTED, "failed caller collapses to idle after teardown settles");
+    assert.equal(b.leg.state, S.CONNECTING);
+    assert.equal(media.connects.length, 0);
+    assert.equal(media.disconnects.length, 0);
+    assert.equal(b.negotiation.named("endCall").length, 0);
+});
+
+test("simultaneous offers (glare) converges to a single connected call graph", async () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeWebRtcLeg("bob");
+    const { poly, media } = buildPoly(a, b);
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o-a" }));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o-b" }));
+    assert.equal(a.leg.state, S.CALLING);
+    assert.equal(b.leg.state, S.CALLING);
+
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "ans-b" }));
+    assert.equal(a.leg.state, S.IN_CALL);
+    assert.equal(b.leg.state, S.IN_CALL);
+    assert.equal(media.connects.length, 1, "glare must not duplicate media bridge");
+    assert.equal(media.disconnects.length, 0);
+});
+
+test("repeated settle passes do not duplicate media disconnect", async () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeWebRtcLeg("bob");
+    const { poly, media } = buildPoly(a, b);
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o" }));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "ans" }));
+    assert.equal(media.connects.length, 1);
+
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END));
+    assert.equal(media.disconnects.length, 1);
+    await poly._settle();
+    await poly._settle();
+    assert.equal(media.disconnects.length, 1, "teardown reconcile remains idempotent");
+});

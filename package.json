@@ -1,6 +1,6 @@
 {
   "name": "arnacon-webrtc-service",
-  "version": "0.1.184",
+  "version": "0.2.0",
   "description": "Arnacon WebRTC core runtime and service modules",
   "main": "./webRTCservice/core.js",
   "type": "commonjs",
@@ -21,7 +21,9 @@
     "demoAudio/**/*"
   ],
   "scripts": {
-    "test": "node --test webRTCservice/modules/calls/poly/__tests__/*.test.js",
+    "test": "npm run test:poly",
+    "test:poly": "node --test webRTCservice/modules/calls/poly/__tests__/*.test.js",
+    "test:scenarios": "node --test webRTCservice/modules/calls/poly/__tests__/Scenarios.test.js",
     "build": "node webRTCservice/build.js",
     "clean": "node webRTCservice/clean.js",
     "validate:exports": "node webRTCservice/validateExports.js",

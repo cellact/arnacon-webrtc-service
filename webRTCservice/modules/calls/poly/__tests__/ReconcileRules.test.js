@@ -112,6 +112,27 @@ test("ackConnected fires even when the peer is not yet reachable", () => {
     assert.deepEqual(intents(actions), [{ kind: "intent", leg: "a", intent: I.ACK_CONNECTED, from: "self" }]);
 });
 
+test("connecting peer with no fresh ring event does not re-ack or ring yet", () => {
+    const actions = reconcile(snap(S.CALLING, S.CONNECTING, false), { state: S.CONNECTING });
+    assert.deepEqual(intents(actions), []);
+    assert.deepEqual(mediaOps(actions), []);
+});
+
+test("re-ring transition: ringing caller and reusable peer issues ring intent", () => {
+    const actions = reconcile(snap(S.RINGING, S.CONNECTED, false), { state: S.RINGING });
+    assert.deepEqual(intents(actions), [
+        { kind: "intent", leg: "b", intent: I.RING, from: "a" },
+    ]);
+});
+
+test("reverse re-ring transition: ended side can be rung by calling peer", () => {
+    const actions = reconcile(snap(S.ENDED, S.CALLING, false), ringEvent);
+    assert.deepEqual(intents(actions), [
+        { kind: "intent", leg: "b", intent: I.ACK_CONNECTED, from: "self" },
+        { kind: "intent", leg: "a", intent: I.RING, from: "b" },
+    ]);
+});
+
 test("progress: ringing vs ended (reusable) rings the reusable side", () => {
     const actions = reconcile(snap(S.ENDED, S.RINGING, false));
     assert.deepEqual(intents(actions), [{ kind: "intent", leg: "a", intent: I.RING, from: "b" }]);
