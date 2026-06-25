@@ -1129,6 +1129,17 @@ function onPeerConnected(sessionId) {
     // No pending-bridge bookkeeping anymore — pairing is handled by the registry.
 }
 
+function isRecoverableOfferIngressError(err) {
+    const msg = String(err?.message || "");
+    return (
+        /Transceiver with mid=\d+ not found/i.test(msg) ||
+        /m[-\s]?line not found/i.test(msg) ||
+        /iceParams/i.test(msg) ||
+        /media section/i.test(msg) ||
+        /reading 'kind'/i.test(msg)
+    );
+}
+
 /**
  * Data channel ingress -> normalized leg events for the owning PolySession.
  * Replaces SignalingMessageRouter phase-gating (leg states gate instead).
@@ -1208,6 +1219,24 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
     if (!event) return;
     const ref = polyWebrtcRef(poly, session, channelRole);
     poly.onIngress(ref, event).catch((err) => {
+        if (action === "offer" && isRecoverableOfferIngressError(err) && !payload.__polyIngressRetriedOnce) {
+            payload.__polyIngressRetriedOnce = true;
+            (async () => {
+                const latestSession = sessions.get(sessionId);
+                if (!latestSession) return;
+                const existing = polyForSession(latestSession);
+                if (existing) {
+                    await polyRegistry.destroy(
+                        polyRegistry.keyForPair(existing.legs.a.endpoint, existing.legs.b.endpoint),
+                        "offer-recover-reset",
+                    );
+                }
+                await onDcRing(sessionId, payload);
+            })().catch((retryErr) => {
+                console.error(`[${sessionId}] poly ingress (${action}) retry failed: ${retryErr.message}`);
+            });
+            return;
+        }
         console.error(`[${sessionId}] poly ingress (${action}) failed: ${err.message}`);
     });
 }
