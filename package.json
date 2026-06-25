@@ -23,6 +23,8 @@
   "scripts": {
     "test": "npm run test:poly",
     "test:poly": "node --test webRTCservice/modules/calls/poly/__tests__/*.test.js",
+    "test:werift": "node --test --test-concurrency=1 webRTCservice/modules/calls/poly/__tests__/WebRtcNegotiation.werift.integration.test.js",
+    "test:poly:all": "npm run test:poly && npm run test:werift",
     "test:scenarios": "node --test webRTCservice/modules/calls/poly/__tests__/Scenarios.test.js",
     "build": "node webRTCservice/build.js",
     "clean": "node webRTCservice/clean.js",

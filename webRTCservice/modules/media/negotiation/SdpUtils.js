@@ -95,7 +95,11 @@ async function addIceCandidates(pc, candidates, RTCIceCandidate) {
     let added = 0;
     const isMLineMismatch = (err) => {
         const msg = String(err?.message || "");
-        return /m[-\s]?line not found/i.test(msg);
+        return (
+            /m[-\s]?line not found/i.test(msg) ||
+            /iceParams/i.test(msg) ||
+            /media section/i.test(msg)
+        );
     };
     for (const c of (candidates || [])) {
         if (c && c.candidate) {

@@ -177,12 +177,13 @@ class WebRtcNegotiation extends CallNegotiationPort {
         if (audioDirection(offerSdp) === "inactive" && this.p.patchInactiveToSendrecv) {
             offerSdp = this.p.patchInactiveToSendrecv(offerSdp);
         }
-        if (!isIceRestart) this._ensureAudioReadyForOffer(offerSdp, pc);
+        const offerHasAudio = this._offerHasAudioMLine(offerSdp);
+        if (!isIceRestart && offerHasAudio) this._ensureAudioReadyForOffer(offerSdp, pc);
         await this._setRemoteOfferWithRecovery(pc, offerSdp);
         await this.p.addIceCandidates?.(pc, payload.candidates || []);
         // On ICE restart the track set is unchanged; only the caller-ring path
         // needs to (re)attach the local audio track.
-        if (!isIceRestart && this.p.ensureLocalAudioTrack) {
+        if (!isIceRestart && offerHasAudio && this.p.ensureLocalAudioTrack) {
             this.p.ensureLocalAudioTrack(this.session, pc, this.id);
         }
         const label = isIceRestart ? "ICE-RESTART ANSWER SDP" : "ANSWER SDP";
@@ -231,6 +232,47 @@ class WebRtcNegotiation extends CallNegotiationPort {
         return /Transceiver with mid=\d+ not found/i.test(msg);
     }
 
+    _isMLineOrParserMappingError(err) {
+        const msg = String(err?.message || "");
+        return (
+            /m[-\s]?line not found/i.test(msg) ||
+            /iceParams/i.test(msg) ||
+            /media section/i.test(msg)
+        );
+    }
+
+    _offerMediaSections(sdp = "") {
+        const out = [];
+        const parts = String(sdp).split(/\r?\nm=/);
+        for (let i = 0; i < parts.length; i += 1) {
+            const section = i === 0 ? parts[i] : `m=${parts[i]}`;
+            if (!/^m=/m.test(section)) continue;
+            const kind = section.match(/^m=([^\s]+)/m)?.[1] || null;
+            const mid = section.match(/^a=mid:([^\r\n]+)/m)?.[1] || null;
+            out.push({ kind, mid: mid ? String(mid).trim() : null, raw: section });
+        }
+        return out;
+    }
+
+    _alignTransceiversToOffer(pc, sdp) {
+        const sections = this._offerMediaSections(sdp);
+        const hasAudio = sections.some((s) => s.kind === "audio");
+        const audioOfferMids = new Set(
+            sections
+                .filter((s) => s.kind === "audio" && s.mid)
+                .map((s) => String(s.mid)),
+        );
+        const audioTransceivers = pc.getTransceivers?.().filter((t) => t.kind === "audio") || [];
+        if (!audioTransceivers.length) return;
+        for (const transceiver of audioTransceivers) {
+            const currentMid = String(transceiver?.mid || "").trim();
+            const midIsOffered = currentMid && audioOfferMids.has(currentMid);
+            if (hasAudio && midIsOffered) continue;
+            try { transceiver.setDirection?.("inactive"); } catch (_) {}
+            try { transceiver.sender?.replaceTrack?.(null); } catch (_) {}
+        }
+    }
+
     _extractMissingMidFromError(err) {
         const msg = String(err?.message || "");
         const mid = msg.match(/Transceiver with mid=(\d+) not found/i)?.[1];
@@ -244,9 +286,15 @@ class WebRtcNegotiation extends CallNegotiationPort {
                 await pc.setRemoteDescription(new this.p.RTCSessionDescription(offerSdp, "offer"));
                 return;
             } catch (err) {
-                if (!this._isMissingMidError(err) || !this._offerHasAudioMLine(offerSdp)) throw err;
-                const missingMid = this._extractMissingMidFromError(err);
-                this._repairAudioForOfferMid(offerSdp, pc, { preferredMid: missingMid, forceCreate });
+                const hasAudio = this._offerHasAudioMLine(offerSdp);
+                const isMissingMid = this._isMissingMidError(err);
+                const isParserMapping = this._isMLineOrParserMappingError(err);
+                if (!isMissingMid && !isParserMapping) throw err;
+                this._alignTransceiversToOffer(pc, offerSdp);
+                if (hasAudio) {
+                    const missingMid = this._extractMissingMidFromError(err);
+                    this._repairAudioForOfferMid(offerSdp, pc, { preferredMid: missingMid, forceCreate });
+                }
                 forceCreate = true;
                 if (attempt === 2) throw err;
             }
@@ -259,9 +307,15 @@ class WebRtcNegotiation extends CallNegotiationPort {
             try {
                 return await this.p.createAnswerSdp(pc, this.id, label);
             } catch (err) {
-                if (!this._isMissingMidError(err) || !this._offerHasAudioMLine(offerSdp)) throw err;
-                const missingMid = this._extractMissingMidFromError(err);
-                this._repairAudioForOfferMid(offerSdp, pc, { preferredMid: missingMid, forceCreate });
+                const hasAudio = this._offerHasAudioMLine(offerSdp);
+                const isMissingMid = this._isMissingMidError(err);
+                const isParserMapping = this._isMLineOrParserMappingError(err);
+                if (!isMissingMid && !isParserMapping) throw err;
+                this._alignTransceiversToOffer(pc, offerSdp);
+                if (hasAudio) {
+                    const missingMid = this._extractMissingMidFromError(err);
+                    this._repairAudioForOfferMid(offerSdp, pc, { preferredMid: missingMid, forceCreate });
+                }
                 forceCreate = true;
                 if (attempt === 2) throw err;
             }

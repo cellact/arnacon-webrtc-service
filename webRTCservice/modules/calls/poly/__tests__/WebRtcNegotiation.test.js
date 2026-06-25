@@ -257,6 +257,34 @@ class CandidateMLineStrictPeerConnection extends FakePeerConnection {
     }
 }
 
+class ParserMLineRecoveryPeerConnection extends FakePeerConnection {
+    constructor(opts = {}) {
+        super(opts);
+        this.transceivers = [
+            { kind: "application", mid: "0", setDirection() {}, sender: { replaceTrack: async () => {}, track: null } },
+            { kind: "audio", mid: "1", setDirection() {}, sender: { replaceTrack: async () => {}, track: null } },
+        ];
+        this.failOnce = true;
+    }
+
+    addTrack(track) {
+        const audio = this.transceivers.find((t) => t.kind === "audio");
+        if (audio?.sender) audio.sender.track = track;
+        return { kind: track?.kind || "audio" };
+    }
+
+    async setRemoteDescription(d) {
+        const sdp = String(d?.sdp || "");
+        const hasAudio = /^m=audio\b/m.test(sdp);
+        const audio = this.transceivers.find((t) => t.kind === "audio");
+        if (!hasAudio && this.failOnce && audio?.sender?.track) {
+            this.failOnce = false;
+            throw new Error("Cannot read properties of undefined (reading 'iceParams')");
+        }
+        this.remoteDescription = d;
+    }
+}
+
 function deepLifecyclePrimitives() {
     const base = fakePrimitives();
     const callSdpUseCases = new CallSdpUseCases({
@@ -899,4 +927,39 @@ test("DEEP BUG REPRO: applyOffer ignores stale ICE candidate m-line mismatch", a
     );
     assert.equal(pc.appliedCandidates.length, 1, "valid candidate should still be applied");
     assert.equal(pc.appliedCandidates[0].sdpMLineIndex, 0);
+});
+
+test("DEEP BUG REPRO: parser m-line failure realigns on data-only offer", async () => {
+    const signaling = new FakeSignaling();
+    const localTrack = { kind: "audio" };
+    const pc = new ParserMLineRecoveryPeerConnection({
+        answerSdp: "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:0\r\n",
+    });
+    pc.transceivers.find((t) => t.kind === "audio").sender.track = localTrack;
+    const session = {
+        sessionId: "alice|bob|parser-mline",
+        callerEns: "alice.secnum.global",
+        toIdentity: "bob.secnum.global",
+        peerConnection: pc,
+        localAudioTrack: localTrack,
+    };
+    const neg = new WebRtcNegotiation({
+        id: "alice",
+        endpoint: "alice.secnum.global",
+        session,
+        signaling,
+        primitives: deepLifecyclePrimitives(),
+        logger: silentLogger,
+    });
+    const dataOnlyOffer =
+        "v=0\r\n" +
+        "a=group:BUNDLE 0\r\n" +
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" +
+        "a=mid:0\r\n";
+
+    await assert.doesNotReject(
+        () => neg.applyOffer({ mode: "ring", payload: { sdp: dataOnlyOffer } }),
+        "parser-style m-line failures should realign and recover on data-only offers",
+    );
+    assert.equal(pc.transceivers.find((t) => t.kind === "audio")?.sender?.track, null);
 });
