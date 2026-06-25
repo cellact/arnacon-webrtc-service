@@ -144,6 +144,11 @@ const { isInactiveOffer } = require("./modules/calls/poly/negotiation/sdp");
 const { routeToCodecPolicy } = require("./modules/media/negotiation/CodecPolicy");
 const { narrowAudioOfferForCodecPolicy } = require("./modules/media/negotiation/SdpCodecNegotiator");
 const {
+    identityLabel,
+    createCallPairRef,
+} = require("./modules/runtime/CallPairRef");
+const { CallPairResolver } = require("./modules/runtime/CallPairResolver");
+const {
     MediaStreamTrack,
 } = werift;
 const RTCPeerConnection = globalThis.RTCPeerConnection;
@@ -720,6 +725,7 @@ const polyCore = createPolyCore({
 });
 const polyRegistry = polyCore.registry;
 const polyIngress = polyCore.ingress;
+const callPairResolver = new CallPairResolver({ polyRegistry });
 console.log("[poly] PolySession core is the live coordinator");
 
 
@@ -824,6 +830,7 @@ async function handleInboundCallRequest(data, serviceContext = null) {
                 // An inbound call always brings a fresh session + FCM wake, so it
                 // must own a fresh poly -> tear any stale one down first.
                 await polyRegistry.destroy(polyRegistry.keyForPair(callerNumber, calleeEns), "inbound-fresh-call");
+                callPairResolver.bindSessionPairRef(session, callerNumber, calleeEns);
                 const { poly } = polyRegistry.resolve({
                     a: { endpoint: callerNumber, kind: "sip", phoneNumber, session },
                     b: {
@@ -963,20 +970,11 @@ function createPeerConnection(...args) {
 // ─── PolySession ingress helpers (manager seam) ─────────────────────────────
 
 function pLabel(identity) {
-    if (!identity || typeof identity !== "string") return identity;
-    const t = identity.trim();
-    const at = t.indexOf("@");
-    if (at > 0) return t.slice(0, at);
-    const dot = t.indexOf(".");
-    if (dot > 0) return t.slice(0, dot);
-    return t;
+    return identityLabel(identity);
 }
 
 function polyForSession(session) {
-    if (!session) return null;
-    return polyRegistry.getByEndpoint(session.callerEns)
-        || polyRegistry.getByEndpoint(session.toIdentity)
-        || null;
+    return callPairResolver.polyForSession(session);
 }
 
 // Which leg ref a webrtc message on `session` targets. callee-webrtc role => the
@@ -1088,6 +1086,7 @@ async function onDcRing(callerSessionId, payload) {
         };
     }
 
+    callPairResolver.bindSessionPairRef(session, a.endpoint, b.endpoint);
     const { poly } = polyRegistry.resolve({ a, b, target: "a" });
     // Caller transport is already up (HTTP handshake). The SIP leg has no transport
     // to negotiate (openOutbound happens on ring), so mark it usable too. A webrtc
@@ -1183,8 +1182,9 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
         if (!existing || !polyOwnsSession(existing, session, channelRole)) {
             (async () => {
                 if (existing) {
+                    const existingKey = callPairResolver.keyFromPoly(existing);
                     await polyRegistry.destroy(
-                        polyRegistry.keyForPair(existing.legs.a.endpoint, existing.legs.b.endpoint),
+                        existingKey,
                         "new-ring-reset",
                     );
                 }
@@ -1246,7 +1246,7 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
 
 // HTTP /notify "answer" (callee picked up: secnum<->secnum leg or inbound callee).
 async function onVerifiedNotifyAnswer(sessionId, offer, session) {
-    const poly = polyForSession(session) || polyRegistry.getByEndpoint(offer.from);
+    const poly = polyForSession(session) || callPairResolver.polyForOffer(offer);
     if (!poly) return { handled: false };
     const ref = polyRefByEndpoint(poly, offer.from)
         || (poly.legs.b.kind === "webrtc" ? "b" : "a");
@@ -1343,7 +1343,10 @@ async function onTransportClosed(sessionId, event = {}) {
         } catch (err) {
             console.error(`[${sessionId}] poly transport-close failed: ${err.message}`);
         }
-        try { await polyRegistry.destroy(polyRegistry.keyForPair(poly.legs.a.endpoint, poly.legs.b.endpoint), event.reason || "transport-closed"); } catch (_) {}
+        try {
+            const key = callPairResolver.keyFromPoly(poly);
+            await polyRegistry.destroy(key, event.reason || "transport-closed");
+        } catch (_) {}
     }
     destroySession(sessionId, event.notify === true);
 }
@@ -1389,6 +1392,7 @@ function sendDataChannelMessage(sessionId, message) {
 
 function createSession(sessionId, callerEns, toIdentity) {
     const session = sessionStore.createSession(sessionId, callerEns, toIdentity, console);
+    session.callPairRef = createCallPairRef(callerEns, toIdentity);
     const call = callFactory.fromSession(session);
     session.call = call;
     session.callId = call.id;

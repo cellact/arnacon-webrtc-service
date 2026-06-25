@@ -4,22 +4,13 @@
 // Replaces the old linkedSessionId / bridgedWith / pendingBridges pairing.
 
 const { PolySession } = require("./PolySession");
-
-// Bare label of an identity: "972...@x" / "972....global" / "972..." -> "972...".
-function identityLabel(identity) {
-    if (!identity || typeof identity !== "string") return identity;
-    const trimmed = identity.trim();
-    const atPos = trimmed.indexOf("@");
-    if (atPos > 0) return trimmed.slice(0, atPos);
-    const dotPos = trimmed.indexOf(".");
-    if (dotPos > 0) return trimmed.slice(0, dotPos);
-    return trimmed;
-}
+const {
+    identityLabel,
+    pairKeyFromIdentities,
+} = require("../../runtime/CallPairRef");
 
 function pairKey(a, b) {
-    return [identityLabel(String(a || "").toLowerCase()), identityLabel(String(b || "").toLowerCase())]
-        .sort()
-        .join("|");
+    return pairKeyFromIdentities(a, b);
 }
 
 class PolySessionRegistry {
@@ -47,7 +38,7 @@ class PolySessionRegistry {
     }
 
     keyForPair(a, b) {
-        return pairKey(a, b);
+        return pairKeyFromIdentities(a, b);
     }
 
     // Resolve (or create) the PolySession for a pair and return which leg the
@@ -56,7 +47,7 @@ class PolySessionRegistry {
         if (!a?.endpoint || !b?.endpoint) {
             throw new Error("PolySessionRegistry.resolve requires both leg endpoints");
         }
-        const key = pairKey(a.endpoint, b.endpoint);
+        const key = pairKeyFromIdentities(a.endpoint, b.endpoint);
         let poly = this.byKey.get(key);
         if (!poly) {
             poly = this._create(key, a, b);

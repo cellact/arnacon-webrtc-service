@@ -172,3 +172,28 @@ test("double-end race then immediate redial does not leak teardown state", async
     await bAnswers(ctx, "answer-2");
     expectInCall(ctx);
 });
+
+test("parallel calls that share a callee label stay isolated", async () => {
+    const first = buildWebRtcScenario();
+    const second = buildWebRtcScenario();
+
+    await transportOpenA(first);
+    await transportOpenB(first);
+    await transportOpenA(second);
+    await transportOpenB(second);
+
+    await aOffers(first, "offer-a");
+    await bAnswers(first, "answer-a");
+    await aOffers(second, "offer-c");
+    await bAnswers(second, "answer-c");
+
+    expectInCall(first);
+    expectInCall(second);
+
+    await aEnds(second);
+    await bCompletesEnd(second, "end-second");
+
+    // Ending one pair must not disturb the other active pair.
+    expectInCall(first);
+    expectEnded(second);
+});

@@ -1,14 +1,7 @@
 const { buildOfferPayload, serializeNotifyPayload } = require("../../participants/signaling/SignalingEnvelope");
-
-function identityLabel(identity) {
-    if (!identity || typeof identity !== "string") return identity;
-    const trimmed = identity.trim();
-    const atPos = trimmed.indexOf("@");
-    if (atPos > 0) return trimmed.slice(0, atPos);
-    const dotPos = trimmed.indexOf(".");
-    if (dotPos > 0) return trimmed.slice(0, dotPos);
-    return trimmed;
-}
+const {
+    identityLabel,
+} = require("../../runtime/CallPairRef");
 
 function createInboundCallFlow({
     createSession,

@@ -1015,3 +1015,13 @@ test("DEEP BUG REPRO: parser m-line failure realigns on data-only offer", async 
     );
     assert.equal(pc.transceivers.find((t) => t.kind === "audio")?.sender?.track, null);
 });
+
+test("ring signaling keeps canonical caller label in payload", async () => {
+    const { neg, signaling } = build();
+    await neg.ring({ from: "alice.secnum.global" });
+    const message = signaling.sent.at(-1);
+    assert.equal(message?.msgType, "signaling");
+    assert.equal(message?.payload?.type, "offer");
+    assert.equal(message?.payload?.from, "alice");
+    assert.equal(message?.payload?.to, "bob.secnum.global");
+});

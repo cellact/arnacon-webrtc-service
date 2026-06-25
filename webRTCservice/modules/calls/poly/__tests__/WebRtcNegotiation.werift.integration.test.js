@@ -253,3 +253,16 @@ test("WERIFT REPLAY: decline/end then redial with audio mid=2 stays reusable", a
         await harness.dispose();
     }
 });
+
+test("WERIFT REPLAY: ring payload keeps caller label normalized", async () => {
+    const harness = buildWeriftNegotiationHarness({ withAudioTrack: true, withDataChannel: true });
+    try {
+        await assert.doesNotReject(() => harness.neg.ring({ from: "alice.secnum.global" }));
+        const message = harness.signaling.sent.at(-1);
+        assert.equal(message?.msgType, "signaling");
+        assert.equal(message?.payload?.from, "alice");
+        assert.equal(message?.payload?.to, "bob.secnum.global");
+    } finally {
+        await harness.dispose();
+    }
+});

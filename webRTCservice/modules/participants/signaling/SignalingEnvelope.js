@@ -1,13 +1,6 @@
-// Bare label for an identity: strips an @domain or a .sub.global suffix.
-function identityLabel(identity) {
-    if (!identity || typeof identity !== "string") return identity;
-    const trimmed = identity.trim();
-    const atPos = trimmed.indexOf("@");
-    if (atPos > 0) return trimmed.slice(0, atPos);
-    const dotPos = trimmed.indexOf(".");
-    if (dotPos > 0) return trimmed.slice(0, dotPos);
-    return trimmed;
-}
+const {
+    identityLabel,
+} = require("../../runtime/CallPairRef");
 
 // The single source of truth for the wire sessionId we hand a client. Every
 // client keys a session as sort(ownFullEns, peerBareNumber): it stores ITSELF as

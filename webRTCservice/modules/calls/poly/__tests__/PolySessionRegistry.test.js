@@ -68,6 +68,7 @@ test("different pair creates a different PolySession", () => {
 
 test("pairKey is order-independent and label-normalized", () => {
     assert.equal(pairKey("A.x.global", "b"), pairKey("b", "a"));
+    assert.equal(pairKey("Alice.SecNum.Global", "BOB"), pairKey("alice", "bob"));
 });
 
 test("destroy removes the PolySession and frees the key", async () => {
@@ -140,4 +141,23 @@ test("supports two simultaneous calls without cross-wiring state/media", async (
     assert.equal(second.poly.legs.a.state, S.IN_CALL);
     assert.equal(second.poly.legs.b.state, S.IN_CALL);
     assert.equal(media.connects.length, 2, "media must bridge each call once");
+});
+
+test("same callee with different callers keeps separate pair records", () => {
+    const reg = buildRegistry();
+    const first = reg.resolve({
+        a: { endpoint: "alice.secnum.global", kind: "webrtc" },
+        b: { endpoint: "*9225", kind: "sip" },
+        target: "a",
+    });
+    const second = reg.resolve({
+        a: { endpoint: "carol.secnum.global", kind: "webrtc" },
+        b: { endpoint: "*9225", kind: "sip" },
+        target: "a",
+    });
+
+    assert.notEqual(first.key, second.key);
+    assert.notEqual(first.poly, second.poly);
+    assert.equal(reg.get(first.key), first.poly);
+    assert.equal(reg.get(second.key), second.poly);
 });

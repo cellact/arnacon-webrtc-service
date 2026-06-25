@@ -1,3 +1,10 @@
+const {
+    identityLabel,
+    pairKeyFromIdentities,
+    normalizeSessionId,
+    createCallPairRef,
+} = require("./CallPairRef");
+
 class SessionStore {
     constructor() {
         this.sessions = new Map();
@@ -42,23 +49,15 @@ class SessionStore {
     }
 
     identityLabel(identity) {
-        if (!identity || typeof identity !== "string") return identity;
-        const trimmed = identity.trim();
-        const atPos = trimmed.indexOf("@");
-        if (atPos > 0) return trimmed.slice(0, atPos);
-        const dotPos = trimmed.indexOf(".");
-        if (dotPos > 0) return trimmed.slice(0, dotPos);
-        return trimmed;
+        return identityLabel(identity);
     }
 
     normalizeSessionId(sessionId) {
-        if (!sessionId || typeof sessionId !== "string") return sessionId;
-        if (!sessionId.includes("|")) return sessionId;
-        return sessionId.split("|").map((part) => this.identityLabel(part)).join("|");
+        return normalizeSessionId(sessionId);
     }
 
     stableKey(a, b) {
-        return [this.identityLabel(a), this.identityLabel(b)].sort().join("|");
+        return pairKeyFromIdentities(a, b);
     }
 
     createSession(sessionId, callerEns, toIdentity, logger = console) {
@@ -92,6 +91,7 @@ class SessionStore {
                 },
             },
             inboundRingSent: false,
+            callPairRef: createCallPairRef(callerEns, toIdentity),
         };
         this.sessions.set(canonicalSessionId, session);
         if (callerEns && toIdentity) {

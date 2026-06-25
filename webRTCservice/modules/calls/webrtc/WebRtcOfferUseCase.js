@@ -1,3 +1,9 @@
+const {
+    identityLabel,
+    normalizeSessionId,
+    pairKeyFromIdentities,
+} = require("../../runtime/CallPairRef");
+
 function createOfferFlow({
     sessions,
     sessionsByUser,
@@ -23,21 +29,6 @@ function createOfferFlow({
         return addr;
     }
 
-    function identityLabel(identity) {
-        if (!identity || typeof identity !== "string") return identity;
-        const trimmed = identity.trim();
-        const atPos = trimmed.indexOf("@");
-        if (atPos > 0) return trimmed.slice(0, atPos);
-        const dotPos = trimmed.indexOf(".");
-        if (dotPos > 0) return trimmed.slice(0, dotPos);
-        return trimmed;
-    }
-
-    function normalizeSessionId(sessionId) {
-        if (!sessionId || typeof sessionId !== "string") return sessionId;
-        return sessionId.split("|").map(identityLabel).join("|");
-    }
-
     function relationSessionCandidates(from, to, sessionId) {
         const fromLabel = identityLabel(from);
         const toLabel = identityLabel(to);
@@ -47,6 +38,7 @@ function createOfferFlow({
             candidates.add(`${fromLabel}|${toLabel}`);
             candidates.add(`${toLabel}|${fromLabel}`);
             candidates.add(stableKey(from, to));
+            candidates.add(pairKeyFromIdentities(from, to));
         }
         return candidates;
     }
