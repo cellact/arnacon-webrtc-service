@@ -373,15 +373,23 @@ class WebRtcNegotiation extends CallNegotiationPort {
         // Final fallback: try creating/binding a fresh audio transceiver if the
         // implementation supports it.
         if (typeof pc.addTransceiver === "function") {
+            let created = null;
             try {
-                const created = track
+                created = track
                     ? pc.addTransceiver(track, { direction: "sendrecv" })
                     : pc.addTransceiver("audio", { direction: "sendrecv" });
-                if (created) {
-                    try { created.mid = offerMid; } catch (_) {}
-                    this._primeAudioTransceiver(created, track);
-                }
             } catch (_) {}
+            // Some stacks reject addTransceiver(track) when that track is already
+            // attached; retry with kind-only to still create the missing MID slot.
+            if (!created) {
+                try {
+                    created = pc.addTransceiver("audio", { direction: "sendrecv" });
+                } catch (_) {}
+            }
+            if (created) {
+                try { created.mid = offerMid; } catch (_) {}
+                this._primeAudioTransceiver(created, track);
+            }
         }
 
         if (!hasExactMid()) {

@@ -98,7 +98,8 @@ async function addIceCandidates(pc, candidates, RTCIceCandidate) {
         return (
             /m[-\s]?line not found/i.test(msg) ||
             /iceParams/i.test(msg) ||
-            /media section/i.test(msg)
+            /media section/i.test(msg) ||
+            /reading 'kind'/i.test(msg)
         );
     };
     for (const c of (candidates || [])) {

@@ -260,9 +260,15 @@ class CandidateMLineStrictPeerConnection extends FakePeerConnection {
 class ParserMLineRecoveryPeerConnection extends FakePeerConnection {
     constructor(opts = {}) {
         super(opts);
+        const makeSender = () => ({
+            track: null,
+            async replaceTrack(nextTrack) {
+                this.track = nextTrack || null;
+            },
+        });
         this.transceivers = [
-            { kind: "application", mid: "0", setDirection() {}, sender: { replaceTrack: async () => {}, track: null } },
-            { kind: "audio", mid: "1", setDirection() {}, sender: { replaceTrack: async () => {}, track: null } },
+            { kind: "application", mid: "0", setDirection() {}, sender: makeSender() },
+            { kind: "audio", mid: "1", setDirection() {}, sender: makeSender() },
         ];
         this.failOnce = true;
     }
