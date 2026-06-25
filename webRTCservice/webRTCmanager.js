@@ -1221,18 +1221,21 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
     poly.onIngress(ref, event).catch((err) => {
         if (action === "offer" && isRecoverableOfferIngressError(err) && !payload.__polyIngressRetriedOnce) {
             payload.__polyIngressRetriedOnce = true;
-            (async () => {
-                const latestSession = sessions.get(sessionId);
-                if (!latestSession) return;
-                const existing = polyForSession(latestSession);
-                if (existing) {
-                    await polyRegistry.destroy(
-                        polyRegistry.keyForPair(existing.legs.a.endpoint, existing.legs.b.endpoint),
-                        "offer-recover-reset",
-                    );
-                }
-                await onDcRing(sessionId, payload);
-            })().catch((retryErr) => {
+            // Keep the current poly/session/PC alive and retry ingress in place.
+            // This mirrors client-side reuse semantics after decline/end flows.
+            const latestSession = sessions.get(sessionId);
+            const latestPoly = latestSession ? polyForSession(latestSession) : null;
+            if (!latestSession || !latestPoly) {
+                console.error(`[${sessionId}] poly ingress (${action}) retry skipped: no active session/poly`);
+                return;
+            }
+            const retryRef = polyWebrtcRef(latestPoly, latestSession, channelRole);
+            const retryEvent = polyIngress.toLegEvent(action, payload, { channelRole });
+            if (!retryEvent) {
+                console.error(`[${sessionId}] poly ingress (${action}) retry skipped: no retry event`);
+                return;
+            }
+            latestPoly.onIngress(retryRef, retryEvent).catch((retryErr) => {
                 console.error(`[${sessionId}] poly ingress (${action}) retry failed: ${retryErr.message}`);
             });
             return;
