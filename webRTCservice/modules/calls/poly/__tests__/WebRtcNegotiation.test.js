@@ -163,6 +163,77 @@ class DuplicateTrackOnRecoveryPeerConnection extends FakePeerConnection {
     }
 }
 
+class MidMapLagPeerConnection extends FakePeerConnection {
+    constructor({ initialAudioMid = "1", ...opts } = {}) {
+        super(opts);
+        this.transceivers = [
+            { kind: "application", mid: "0", setDirection() {}, sender: { replaceTrack: async () => {} } },
+            { kind: "audio", mid: initialAudioMid, setDirection() {}, sender: { replaceTrack: async () => {}, track: null } },
+        ];
+        this.acceptedAudioMids = new Set([String(initialAudioMid)]);
+        this._remoteOfferAudioMid = null;
+    }
+
+    _extractAudioMid(sdp = "") {
+        const sections = String(sdp).split(/\r?\nm=/);
+        for (const rawSection of sections) {
+            const section = rawSection.startsWith("m=") ? rawSection : `m=${rawSection}`;
+            if (!/^m=audio\b/m.test(section)) continue;
+            const mid = section.match(/^a=mid:([^\r\n]+)/m)?.[1];
+            if (mid) return String(mid).trim();
+        }
+        return null;
+    }
+
+    addTrack(track) {
+        const audio = this.transceivers.find((t) => t.kind === "audio");
+        if (audio?.sender) audio.sender.track = track;
+        return { kind: track?.kind || "audio" };
+    }
+
+    addTransceiver(kindOrTrack) {
+        const isAudio = kindOrTrack === "audio" || kindOrTrack?.kind === "audio";
+        if (!isAudio) return null;
+        const existingNumericMids = this.transceivers
+            .map((t) => Number.parseInt(String(t.mid ?? ""), 10))
+            .filter((n) => Number.isFinite(n));
+        const nextMid = String(existingNumericMids.length ? Math.max(...existingNumericMids) + 1 : 1);
+        const created = {
+            kind: "audio",
+            setDirection() {},
+            sender: { replaceTrack: async () => {}, track: kindOrTrack?.kind === "audio" ? kindOrTrack : null },
+        };
+        let currentMid = nextMid;
+        Object.defineProperty(created, "mid", {
+            get() {
+                return currentMid;
+            },
+            set: (newMid) => {
+                const normalized = String(newMid ?? "").trim();
+                if (normalized === currentMid) return;
+                this.acceptedAudioMids.delete(currentMid);
+                currentMid = normalized;
+                if (currentMid) this.acceptedAudioMids.add(currentMid);
+            },
+            enumerable: true,
+            configurable: true,
+        });
+        this.transceivers.push(created);
+        this.acceptedAudioMids.add(nextMid);
+        return created;
+    }
+
+    async setRemoteDescription(d) {
+        if (d?.type === "offer") {
+            this._remoteOfferAudioMid = this._extractAudioMid(d?.sdp || "");
+            if (this._remoteOfferAudioMid && !this.acceptedAudioMids.has(this._remoteOfferAudioMid)) {
+                throw new Error(`Transceiver with mid=${this._remoteOfferAudioMid} not found`);
+            }
+        }
+        this.remoteDescription = d;
+    }
+}
+
 function deepLifecyclePrimitives() {
     const base = fakePrimitives();
     const callSdpUseCases = new CallSdpUseCases({
@@ -556,5 +627,204 @@ test("DEEP BUG REPRO: recovery must not throw when local track is already bound"
     await assert.doesNotReject(
         () => neg.applyOffer({ mode: "ring", payload: { sdp: redialOfferWithAudioMid } }),
         "recovery should tolerate already-bound tracks and continue",
+    );
+});
+
+test("DEEP BUG REPRO: mid=2 map-lag recovers via forced transceiver create", async () => {
+    const signaling = new FakeSignaling();
+    const localTrack = { kind: "audio" };
+    const pc = new MidMapLagPeerConnection({
+        initialAudioMid: "1",
+        answerSdp: "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 8\r\na=mid:2\r\na=sendrecv\r\n",
+    });
+    pc.transceivers.find((t) => t.kind === "audio").sender.track = localTrack;
+    const session = {
+        sessionId: "alice|bob",
+        callerEns: "alice.secnum.global",
+        toIdentity: "bob.secnum.global",
+        peerConnection: pc,
+        localAudioTrack: localTrack,
+    };
+    const neg = new WebRtcNegotiation({
+        id: "alice",
+        endpoint: "alice.secnum.global",
+        session,
+        signaling,
+        primitives: deepLifecyclePrimitives(),
+        logger: silentLogger,
+    });
+
+    const offerWithAudioMid2 =
+        "v=0\r\n" +
+        "a=group:BUNDLE 0 2\r\n" +
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" +
+        "a=mid:0\r\n" +
+        "m=audio 9 UDP/TLS/RTP/SAVPF 8\r\n" +
+        "a=mid:2\r\n" +
+        "a=sendrecv\r\n";
+
+    await assert.doesNotReject(
+        () => neg.applyOffer({ mode: "ring", payload: { sdp: offerWithAudioMid2 } }),
+        "recovery should survive mid=2 drift where transceiver maps lag behind exposed mids",
+    );
+});
+
+test("DEEP BUG REPRO: repeated decline/reuse can advance to mid=2 then mid=3", async () => {
+    const signaling = new FakeSignaling();
+    const localTrack = { kind: "audio" };
+    const pc = new MidMapLagPeerConnection({
+        initialAudioMid: "1",
+        answerSdp: "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 8\r\na=mid:3\r\na=sendrecv\r\n",
+    });
+    pc.transceivers.find((t) => t.kind === "audio").sender.track = localTrack;
+    const session = {
+        sessionId: "alice|bob",
+        callerEns: "alice.secnum.global",
+        toIdentity: "bob.secnum.global",
+        peerConnection: pc,
+        localAudioTrack: localTrack,
+    };
+    const neg = new WebRtcNegotiation({
+        id: "alice",
+        endpoint: "alice.secnum.global",
+        session,
+        signaling,
+        primitives: deepLifecyclePrimitives(),
+        logger: silentLogger,
+    });
+
+    const offerMid2 =
+        "v=0\r\n" +
+        "a=group:BUNDLE 0 2\r\n" +
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" +
+        "a=mid:0\r\n" +
+        "m=audio 9 UDP/TLS/RTP/SAVPF 8\r\n" +
+        "a=mid:2\r\n" +
+        "a=sendrecv\r\n";
+    const offerMid3 =
+        "v=0\r\n" +
+        "a=group:BUNDLE 0 3\r\n" +
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" +
+        "a=mid:0\r\n" +
+        "m=audio 9 UDP/TLS/RTP/SAVPF 8\r\n" +
+        "a=mid:3\r\n" +
+        "a=sendrecv\r\n";
+
+    await assert.doesNotReject(
+        () => neg.applyOffer({ mode: "ring", payload: { sdp: offerMid2 } }),
+        "first reuse cycle should recover from mid=2 mismatch",
+    );
+    await assert.doesNotReject(
+        () => neg.applyOffer({ mode: "ring", payload: { sdp: offerMid3 } }),
+        "second reuse cycle should recover from mid=3 mismatch",
+    );
+});
+
+test("DEEP MATRIX: createAnswer recovery handles missing mids 1/2/3", async () => {
+    for (const mid of ["1", "2", "3"]) {
+        const signaling = new FakeSignaling();
+        const session = {
+            sessionId: `alice|bob|create|${mid}`,
+            callerEns: "alice.secnum.global",
+            toIdentity: "bob.secnum.global",
+            peerConnection: new MidLifecyclePeerConnection({
+                throwOn: "createAnswer",
+                audioMid: "9",
+                answerSdp: `v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 8\r\na=mid:${mid}\r\na=sendrecv\r\n`,
+            }),
+            localAudioTrack: null,
+        };
+        const neg = new WebRtcNegotiation({
+            id: "alice",
+            endpoint: "alice.secnum.global",
+            session,
+            signaling,
+            primitives: deepLifecyclePrimitives(),
+            logger: silentLogger,
+        });
+        const offer =
+            "v=0\r\n" +
+            `a=group:BUNDLE 0 ${mid}\r\n` +
+            "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" +
+            "a=mid:0\r\n" +
+            "m=audio 9 UDP/TLS/RTP/SAVPF 8\r\n" +
+            `a=mid:${mid}\r\n` +
+            "a=sendrecv\r\n";
+        await assert.doesNotReject(
+            () => neg.applyOffer({ mode: "ring", payload: { sdp: offer } }),
+            `createAnswer recovery should handle missing mid=${mid}`,
+        );
+    }
+});
+
+test("DEEP MATRIX: setLocalDescription recovery handles missing mids 1/2/3", async () => {
+    for (const mid of ["1", "2", "3"]) {
+        const signaling = new FakeSignaling();
+        const session = {
+            sessionId: `alice|bob|setlocal|${mid}`,
+            callerEns: "alice.secnum.global",
+            toIdentity: "bob.secnum.global",
+            peerConnection: new MidLifecyclePeerConnection({
+                throwOn: "setLocalDescription",
+                audioMid: "9",
+                answerSdp: `v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 8\r\na=mid:${mid}\r\na=sendrecv\r\n`,
+            }),
+            localAudioTrack: null,
+        };
+        const neg = new WebRtcNegotiation({
+            id: "alice",
+            endpoint: "alice.secnum.global",
+            session,
+            signaling,
+            primitives: deepLifecyclePrimitives(),
+            logger: silentLogger,
+        });
+        const offer =
+            "v=0\r\n" +
+            `a=group:BUNDLE 0 ${mid}\r\n` +
+            "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" +
+            "a=mid:0\r\n" +
+            "m=audio 9 UDP/TLS/RTP/SAVPF 8\r\n" +
+            `a=mid:${mid}\r\n` +
+            "a=sendrecv\r\n";
+        await assert.doesNotReject(
+            () => neg.applyOffer({ mode: "ring", payload: { sdp: offer } }),
+            `setLocalDescription recovery should handle missing mid=${mid}`,
+        );
+    }
+});
+
+test("DEEP BUG REPRO: ice-restart after reuse survives stale mid map", async () => {
+    const signaling = new FakeSignaling();
+    const session = {
+        sessionId: "alice|bob|icerestart",
+        callerEns: "alice.secnum.global",
+        toIdentity: "bob.secnum.global",
+        peerConnection: new MidLifecyclePeerConnection({
+            throwOn: "setLocalDescription",
+            audioMid: "9",
+            answerSdp: "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 8\r\na=mid:2\r\na=sendrecv\r\n",
+        }),
+        localAudioTrack: { kind: "audio" },
+    };
+    const neg = new WebRtcNegotiation({
+        id: "alice",
+        endpoint: "alice.secnum.global",
+        session,
+        signaling,
+        primitives: deepLifecyclePrimitives(),
+        logger: silentLogger,
+    });
+    const restartOffer =
+        "v=0\r\n" +
+        "a=group:BUNDLE 0 2\r\n" +
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" +
+        "a=mid:0\r\n" +
+        "m=audio 9 UDP/TLS/RTP/SAVPF 8\r\n" +
+        "a=mid:2\r\n" +
+        "a=sendrecv\r\n";
+    await assert.doesNotReject(
+        () => neg.applyOffer({ mode: "ice-restart", payload: { sdp: restartOffer } }),
+        "ice-restart path should recover from stale reused mid mappings",
     );
 });
