@@ -93,10 +93,20 @@ function logSdp(sessionId, label, sdp, logger = console) {
 
 async function addIceCandidates(pc, candidates, RTCIceCandidate) {
     let added = 0;
+    const isMLineMismatch = (err) => {
+        const msg = String(err?.message || "");
+        return /m[-\s]?line not found/i.test(msg);
+    };
     for (const c of (candidates || [])) {
         if (c && c.candidate) {
-            await pc.addIceCandidate(new RTCIceCandidate(c));
-            added++;
+            try {
+                await pc.addIceCandidate(new RTCIceCandidate(c));
+                added++;
+            } catch (err) {
+                // Reused sessions can receive stale trickle candidates that refer to
+                // an m-line no longer present in the latest negotiated SDP.
+                if (!isMLineMismatch(err)) throw err;
+            }
         }
     }
     return added;

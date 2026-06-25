@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const { WebRtcNegotiation } = require("../negotiation/WebRtcNegotiation");
 const { FakeSignaling, FakePeerConnection, fakePrimitives, silentLogger } = require("./fakes");
 const { CallSdpUseCases } = require("../../useCases/CallSdpUseCases");
+const { addIceCandidates: addIceCandidatesUtil } = require("../../../media/negotiation/SdpUtils");
 
 function build({ offerSdp, answerSdp } = {}) {
     const signaling = new FakeSignaling();
@@ -234,6 +235,28 @@ class MidMapLagPeerConnection extends FakePeerConnection {
     }
 }
 
+class CandidateMLineStrictPeerConnection extends FakePeerConnection {
+    constructor(opts = {}) {
+        super(opts);
+        this._remoteMLineCount = 0;
+        this.appliedCandidates = [];
+    }
+
+    async setRemoteDescription(d) {
+        this.remoteDescription = d;
+        const sdp = String(d?.sdp || "");
+        this._remoteMLineCount = (sdp.match(/^m=/gm) || []).length;
+    }
+
+    async addIceCandidate(candidate) {
+        const idx = Number(candidate?.sdpMLineIndex);
+        if (Number.isFinite(idx) && (idx < 0 || idx >= this._remoteMLineCount)) {
+            throw new Error("m line not found");
+        }
+        this.appliedCandidates.push(candidate);
+    }
+}
+
 function deepLifecyclePrimitives() {
     const base = fakePrimitives();
     const callSdpUseCases = new CallSdpUseCases({
@@ -250,6 +273,12 @@ function deepLifecyclePrimitives() {
         ...base,
         ensureLocalAudioTrack: (...args) => callSdpUseCases.ensureLocalAudioTrack(...args),
         createAnswerSdp: (...args) => callSdpUseCases.createAnswerSdp(...args),
+        addIceCandidates: (...args) =>
+            addIceCandidatesUtil(...args, class RTCIceCandidate {
+                constructor(init = {}) {
+                    Object.assign(this, init);
+                }
+            }),
     };
 }
 
@@ -827,4 +856,47 @@ test("DEEP BUG REPRO: ice-restart after reuse survives stale mid map", async () 
         () => neg.applyOffer({ mode: "ice-restart", payload: { sdp: restartOffer } }),
         "ice-restart path should recover from stale reused mid mappings",
     );
+});
+
+test("DEEP BUG REPRO: applyOffer ignores stale ICE candidate m-line mismatch", async () => {
+    const signaling = new FakeSignaling();
+    const pc = new CandidateMLineStrictPeerConnection({
+        answerSdp: "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:0\r\n",
+    });
+    const session = {
+        sessionId: "alice|bob|mline",
+        callerEns: "alice.secnum.global",
+        toIdentity: "bob.secnum.global",
+        peerConnection: pc,
+        localAudioTrack: { kind: "audio" },
+    };
+    const neg = new WebRtcNegotiation({
+        id: "alice",
+        endpoint: "alice.secnum.global",
+        session,
+        signaling,
+        primitives: deepLifecyclePrimitives(),
+        logger: silentLogger,
+    });
+    const dataOnlyOffer =
+        "v=0\r\n" +
+        "a=group:BUNDLE 0\r\n" +
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" +
+        "a=mid:0\r\n";
+    await assert.doesNotReject(
+        () =>
+            neg.applyOffer({
+                mode: "ring",
+                payload: {
+                    sdp: dataOnlyOffer,
+                    candidates: [
+                        { candidate: "candidate:1 1 udp 1 1.1.1.1 11111 typ host", sdpMid: "0", sdpMLineIndex: 0 },
+                        { candidate: "candidate:2 1 udp 1 2.2.2.2 22222 typ host", sdpMid: "1", sdpMLineIndex: 1 },
+                    ],
+                },
+            }),
+        "stale candidate with missing m-line must be ignored instead of failing offer ingress",
+    );
+    assert.equal(pc.appliedCandidates.length, 1, "valid candidate should still be applied");
+    assert.equal(pc.appliedCandidates[0].sdpMLineIndex, 0);
 });
