@@ -181,9 +181,10 @@ class WebRtcNegotiation extends CallNegotiationPort {
         try {
             await pc.setRemoteDescription(new this.p.RTCSessionDescription(offerSdp, "offer"));
         } catch (err) {
-            if (!isIceRestart && this._isMissingMidError(err) && this._offerHasAudioMLine(offerSdp)) {
-                // Recovery for reused sessions that retained DC but lost local m=audio mapping.
-                this._ensureAudioReadyForOffer(offerSdp, pc, { force: true });
+            if (this._isMissingMidError(err) && this._offerHasAudioMLine(offerSdp)) {
+                // Recovery for reused sessions that retained DC but drifted the audio MID
+                // mapping after end/reuse renegotiations.
+                this._repairAudioForOfferMid(offerSdp, pc);
                 await pc.setRemoteDescription(new this.p.RTCSessionDescription(offerSdp, "offer"));
             } else {
                 throw err;
@@ -196,7 +197,19 @@ class WebRtcNegotiation extends CallNegotiationPort {
             this.p.ensureLocalAudioTrack(this.session, pc, this.id);
         }
         const label = isIceRestart ? "ICE-RESTART ANSWER SDP" : "ANSWER SDP";
-        const answerSdp = await this.p.createAnswerSdp(pc, this.id, label);
+        let answerSdp;
+        try {
+            answerSdp = await this.p.createAnswerSdp(pc, this.id, label);
+        } catch (err) {
+            if (this._isMissingMidError(err) && this._offerHasAudioMLine(offerSdp)) {
+                // Some stacks surface the same MID mismatch only when generating/applying
+                // the local answer, not on setRemoteDescription.
+                this._repairAudioForOfferMid(offerSdp, pc);
+                answerSdp = await this.p.createAnswerSdp(pc, this.id, label);
+            } else {
+                throw err;
+            }
+        }
         this.session.lastAnswerSdp = answerSdp;
         // In-call renegotiation (ICE restart) answers immediately. For a fresh
         // ring we hold the answer: the caller must not see "connected" until the
@@ -225,9 +238,65 @@ class WebRtcNegotiation extends CallNegotiationPort {
         return /\bm=audio\b/.test(sdp);
     }
 
+    _offerAudioMid(sdp = "") {
+        const sections = String(sdp).split(/\r?\nm=/);
+        for (const rawSection of sections) {
+            const section = rawSection.startsWith("m=") ? rawSection : `m=${rawSection}`;
+            if (!/^m=audio\b/m.test(section)) continue;
+            const mid = section.match(/^a=mid:([^\r\n]+)/m)?.[1];
+            if (mid) return String(mid).trim();
+        }
+        return null;
+    }
+
     _isMissingMidError(err) {
         const msg = String(err?.message || "");
         return /Transceiver with mid=\d+ not found/i.test(msg);
+    }
+
+    _primeAudioTransceiver(transceiver, track) {
+        if (!transceiver) return;
+        try { transceiver.setDirection?.("sendrecv"); } catch (_) {}
+        if (!track) return;
+        try { transceiver.sender?.registerTrack?.(track); } catch (_) {}
+        try { transceiver.sender?.replaceTrack?.(track); } catch (_) {}
+    }
+
+    _repairAudioForOfferMid(sdp, pc) {
+        this._ensureAudioReadyForOffer(sdp, pc, { force: true });
+        const offerMid = this._offerAudioMid(sdp);
+        const track = this.session.localAudioTrack || null;
+        const audioTransceivers = pc.getTransceivers?.().filter((t) => t.kind === "audio") || [];
+        for (const transceiver of audioTransceivers) this._primeAudioTransceiver(transceiver, track);
+        if (!offerMid || audioTransceivers.length === 0) return;
+
+        const hasExactMid = () =>
+            (pc.getTransceivers?.().some((t) => t.kind === "audio" && String(t.mid || "") === offerMid) ?? false);
+        if (hasExactMid()) return;
+
+        // Best-effort realignment for reused PCs: if we have one audio transceiver but
+        // its MID drifted, align it to the current offer's audio MID.
+        const candidate =
+            audioTransceivers.find((t) => t.mid == null || t.mid === "") ||
+            audioTransceivers[0];
+        if (candidate && String(candidate.mid || "") !== offerMid) {
+            try { candidate.mid = offerMid; } catch (_) {}
+        }
+        if (hasExactMid()) return;
+
+        // Final fallback: try creating/binding a fresh audio transceiver if the
+        // implementation supports it.
+        if (typeof pc.addTransceiver === "function") {
+            try {
+                const created = track
+                    ? pc.addTransceiver(track, { direction: "sendrecv" })
+                    : pc.addTransceiver("audio", { direction: "sendrecv" });
+                if (created) {
+                    try { created.mid = offerMid; } catch (_) {}
+                    this._primeAudioTransceiver(created, track);
+                }
+            } catch (_) {}
+        }
     }
 
     _ensureAudioReadyForOffer(sdp, pc, opts = {}) {
@@ -240,6 +309,8 @@ class WebRtcNegotiation extends CallNegotiationPort {
             this.session.localAudioTrack = new this.MediaStreamTrack({ kind: "audio" });
         }
         pc.addTrack?.(this.session.localAudioTrack);
+        const latestAudio = pc.getTransceivers?.().find((t) => t.kind === "audio");
+        if (latestAudio) this._primeAudioTransceiver(latestAudio, this.session.localAudioTrack);
     }
 
     // The caller's client offered a ring and we are connected: ack it so the

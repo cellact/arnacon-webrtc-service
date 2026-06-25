@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const { WebRtcNegotiation } = require("../negotiation/WebRtcNegotiation");
 const { FakeSignaling, FakePeerConnection, fakePrimitives, silentLogger } = require("./fakes");
+const { CallSdpUseCases } = require("../../useCases/CallSdpUseCases");
 
 function build({ offerSdp, answerSdp } = {}) {
     const signaling = new FakeSignaling();
@@ -52,6 +53,88 @@ class MidStrictPeerConnection extends FakePeerConnection {
         }
         this.remoteDescription = d;
     }
+}
+
+class MidLifecyclePeerConnection extends FakePeerConnection {
+    constructor({ throwOn = "none", audioMid = "2", ...opts } = {}) {
+        super(opts);
+        this.throwOn = throwOn;
+        this.transceivers = [
+            { kind: "application", mid: "0", setDirection() {}, sender: { replaceTrack: async () => {} } },
+            { kind: "audio", mid: audioMid, setDirection() {}, sender: { replaceTrack: async () => {} } },
+        ];
+        this._remoteOfferAudioMid = null;
+    }
+
+    _extractAudioMid(sdp = "") {
+        const sections = String(sdp).split(/\r?\nm=/);
+        for (const rawSection of sections) {
+            const section = rawSection.startsWith("m=") ? rawSection : `m=${rawSection}`;
+            if (!/^m=audio\b/m.test(section)) continue;
+            const mid = section.match(/^a=mid:([^\r\n]+)/m)?.[1];
+            if (mid) return mid;
+        }
+        return null;
+    }
+
+    _hasTransceiverMid(mid) {
+        if (!mid) return true;
+        return this.transceivers.some((t) => String(t.mid) === String(mid));
+    }
+
+    addTrack(track) {
+        // Simulate a stale transceiver map on reused sessions: addTrack does not
+        // necessarily repair a wrong/missing negotiated MID binding.
+        return { kind: track?.kind || "audio" };
+    }
+
+    async setRemoteDescription(d) {
+        if (d?.type === "offer") {
+            this._remoteOfferAudioMid = this._extractAudioMid(d?.sdp || "");
+        }
+        this.remoteDescription = d;
+    }
+
+    async createAnswer() {
+        if (
+            this.throwOn === "createAnswer" &&
+            this._remoteOfferAudioMid &&
+            !this._hasTransceiverMid(this._remoteOfferAudioMid)
+        ) {
+            throw new Error(`Transceiver with mid=${this._remoteOfferAudioMid} not found`);
+        }
+        return { type: "answer", sdp: this._answerSdp };
+    }
+
+    async setLocalDescription(d) {
+        if (
+            this.throwOn === "setLocalDescription" &&
+            this._remoteOfferAudioMid &&
+            !this._hasTransceiverMid(this._remoteOfferAudioMid)
+        ) {
+            throw new Error(`Transceiver with mid=${this._remoteOfferAudioMid} not found`);
+        }
+        this.localDescription = d;
+    }
+}
+
+function deepLifecyclePrimitives() {
+    const base = fakePrimitives();
+    const callSdpUseCases = new CallSdpUseCases({
+        sessions: new Map(),
+        MediaStreamTrack: base.MediaStreamTrack,
+        patchInactiveToSendrecv: base.patchInactiveToSendrecv,
+        logSdp: () => {},
+        enqueueSignaling: (_sessionId, _label, fn) => Promise.resolve().then(fn),
+        sendDataChannelMessage: () => {},
+        callRuntime: null,
+        logger: silentLogger,
+    });
+    return {
+        ...base,
+        ensureLocalAudioTrack: (...args) => callSdpUseCases.ensureLocalAudioTrack(...args),
+        createAnswerSdp: (...args) => callSdpUseCases.createAnswerSdp(...args),
+    };
 }
 
 test("ring sends a signaling offer with the caller's bare label", async () => {
@@ -315,5 +398,79 @@ test("BUG REPRO: redial offer after end/reuse must not fail on mid mismatch", as
     await assert.doesNotReject(
         () => neg.applyOffer({ mode: "ring", payload: { sdp: redialOfferWithAudioMid } }),
         "redial offer should recover from transceiver mismatch instead of wedging",
+    );
+});
+
+test("DEEP BUG REPRO: stale audio MID can fail during createAnswer (not only setRemoteDescription)", async () => {
+    const signaling = new FakeSignaling();
+    const session = {
+        sessionId: "alice|bob",
+        callerEns: "alice.secnum.global",
+        toIdentity: "bob.secnum.global",
+        peerConnection: new MidLifecyclePeerConnection({
+            throwOn: "createAnswer",
+            audioMid: "2", // stale vs incoming offer's mid=1
+            answerSdp: "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 8\r\na=mid:1\r\na=sendrecv\r\n",
+        }),
+        localAudioTrack: null,
+    };
+    const neg = new WebRtcNegotiation({
+        id: "alice",
+        endpoint: "alice.secnum.global",
+        session,
+        signaling,
+        primitives: deepLifecyclePrimitives(),
+        logger: silentLogger,
+    });
+
+    const redialOfferWithAudioMid =
+        "v=0\r\n" +
+        "a=group:BUNDLE 0 1\r\n" +
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" +
+        "a=mid:0\r\n" +
+        "m=audio 9 UDP/TLS/RTP/SAVPF 8\r\n" +
+        "a=mid:1\r\n" +
+        "a=sendrecv\r\n";
+
+    await assert.doesNotReject(
+        () => neg.applyOffer({ mode: "ring", payload: { sdp: redialOfferWithAudioMid } }),
+        "redial offer should not wedge even when MID mismatch surfaces at createAnswer time",
+    );
+});
+
+test("DEEP BUG REPRO: stale audio MID can fail during setLocalDescription", async () => {
+    const signaling = new FakeSignaling();
+    const session = {
+        sessionId: "alice|bob",
+        callerEns: "alice.secnum.global",
+        toIdentity: "bob.secnum.global",
+        peerConnection: new MidLifecyclePeerConnection({
+            throwOn: "setLocalDescription",
+            audioMid: "2", // stale vs incoming offer's mid=1
+            answerSdp: "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 8\r\na=mid:1\r\na=sendrecv\r\n",
+        }),
+        localAudioTrack: null,
+    };
+    const neg = new WebRtcNegotiation({
+        id: "alice",
+        endpoint: "alice.secnum.global",
+        session,
+        signaling,
+        primitives: deepLifecyclePrimitives(),
+        logger: silentLogger,
+    });
+
+    const redialOfferWithAudioMid =
+        "v=0\r\n" +
+        "a=group:BUNDLE 0 1\r\n" +
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" +
+        "a=mid:0\r\n" +
+        "m=audio 9 UDP/TLS/RTP/SAVPF 8\r\n" +
+        "a=mid:1\r\n" +
+        "a=sendrecv\r\n";
+
+    await assert.doesNotReject(
+        () => neg.applyOffer({ mode: "ring", payload: { sdp: redialOfferWithAudioMid } }),
+        "redial offer should not wedge even when MID mismatch surfaces at setLocalDescription time",
     );
 });
