@@ -253,6 +253,26 @@ test("teardown hooks (e.g. minuteCounter.finish) run exactly once on dispose", a
     assert.deepEqual(reasons, ["call-ended"]);
 });
 
+test("call activity hooks fire once on call start/end edges", async () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeWebRtcLeg("bob");
+    const { poly } = buildPoly(a, b);
+    const activity = [];
+    poly.setCallActivityHooks({
+        onCallStart: () => activity.push("start"),
+        onCallEnd: () => activity.push("end"),
+    });
+
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o" }));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "ans" }));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "end-ans" }));
+
+    assert.deepEqual(activity, ["start", "end"]);
+});
+
 test("second call reuse: after end, a fresh offer rings the peer again", async () => {
     const a = makeWebRtcLeg("alice");
     const b = makeWebRtcLeg("bob");

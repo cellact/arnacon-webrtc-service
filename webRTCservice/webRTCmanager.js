@@ -164,10 +164,38 @@ const { WebSocket: WsWebSocket } = require("ws");
 
 // ─── Load config from config.json + services/*.json ──────────
 const PACKAGE_ROOT = path.resolve(__dirname, "..");
+function resolveFirstExistingPath(candidates) {
+    for (const p of candidates) {
+        if (p && fs.existsSync(p)) return p;
+    }
+    return "";
+}
+
+function normalizeInputPath(inputPath) {
+    if (!inputPath) return "";
+    return path.isAbsolute(inputPath) ? inputPath : path.resolve(process.cwd(), inputPath);
+}
+
 const CONFIG_OVERRIDE = process.env.WEBRTC_CONFIG_PATH || process.env.ARNACON_WEBRTC_CONFIG_PATH || "";
-const CONFIG_PATH = CONFIG_OVERRIDE
-    ? (path.isAbsolute(CONFIG_OVERRIDE) ? CONFIG_OVERRIDE : path.resolve(process.cwd(), CONFIG_OVERRIDE))
-    : path.join(PACKAGE_ROOT, "config.json");
+const configOverridePath = normalizeInputPath(CONFIG_OVERRIDE);
+const CONFIG_PATH = resolveFirstExistingPath([
+    configOverridePath,
+    path.resolve(process.cwd(), "config", "config.json"),
+    path.resolve(process.cwd(), "config.json"),
+    path.join(PACKAGE_ROOT, "config", "config.json"),
+    path.join(PACKAGE_ROOT, "config.json"),
+]);
+if (!CONFIG_PATH) {
+    throw new Error(
+        `WebRTC config not found. Checked: ${[
+            configOverridePath,
+            path.resolve(process.cwd(), "config", "config.json"),
+            path.resolve(process.cwd(), "config.json"),
+            path.join(PACKAGE_ROOT, "config", "config.json"),
+            path.join(PACKAGE_ROOT, "config.json"),
+        ].filter(Boolean).join(", ")}`
+    );
+}
 const CONFIG_BASE_DIR = path.dirname(CONFIG_PATH);
 const fullConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
 const IVR_DEMO_AUDIO_DIR_RAW = process.env.IVR_DEMO_AUDIO_DIR || "demoAudio";
@@ -178,9 +206,19 @@ console.log(`[IVR-AUDIO] Demo audio directory: ${IVR_DEMO_AUDIO_DIR}`);
 const _deployEnvEarly = process.env.DEPLOY_ENV || "development";
 const _commonEarly = (fullConfig[_deployEnvEarly] || {}).common || {};
 const GLOBAL_CONFIG_OVERRIDE = process.env.WEBRTC_GLOBAL_CONFIG_PATH || process.env.ARNACON_WEBRTC_GLOBAL_CONFIG_PATH || "";
-const GLOBAL_CONFIG_PATH = GLOBAL_CONFIG_OVERRIDE
-    ? (path.isAbsolute(GLOBAL_CONFIG_OVERRIDE) ? GLOBAL_CONFIG_OVERRIDE : path.resolve(process.cwd(), GLOBAL_CONFIG_OVERRIDE))
-    : (_commonEarly.globalServiceConfigPath || path.join(PACKAGE_ROOT, "globalserviceconfig.json"));
+const globalOverridePath = normalizeInputPath(GLOBAL_CONFIG_OVERRIDE);
+const GLOBAL_CONFIG_PATH = resolveFirstExistingPath([
+    globalOverridePath,
+    _commonEarly.globalServiceConfigPath
+        ? (_commonEarly.globalServiceConfigPath.startsWith("/")
+            ? _commonEarly.globalServiceConfigPath
+            : path.resolve(CONFIG_BASE_DIR, _commonEarly.globalServiceConfigPath))
+        : "",
+    path.resolve(process.cwd(), "config", "globalserviceconfig.json"),
+    path.resolve(process.cwd(), "globalserviceconfig.json"),
+    path.join(PACKAGE_ROOT, "config", "globalserviceconfig.json"),
+    path.join(PACKAGE_ROOT, "globalserviceconfig.json"),
+]);
 let fullGlobalConfig = {};
 if (fs.existsSync(GLOBAL_CONFIG_PATH)) {
     fullGlobalConfig = JSON.parse(fs.readFileSync(GLOBAL_CONFIG_PATH, "utf8"));
@@ -247,6 +285,7 @@ const config = {
     domain: commonConfig.domain,
     kamailioWssHost: commonConfig.kamailioWssHost,
     kamailioWssPort: commonConfig.kamailioWssPort,
+    kamailioWssScheme: commonConfig.kamailioWssScheme,
     bindIp: commonConfig.bindIp,
     tlsCertPath: commonConfig.tlsCertPath,
     roflBaseUrl: pickRuntimeConfig("roflBaseUrl"),
@@ -281,11 +320,22 @@ function getServiceRuntime(serviceId = null) {
 }
 
 // Kamailio SIP config
-const KAMAILIO_WSS_URL = `ws://${config.kamailioWssHost || config.domain}:${config.kamailioWssPort}`;
-const KAMAILIO_DOMAIN = config.domain;
+// Transport scheme is configurable: env > config.json > default "wss".
+// Use "ws" only for trusted/co-located hops; "wss" for cross-host.
+const KAMAILIO_WSS_SCHEME = process.env.KAMAILIO_WSS_SCHEME || config.kamailioWssScheme || "wss";
+const KAMAILIO_WSS_HOST = process.env.KAMAILIO_WSS_HOST || config.kamailioWssHost || config.domain;
+const KAMAILIO_WSS_PORT = Number(process.env.KAMAILIO_WSS_PORT || config.kamailioWssPort || 8443);
+const KAMAILIO_WSS_URL = `${KAMAILIO_WSS_SCHEME}://${KAMAILIO_WSS_HOST}:${KAMAILIO_WSS_PORT}`;
+const KAMAILIO_DOMAIN = process.env.KAMAILIO_DOMAIN || KAMAILIO_WSS_HOST || config.domain;
 const KAMAILIO_REGISTER_EXPIRES = 300;
+console.log(`[Startup] SIP WSS target: ${KAMAILIO_WSS_URL}`);
 
 const INTERNAL_BIND_IP = config.bindIp || "127.0.0.1";
+const INTERNAL_CALLBACK_PROTOCOL =
+    String(process.env.INTERNAL_CALLBACK_PROTOCOL || process.env.WEBRTC_INTERNAL_CALLBACK_PROTOCOL || "https")
+        .toLowerCase() === "http"
+        ? "http"
+        : "https";
 const OPENAI_SIP_CONFIG = {
     kamailioHost: process.env.OPENAI_SIP_KAMAILIO_HOST || config.kamailioWssHost || config.domain,
     kamailioPort: Number(process.env.OPENAI_SIP_KAMAILIO_PORT || 5060),
@@ -904,6 +954,7 @@ for (const serviceRuntime of activeServiceRuntimes) {
         httpPort: serviceRuntime.notifyPort,
         internalHttpPort: serviceRuntime.callbackPort,
         internalBindIp: INTERNAL_BIND_IP,
+        internalProtocol: INTERNAL_CALLBACK_PROTOCOL,
         handlers,
         sendJsonError,
         logger: console,
@@ -1028,6 +1079,90 @@ function polyRefByEndpoint(poly, endpoint) {
 }
 
 // Resolve routing at the audio RING and create the PolySession for the pair.
+// Prepaid minute gate for an SBC/SIP outbound. Resolves the per-service budget
+// and asserts the caller may still start a call. Returns { allowed, settings,
+// identity }: allowed=false means the monthly cap is exhausted (the caller has
+// already been told to end). No active policy => allowed with settings=null.
+function checkSbcMinuteBudget({ session, callerSessionId, parsedFrom, serviceId }) {
+    const settings = minuteCounterPolicy.getSettings(serviceId);
+    const identity = minuteCounterPolicy.getIdentity(parsedFrom, session);
+    if (!minuteCounterApi || !settings?.limitSeconds) return { allowed: true, settings: null, identity };
+    try {
+        minuteCounterApi.assertCanStart({
+            serviceId: settings.serviceId,
+            identity,
+            limitSeconds: settings.limitSeconds,
+        });
+    } catch (err) {
+        console.log(`[${callerSessionId}] minute limit reached for ${identity}: ${err.message}`);
+        sendDataChannelMessage(callerSessionId, { msgType: "call", action: "end", reason: "minute-limit" });
+        return { allowed: false, settings, identity };
+    }
+    return { allowed: true, settings, identity };
+}
+
+// Service-side prepaid per-call cutoff. The minute counter owns the budget, so
+// we enforce the low-balance cap here instead of stamping a "Limit" SIP header
+// for the SIP proxy to enforce (SIPhon no longer carries that header). At answer
+// we arm a timer that BYEs both legs when the caller's remaining balance for THIS
+// call runs out, and we bill via the start/finish hooks. No-op without policy.
+function applySbcMinuteCap({ session, callerSessionId, poly, settings, identity }) {
+    if (!minuteCounterApi || !settings?.limitSeconds) return;
+
+    const clearCutoff = () => {
+        if (session._minuteCutoffTimer) {
+            clearTimeout(session._minuteCutoffTimer);
+            session._minuteCutoffTimer = null;
+        }
+    };
+
+    // Bill only the answered conversation: PolySession fires onCallStart when both
+    // legs reach IN_CALL and onCallEnd when they leave it -- so the counter starts
+    // at answer and stops on ANY end (hangup either side, failure, transport drop),
+    // independent of poly disposal/reuse. finish() is idempotent.
+    poly.setCallActivityHooks({
+        onCallStart: () => {
+            minuteCounterApi.start(session, {
+                serviceId: settings.serviceId,
+                identity,
+                limitSeconds: settings.limitSeconds,
+            });
+            // Remaining balance is measured at answer. Only a low-balance caller
+            // is capped per-call (mirrors the previous <300s Limit-header gate);
+            // higher balances are bounded across calls by assertCanStart().
+            const usedSeconds = minuteCounterApi.getUsedSeconds({
+                serviceId: settings.serviceId,
+                identity,
+            });
+            const remainingSeconds = settings.limitSeconds - usedSeconds;
+            clearCutoff();
+            if (remainingSeconds > 0 && remainingSeconds < 300) {
+                console.log(`[${callerSessionId}] low balance: capping call at ${remainingSeconds}s for ${identity}`);
+                session._minuteCutoffTimer = setTimeout(() => {
+                    session._minuteCutoffTimer = null;
+                    // Prepaid is the SIP/SBC leg's concern: the service decides this
+                    // leg is out of balance and ends the SIP (S) leg of the poly.
+                    // The S leg sets itself to ENDING (BYEs the SBC) and the poly
+                    // propagates the teardown to the caller leg.
+                    const sipRef = polySipRef(poly);
+                    if (!sipRef) {
+                        console.warn(`[${callerSessionId}] minute cap reached but poly has no SIP leg -- skipping`);
+                        return;
+                    }
+                    console.log(`[${callerSessionId}] minute cap reached (${remainingSeconds}s) -- ending SIP leg for ${identity}`);
+                    poly.onIngress(sipRef, makeLegEvent(LEG_EVENTS.END)).catch((err) => {
+                        console.error(`[${callerSessionId}] minute-cap hangup failed: ${err.message}`);
+                    });
+                }, remainingSeconds * 1000);
+            }
+        },
+        onCallEnd: () => {
+            clearCutoff();
+            minuteCounterApi.finish(session);
+        },
+    });
+}
+
 async function onDcRing(callerSessionId, payload) {
     const session = sessions.get(callerSessionId);
     if (!session || !session.peerConnection) return;
@@ -1047,6 +1182,9 @@ async function onDcRing(callerSessionId, payload) {
 
     const a = { endpoint: session.callerEns, kind: "webrtc", session };
     let b;
+    // Minute metering is SBC/PSTN-outbound only; resolved in the sip branch below.
+    let minuteCounterSettings = null;
+    let minuteCounterIdentity = null;
     if (destination.route === "webrtc") {
         b = {
             endpoint: destination.ensName || destination.wallet,
@@ -1084,10 +1222,22 @@ async function onDcRing(callerSessionId, payload) {
             kind: "sip",
             session,
         };
+
+        // Minute metering for SBC/PSTN outbound. The poly cutover orphaned the
+        // legacy SbcRouteStrategy where start()/assertCanStart() lived, so gate on
+        // the per-service monthly cap here at SIP-leg origination. The cap header +
+        // billing hooks are applied below once the poly exists.
+        const budget = checkSbcMinuteBudget({ session, callerSessionId, parsedFrom, serviceId });
+        if (!budget.allowed) return;
+        minuteCounterSettings = budget.settings;
+        minuteCounterIdentity = budget.identity;
     }
 
     callPairResolver.bindSessionPairRef(session, a.endpoint, b.endpoint);
     const { poly } = polyRegistry.resolve({ a, b, target: "a" });
+    if (b.kind === "sip") {
+        applySbcMinuteCap({ session, callerSessionId, poly, settings: minuteCounterSettings, identity: minuteCounterIdentity });
+    }
     // Caller transport is already up (HTTP handshake). The SIP leg has no transport
     // to negotiate (openOutbound happens on ring), so mark it usable too. A webrtc
     // callee, by contrast, starts disconnected: reconcile will connect() it (FCM
@@ -1194,6 +1344,25 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
                 sendDataChannelMessage(sessionId, { msgType: "call", action: "end", reason: "ring-failed" });
             });
             return;
+        }
+        // Reused poly: the caller is redialing over its live transport, so onDcRing
+        // (and its minute gate) is bypassed. Re-run the prepaid gate here for SBC/SIP
+        // redials so an out-of-balance caller is blocked and the per-call cutoff
+        // timer is re-armed every call -- not just the first. Otherwise a stale cap
+        // (or none) from a prior call would carry over on the reused poly.
+        const sipRef = polySipRef(existing);
+        if (sipRef) {
+            const serviceId = session.serviceId || null;
+            const parsedFrom = parseAddress(session.callerEns, serviceId);
+            const budget = checkSbcMinuteBudget({ session, callerSessionId: sessionId, parsedFrom, serviceId });
+            if (!budget.allowed) return;
+            applySbcMinuteCap({
+                session,
+                callerSessionId: sessionId,
+                poly: existing,
+                settings: budget.settings,
+                identity: budget.identity,
+            });
         }
     }
 
