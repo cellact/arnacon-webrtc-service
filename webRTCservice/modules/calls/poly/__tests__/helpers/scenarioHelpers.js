@@ -5,12 +5,17 @@ const { LEG_EVENTS, makeLegEvent } = require("../../ports");
 const { LEG_STATES: S, canBeRung } = require("../../states");
 const { FakeMediaController, makeWebRtcLeg, silentLogger } = require("../fakes");
 
-function buildWebRtcScenario({ deferConnectA = false, deferConnectB = false } = {}) {
-    const a = makeWebRtcLeg("alice", { deferConnect: deferConnectA });
-    const b = makeWebRtcLeg("bob", { deferConnect: deferConnectB });
+function buildWebRtcScenario({
+    deferConnectA = false,
+    deferConnectB = false,
+    aId = "alice",
+    bId = "bob",
+} = {}) {
+    const a = makeWebRtcLeg(aId, { deferConnect: deferConnectA });
+    const b = makeWebRtcLeg(bId, { deferConnect: deferConnectB });
     const media = new FakeMediaController();
     const poly = new PolySession({
-        id: "alice<->bob",
+        id: `${aId}<->${bId}`,
         legA: a.leg,
         legB: b.leg,
         mediaController: media,
