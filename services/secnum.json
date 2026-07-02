@@ -13,7 +13,10 @@
     "providerId": "secnum",
     "static": {
       "status": "active",
-      "domains": ["secnum.global", "secnumtest.global", "cellactm.global", "cellactl.global"],
+      "domains": [
+        "secnumtest.global",
+        "secnum.global"
+      ],
       "trustedIngressIps": ["51.85.90.127"],
       "outboundSbcAddress": "185.62.121.10",
       "minuteLimitSeconds": 600
