@@ -13,6 +13,46 @@ function createSipClient({
     isTerminalForSipEvents = null,
     logger = console,
 }) {
+    // SIP.js/werift can fail answer negotiation when SBC returns a narrow codec set.
+    // Normalize SIP SDP to telephony-safe codecs only for SIP legs.
+    async function sipAudioCodecNormalizer(description) {
+        if (!description || typeof description.sdp !== "string") return description;
+        const lines = description.sdp.split("\r\n");
+        const allowedPt = new Set(["8", "0", "101"]);
+        const keepByPtPrefixes = ["a=rtpmap:", "a=fmtp:", "a=rtcp-fb:"];
+        const out = [];
+        let inAudio = false;
+
+        for (const line of lines) {
+            if (line.startsWith("m=")) {
+                inAudio = line.startsWith("m=audio ");
+                if (inAudio) {
+                    const parts = line.trim().split(/\s+/);
+                    const header = parts.slice(0, 3);
+                    const payloads = parts.slice(3).filter((pt) => allowedPt.has(pt));
+                    out.push([...header, ...payloads].join(" "));
+                } else {
+                    out.push(line);
+                }
+                continue;
+            }
+
+            if (inAudio) {
+                const prefix = keepByPtPrefixes.find((p) => line.startsWith(p));
+                if (prefix) {
+                    const rest = line.slice(prefix.length);
+                    const pt = rest.split(/\s|:/)[0];
+                    if (!allowedPt.has(pt)) continue;
+                }
+            }
+
+            out.push(line);
+        }
+
+        description.sdp = out.join("\r\n");
+        return description;
+    }
+
     function sipIdentityUri(value) {
         const normalized = String(value || "").trim();
         if (!normalized) return null;
@@ -85,6 +125,7 @@ function createSipClient({
         }
         const inviter = new Inviter(userAgent, targetUri, {
             sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } },
+            sessionDescriptionHandlerModifiers: [sipAudioCodecNormalizer],
             extraHeaders,
         });
         const sipConnection = { userAgent, registerer, inviter, inviteTimer: null, inviteDone: false };
@@ -212,6 +253,7 @@ function createSipClient({
             });
             invitation.accept({
                 sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } },
+                sessionDescriptionHandlerModifiers: [sipAudioCodecNormalizer],
             }).catch((err) => {
                 clearTimeout(timer);
                 reject(err);
