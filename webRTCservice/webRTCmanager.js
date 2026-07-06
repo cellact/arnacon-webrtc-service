@@ -751,7 +751,18 @@ function findOutboundLegSession(callerSession, legSession, endpointHint = null) 
     if (callerSession.outboundWebrtc) {
         const single = callerSession.outboundWebrtc;
         if (wanted && endpointLabel(single.toIdentity || single.endpoint) === wanted) return single;
-        if (!wanted && !callerSession.outboundWebrtcLegs?.size) return single;
+        if (!wanted && !callerSession.outboundWebrtcLegs?.size) {
+            console.warn(
+                `[${callerSession.sessionId}] callee leg resolution fallback: using outboundWebrtc without endpoint hint`,
+                {
+                    wanted,
+                    endpointHint,
+                    legToIdentity: legSession?.toIdentity || null,
+                    legEndpoint: legSession?.endpoint || null,
+                },
+            );
+            return single;
+        }
     }
     return null;
 }
@@ -1090,6 +1101,15 @@ function resolveCalleeLegSession(session, meta = {}) {
     if (walletKey && session.outboundWebrtcLegs?.get) {
         const mapped = session.outboundWebrtcLegs.get(walletKey);
         if (mapped) return mapped;
+        console.warn(
+            `[${session.sessionId}] callee leg wallet miss`,
+            {
+                walletKey,
+                calleeIdentity: meta.calleeIdentity || null,
+                signalingSessionId: meta.signalingSessionId || null,
+                outboundLegCount: session.outboundWebrtcLegs.size,
+            },
+        );
     }
     const wanted = endpointLabel(meta.calleeIdentity);
     if (wanted && session.outboundWebrtcLegs?.values) {
@@ -1098,6 +1118,27 @@ function resolveCalleeLegSession(session, meta = {}) {
                 return candidate;
             }
         }
+        console.warn(
+            `[${session.sessionId}] callee leg endpoint miss`,
+            {
+                wanted,
+                walletKey: walletKey || null,
+                signalingSessionId: meta.signalingSessionId || null,
+                outboundLegCount: session.outboundWebrtcLegs.size,
+            },
+        );
+    }
+    if (session.outboundWebrtc) {
+        console.warn(
+            `[${session.sessionId}] callee leg fallback: using outboundWebrtc`,
+            {
+                wanted: wanted || null,
+                walletKey: walletKey || null,
+                fallbackToIdentity: session.outboundWebrtc.toIdentity || null,
+                fallbackSignalingSessionId: session.outboundWebrtc.signalingSessionId || null,
+                signalingSessionId: meta.signalingSessionId || null,
+            },
+        );
     }
     return session.outboundWebrtc || null;
 }
