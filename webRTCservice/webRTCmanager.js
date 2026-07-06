@@ -573,7 +573,12 @@ function parseAddress(addr, serviceId = null) {
 const isRawEmail = (...args) => addressParserApi.isRawEmail(...args);
 const emailToEnsName = (...args) => addressParserApi.emailToEnsName(...args);
 const resolveEnsToAddress = (...args) => blockchainGateway.resolveEnsToAddress(...args);
-const signalingAuthVerifier = new SignalingAuthVerifier({ blockchainGateway, sessions });
+const signalingAuthVerifier = new SignalingAuthVerifier({
+    blockchainGateway,
+    sessions,
+    sessionsByUser,
+    stableKey: (...args) => stableKey(...args),
+});
 const isEthAddress = (...args) => blockchainGateway.isEthAddress(...args);
 
 const sendNotification = (...args) => notificationGateway.send(...args);
@@ -720,13 +725,39 @@ const signalingPipelineApi = createSignalingPipeline({
 function isOpenDc(dc) {
     return !!dc && (dc.readyState === "open" || dc.readyState === "OPEN");
 }
+
+function endpointLabel(identity) {
+    return pLabel(String(identity || "").toLowerCase());
+}
+
+function findOutboundLegSession(callerSession, legSession) {
+    if (!callerSession || !legSession) return null;
+    const targetWallet = String(legSession.walletAddress || "").toLowerCase();
+    if (targetWallet && callerSession.outboundWebrtcLegs?.get) {
+        const mapped = callerSession.outboundWebrtcLegs.get(targetWallet);
+        if (mapped) return mapped;
+    }
+    if (callerSession.outboundWebrtcLegs?.values) {
+        const wanted = endpointLabel(legSession.toIdentity || legSession.endpoint);
+        for (const candidate of callerSession.outboundWebrtcLegs.values()) {
+            if (endpointLabel(candidate?.toIdentity || candidate?.endpoint) === wanted) return candidate;
+        }
+    }
+    if (callerSession.outboundWebrtc) {
+        const single = callerSession.outboundWebrtc;
+        const wanted = endpointLabel(legSession.toIdentity || legSession.endpoint);
+        if (!wanted || endpointLabel(single.toIdentity || single.endpoint) === wanted) return single;
+    }
+    return null;
+}
 // Resolve the data channel a leg should signal over: the caller leg uses its own
 // session DC; a secnum<->secnum callee leg uses the outbound-leg DC attached to
 // the caller session (legSession === callerSession.outboundWebrtc).
 function resolveLegDataChannel(session, callerSessionId) {
     if (session?.dataChannel) return session.dataChannel;
     const caller = callerSessionId ? sessions.get(callerSessionId) : null;
-    return caller?.outboundWebrtc?.dataChannel || null;
+    const outbound = findOutboundLegSession(caller, session);
+    return outbound?.dataChannel || null;
 }
 const polyCore = createPolyCore({
     mediaGraphFactory,
@@ -798,12 +829,12 @@ async function tryInboundReuse(payload) {
     const callerLabel = pLabel(String(payload.from || "").replace(/^\+/, "").toLowerCase());
     if (!calleeLabel || !callerLabel) return null;
 
-    const poly = polyRegistry.getByEndpoint(payload.to);
-    if (!poly) return null;
-
-    const sipRef = polySipRef(poly);
-    const webRef = poly.legs.a.kind === "webrtc" ? "a" : (poly.legs.b.kind === "webrtc" ? "b" : null);
-    if (!sipRef || !webRef) return null; // not a webrtc<->sip poly
+    const reuseResolution = callPairResolver.resolvePairActor(payload.from, payload.to, payload.to);
+    if (!reuseResolution?.poly || !reuseResolution?.ref) return null;
+    const poly = reuseResolution.poly;
+    const webRef = reuseResolution.ref;
+    const sipRef = webRef === "a" ? "b" : "a";
+    if (!poly.legs[sipRef] || poly.legs[sipRef].kind !== "sip") return null;
 
     const webLeg = poly.legs[webRef];
     const sipLeg = poly.legs[sipRef];
@@ -1039,38 +1070,95 @@ function polyForSession(session) {
     return callPairResolver.polyForSession(session);
 }
 
+function pairResolutionForOffer(offer) {
+    if (!offer?.from || !offer?.to) return null;
+    return callPairResolver.resolvePairActor(offer.from, offer.to, offer.from);
+}
+
+function resolveCalleeLegSession(session, meta = {}) {
+    if (!session) return null;
+    const walletKey = String(meta.walletAddress || "").toLowerCase();
+    if (walletKey && session.outboundWebrtcLegs?.get) {
+        const mapped = session.outboundWebrtcLegs.get(walletKey);
+        if (mapped) return mapped;
+    }
+    const wanted = endpointLabel(meta.calleeIdentity);
+    if (wanted && session.outboundWebrtcLegs?.values) {
+        for (const candidate of session.outboundWebrtcLegs.values()) {
+            if (endpointLabel(candidate?.toIdentity || candidate?.endpoint) === wanted) {
+                return candidate;
+            }
+        }
+    }
+    return session.outboundWebrtc || null;
+}
+
+function resolveSessionByPeerConnection(session, pc) {
+    if (!session || !pc) return null;
+    if (session.peerConnection === pc) {
+        return { channelRole: "caller-webrtc", sessionRef: session, meta: {} };
+    }
+    if (session.outboundWebrtc?.peerConnection === pc) {
+        return {
+            channelRole: "callee-webrtc",
+            sessionRef: session.outboundWebrtc,
+            meta: {
+                walletAddress: session.outboundWebrtc.walletAddress,
+                calleeIdentity: session.outboundWebrtc.toIdentity,
+                signalingSessionId: session.outboundWebrtc.signalingSessionId,
+            },
+        };
+    }
+    if (session.outboundWebrtcLegs?.values) {
+        for (const legSession of session.outboundWebrtcLegs.values()) {
+            if (legSession?.peerConnection === pc) {
+                return {
+                    channelRole: "callee-webrtc",
+                    sessionRef: legSession,
+                    meta: {
+                        walletAddress: legSession.walletAddress,
+                        calleeIdentity: legSession.toIdentity,
+                        signalingSessionId: legSession.signalingSessionId,
+                    },
+                };
+            }
+        }
+    }
+    return null;
+}
+
 // Which leg ref a webrtc message on `session` targets. callee-webrtc role => the
 // outbound callee leg (its negotiation.session === session.outboundWebrtc);
 // otherwise the primary PC1 leg (negotiation.session === session).
-function polyWebrtcRef(poly, session, channelRole) {
+function polyWebrtcRef(poly, session, channelRole, meta = {}) {
     const isCallee = channelRole === "callee-webrtc";
+    const calleeLegSession = isCallee ? resolveCalleeLegSession(session, meta) : null;
     for (const ref of ["a", "b"]) {
         const leg = poly.legs[ref];
         if (!leg || leg.kind !== "webrtc") continue;
         const ns = leg.negotiation?.session;
         if (isCallee) {
-            if (ns && ns === session.outboundWebrtc) return ref;
+            if (ns && calleeLegSession && ns === calleeLegSession) return ref;
         } else if (ns && ns === session) {
             return ref;
         }
     }
-    if (poly.legs.a.kind === "webrtc") return "a";
-    if (poly.legs.b.kind === "webrtc") return "b";
-    return "a";
+    return null;
 }
 
 // Strict: does this poly actually own `session` (live transport), no fallback?
 // Used to tell a brand-new ring on a fresh transport from an in-call message on
 // the poly's own transport, and to stop a stale transport's close from tearing
 // down a freshly rebuilt poly.
-function polyOwnsSession(poly, session, channelRole) {
+function polyOwnsSession(poly, session, channelRole, meta = {}) {
     if (!poly || !session) return false;
     const isCallee = channelRole === "callee-webrtc";
+    const calleeLegSession = isCallee ? resolveCalleeLegSession(session, meta) : null;
     for (const ref of ["a", "b"]) {
         const leg = poly.legs[ref];
         if (!leg || leg.kind !== "webrtc") continue;
         const ns = leg.negotiation?.session;
-        if (isCallee ? ns === session.outboundWebrtc : ns === session) return true;
+        if (isCallee ? ns === calleeLegSession : ns === session) return true;
     }
     return false;
 }
@@ -1278,8 +1366,12 @@ function onDataChannelOpen(sessionId, meta = {}) {
     // Only mark transport-open if this poly owns the channel. A new transport whose
     // DC opens before its RING resolves to a stale poly by identity; the ring will
     // rebuild that poly fresh, so touching its frozen legs here would be wrong.
-    if (!polyOwnsSession(poly, session, channelRole)) return;
-    const ref = polyWebrtcRef(poly, session, channelRole);
+    if (!polyOwnsSession(poly, session, channelRole, meta)) return;
+    const ref = polyWebrtcRef(poly, session, channelRole, meta);
+    if (!ref) {
+        console.error(`[${sessionId}] poly transport-open (${channelRole}) skipped: no owned webrtc leg`);
+        return;
+    }
     poly.onIngress(ref, makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN)).catch((err) => {
         console.error(`[${sessionId}] poly transport-open (${channelRole}) failed: ${err.message}`);
     });
@@ -1397,7 +1489,11 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
 
     const event = polyIngress.toLegEvent(action, payload, { channelRole });
     if (!event) return;
-    const ref = polyWebrtcRef(poly, session, channelRole);
+    const ref = polyWebrtcRef(poly, session, channelRole, meta);
+    if (!ref) {
+        console.error(`[${sessionId}] poly ingress (${action}) skipped: no owned webrtc leg`);
+        return;
+    }
     poly.onIngress(ref, event).catch((err) => {
         if (action === "offer" && isRecoverableOfferIngressError(err) && !payload.__polyIngressRetriedOnce) {
             payload.__polyIngressRetriedOnce = true;
@@ -1409,7 +1505,11 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
                 console.error(`[${sessionId}] poly ingress (${action}) retry skipped: no active session/poly`);
                 return;
             }
-            const retryRef = polyWebrtcRef(latestPoly, latestSession, channelRole);
+            const retryRef = polyWebrtcRef(latestPoly, latestSession, channelRole, meta);
+            if (!retryRef) {
+                console.error(`[${sessionId}] poly ingress (${action}) retry skipped: no owned retry leg`);
+                return;
+            }
             const retryEvent = polyIngress.toLegEvent(action, payload, { channelRole });
             if (!retryEvent) {
                 console.error(`[${sessionId}] poly ingress (${action}) retry skipped: no retry event`);
@@ -1426,12 +1526,13 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
 
 // HTTP /notify "answer" (callee picked up: secnum<->secnum leg or inbound callee).
 async function onVerifiedNotifyAnswer(sessionId, offer, session) {
-    const poly = polyForSession(session) || callPairResolver.polyForOffer(offer);
-    if (!poly) return { handled: false };
-    const ref = polyRefByEndpoint(poly, offer.from)
-        || (poly.legs.b.kind === "webrtc" ? "b" : "a");
+    const resolved = pairResolutionForOffer(offer);
+    if (!resolved?.poly || !resolved?.ref) return { handled: false };
     try {
-        await poly.onIngress(ref, polyIngress.toLegEvent("answer", { sdp: offer.sdp, candidates: offer.candidates || [] }, {}));
+        await resolved.poly.onIngress(
+            resolved.ref,
+            polyIngress.toLegEvent("answer", { sdp: offer.sdp, candidates: offer.candidates || [] }, {}),
+        );
     } catch (err) {
         console.error(`[${sessionId}] poly http-answer failed: ${err.message}`);
         return { handled: false };
@@ -1441,12 +1542,10 @@ async function onVerifiedNotifyAnswer(sessionId, offer, session) {
 
 // HTTP /notify "reject".
 async function onHttpReject(sessionId, offer) {
-    const session = sessions.get(sessionId);
-    const poly = polyForSession(session);
-    if (!poly) return { ok: true, ignored: true, type: "reject", sessionId };
-    const ref = polyRefByEndpoint(poly, offer.from) || "b";
+    const resolved = pairResolutionForOffer(offer);
+    if (!resolved?.poly || !resolved?.ref) return { ok: true, ignored: true, type: "reject", sessionId };
     try {
-        await poly.onIngress(ref, polyIngress.toLegEvent("reject", {}, {}));
+        await resolved.poly.onIngress(resolved.ref, polyIngress.toLegEvent("reject", {}, {}));
     } catch (err) {
         console.error(`[${sessionId}] poly http-reject failed: ${err.message}`);
     }
@@ -1484,13 +1583,12 @@ function isSessionInCall(session) {
 // Terminal PC state -> tear the pair down and clean up.
 async function onTransportClosed(sessionId, event = {}) {
     const session = sessions.get(sessionId);
+    const transportBinding = resolveSessionByPeerConnection(session, event.pc);
     // A 2nd call reuses the same sessionId on a fresh transport. The old call's PC
     // can fire `closed` after the new session is already bound under this id. If the
     // closing transport is no longer the session's current caller/callee PC, it is
     // superseded -> ignore it entirely so we don't tear down the fresh session.
-    if (session && event.pc &&
-        event.pc !== session.peerConnection &&
-        event.pc !== session.outboundWebrtc?.peerConnection) {
+    if (session && event.pc && !transportBinding) {
         return;
     }
     // A callee leg's PC (created destroyOnTerminalState:false) that drops while the
@@ -1501,8 +1599,9 @@ async function onTransportClosed(sessionId, event = {}) {
     // also ends the caller via reconcile, so the drop still reaches the peer.
     if (event.destroyOnTerminalState === false) {
         const calleePoly = polyForSession(session);
-        if (calleePoly && polyOwnsSession(calleePoly, session, "callee-webrtc")) {
-            const ref = polyWebrtcRef(calleePoly, session, "callee-webrtc");
+        if (calleePoly && polyOwnsSession(calleePoly, session, "callee-webrtc", transportBinding?.meta)) {
+            const ref = polyWebrtcRef(calleePoly, session, "callee-webrtc", transportBinding?.meta);
+            if (!ref) return;
             try {
                 await calleePoly.onIngress(ref, makeLegEvent(LEG_EVENTS.TRANSPORT_CLOSE));
             } catch (err) {
@@ -1516,8 +1615,13 @@ async function onTransportClosed(sessionId, event = {}) {
     // PC closing after a new-ring rebuild resolves (by identity) to the freshly
     // built poly for the same pair -- which we must NOT kill. Just clean its
     // SessionStore entry in that case.
-    if (poly && polyOwnsSession(poly, session, "caller-webrtc")) {
-        const ref = polyWebrtcRef(poly, session, "caller-webrtc");
+    const channelRole = transportBinding?.channelRole || "caller-webrtc";
+    if (poly && polyOwnsSession(poly, session, channelRole, transportBinding?.meta)) {
+        const ref = polyWebrtcRef(poly, session, channelRole, transportBinding?.meta);
+        if (!ref) {
+            destroySession(sessionId, event.notify === true);
+            return;
+        }
         try {
             await poly.onIngress(ref, makeLegEvent(LEG_EVENTS.TRANSPORT_CLOSE));
         } catch (err) {

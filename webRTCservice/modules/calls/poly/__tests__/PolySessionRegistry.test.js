@@ -59,6 +59,19 @@ test("resolve targets the correct leg by endpoint", () => {
     assert.equal(toBob.leg.kind, "sip");
 });
 
+test("resolve throws when target endpoint is not part of pair", () => {
+    const reg = buildRegistry();
+    assert.throws(
+        () =>
+            reg.resolve({
+                a: { endpoint: "alice", kind: "webrtc" },
+                b: { endpoint: "bob", kind: "sip" },
+                target: "carol",
+            }),
+        /target endpoint not found/i,
+    );
+});
+
 test("different pair creates a different PolySession", () => {
     const reg = buildRegistry();
     const r1 = reg.resolve({ a: { endpoint: "alice", kind: "webrtc" }, b: { endpoint: "bob", kind: "webrtc" } });
@@ -160,4 +173,43 @@ test("same callee with different callers keeps separate pair records", () => {
     assert.notEqual(first.poly, second.poly);
     assert.equal(reg.get(first.key), first.poly);
     assert.equal(reg.get(second.key), second.poly);
+});
+
+test("shared caller across AB and AC keeps pair-isolated lifecycle", async () => {
+    const { reg, media } = buildRegistryWithMedia();
+    const ab = reg.resolve({
+        a: { endpoint: "alice", kind: "webrtc" },
+        b: { endpoint: "bob", kind: "webrtc" },
+        target: "alice",
+    });
+    const ac = reg.resolve({
+        a: { endpoint: "alice", kind: "webrtc" },
+        b: { endpoint: "carol", kind: "webrtc" },
+        target: "alice",
+    });
+    assert.notEqual(ab.key, ac.key);
+    assert.notEqual(ab.poly, ac.poly);
+
+    await ab.poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await ab.poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await ac.poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await ac.poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await ab.poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "offer-ab" }));
+    await ab.poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "answer-ab" }));
+    await ac.poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "offer-ac" }));
+    await ac.poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "answer-ac" }));
+
+    assert.equal(ab.poly.legs.a.state, S.IN_CALL);
+    assert.equal(ab.poly.legs.b.state, S.IN_CALL);
+    assert.equal(ac.poly.legs.a.state, S.IN_CALL);
+    assert.equal(ac.poly.legs.b.state, S.IN_CALL);
+    assert.equal(media.connects.length, 2);
+
+    await ab.poly.onIngress("a", makeLegEvent(LEG_EVENTS.END));
+    await ab.poly.onIngress("b", makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "end-ab" }));
+
+    assert.equal(ab.poly.legs.a.state, S.CONNECTED);
+    assert.equal(ab.poly.legs.b.state, S.CONNECTED);
+    assert.equal(ac.poly.legs.a.state, S.IN_CALL, "ending AB must not affect AC");
+    assert.equal(ac.poly.legs.b.state, S.IN_CALL, "ending AB must not affect AC");
 });

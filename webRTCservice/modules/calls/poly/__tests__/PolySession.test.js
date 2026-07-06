@@ -372,6 +372,37 @@ test("repeated settle passes do not duplicate media disconnect", async () => {
     assert.equal(media.disconnects.length, 1, "teardown reconcile remains idempotent");
 });
 
+test("shared endpoint across AB and AC: transport close in AB does not impact AC", async () => {
+    const abA = makeWebRtcLeg("alice");
+    const abB = makeWebRtcLeg("bob");
+    const acA = makeWebRtcLeg("alice");
+    const acC = makeWebRtcLeg("carol");
+    const first = buildPoly(abA, abB);
+    const second = buildPoly(acA, acC);
+
+    await first.poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await first.poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await second.poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await second.poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await first.poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "offer-ab" }));
+    await first.poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "answer-ab" }));
+    await second.poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "offer-ac" }));
+    await second.poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "answer-ac" }));
+
+    assert.equal(abA.leg.state, S.IN_CALL);
+    assert.equal(abB.leg.state, S.IN_CALL);
+    assert.equal(acA.leg.state, S.IN_CALL);
+    assert.equal(acC.leg.state, S.IN_CALL);
+
+    await first.poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_CLOSE));
+    assert.equal(abB.leg.state, S.FAILED);
+    assert.equal(abA.leg.state, S.ENDING);
+    assert.equal(acA.leg.state, S.IN_CALL, "AB transport close must not affect AC");
+    assert.equal(acC.leg.state, S.IN_CALL, "AB transport close must not affect AC");
+    assert.equal(first.media.disconnects.length, 1);
+    assert.equal(second.media.disconnects.length, 0);
+});
+
 class FakeRtpLeg extends MediaLeg {
     constructor({ id, kind, payloadType = 8 } = {}) {
         super({ id, kind, payloadType, logger: silentLogger });

@@ -48,6 +48,22 @@ class CallPairResolver {
         return this.polyRegistry.get(key) || null;
     }
 
+    refForEndpoint(poly, endpoint) {
+        if (!poly || !endpoint) return null;
+        const leg = poly.legByEndpoint(endpoint);
+        return leg ? poly.refOf(leg) : null;
+    }
+
+    resolvePairActor(caller, callee, actorEndpoint) {
+        const key = this.keyFromIdentities(caller, callee);
+        if (!key) return null;
+        const poly = this.polyRegistry.get(key);
+        if (!poly) return null;
+        const ref = this.refForEndpoint(poly, actorEndpoint);
+        if (!ref) return null;
+        return { key, poly, ref };
+    }
+
     bindSessionPairRef(session, caller, callee) {
         if (!session) return null;
         session.callPairRef = createCallPairRef(caller, callee);

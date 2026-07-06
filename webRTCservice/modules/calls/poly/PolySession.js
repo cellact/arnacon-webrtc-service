@@ -8,6 +8,7 @@
 const { reconcile } = require("./ReconcileRules");
 const { LEG_INTENTS } = require("./ports");
 const { LEG_STATES, isActiveCall } = require("./states");
+const { identityLabel } = require("../../runtime/CallPairRef");
 
 const MAX_RECONCILE_PASSES = 50;
 
@@ -66,8 +67,14 @@ class PolySession {
     }
 
     legByEndpoint(endpoint) {
-        if (this.legs.a.endpoint === endpoint || this.legs.a.id === endpoint) return this.legs.a;
-        if (this.legs.b.endpoint === endpoint || this.legs.b.id === endpoint) return this.legs.b;
+        const wanted = identityLabel(String(endpoint || "").toLowerCase());
+        if (!wanted) return null;
+        const aEndpoint = identityLabel(String(this.legs.a.endpoint || "").toLowerCase());
+        const aId = identityLabel(String(this.legs.a.id || "").toLowerCase());
+        if (aEndpoint === wanted || aId === wanted) return this.legs.a;
+        const bEndpoint = identityLabel(String(this.legs.b.endpoint || "").toLowerCase());
+        const bId = identityLabel(String(this.legs.b.id || "").toLowerCase());
+        if (bEndpoint === wanted || bId === wanted) return this.legs.b;
         return null;
     }
 

@@ -1,8 +1,4 @@
-const {
-    identityLabel,
-    normalizeSessionId,
-    pairKeyFromIdentities,
-} = require("../../runtime/CallPairRef");
+const { normalizeSessionId } = require("../../runtime/CallPairRef");
 
 function createOfferFlow({
     sessions,
@@ -29,25 +25,20 @@ function createOfferFlow({
         return addr;
     }
 
-    function relationSessionCandidates(from, to, sessionId) {
-        const fromLabel = identityLabel(from);
-        const toLabel = identityLabel(to);
-        const candidates = new Set();
-        if (sessionId) candidates.add(normalizeSessionId(sessionId));
-        if (fromLabel && toLabel) {
-            candidates.add(`${fromLabel}|${toLabel}`);
-            candidates.add(`${toLabel}|${fromLabel}`);
-            candidates.add(stableKey(from, to));
-            candidates.add(pairKeyFromIdentities(from, to));
-        }
-        return candidates;
-    }
-
     function resolveExistingSessionId(from, to, sessionId) {
-        for (const candidate of relationSessionCandidates(from, to, sessionId)) {
-            if (sessions.has(candidate)) return candidate;
+        const pairKey = stableKey(from, to);
+        const pairSessionId = sessionsByUser.get(pairKey);
+        if (pairSessionId && sessions.has(pairSessionId)) {
+            return pairSessionId;
         }
-        return normalizeSessionId(sessionId);
+        const normalized = normalizeSessionId(sessionId);
+        if (!normalized || !sessions.has(normalized)) return normalized;
+        const session = sessions.get(normalized);
+        if (!session) return normalized;
+        if (stableKey(session.callerEns, session.toIdentity) !== pairKey) {
+            return null;
+        }
+        return normalized;
     }
 
     function assertAllowedInitialOfferFrom(from, sessionId, serviceId = null) {

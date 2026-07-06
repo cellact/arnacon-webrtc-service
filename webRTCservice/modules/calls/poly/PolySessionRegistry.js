@@ -53,7 +53,10 @@ class PolySessionRegistry {
             poly = this._create(key, a, b);
         }
         const targetEndpoint = target === "b" ? b.endpoint : target === "a" ? a.endpoint : (target || a.endpoint);
-        const leg = poly.legByEndpoint(targetEndpoint) || poly.legs.a;
+        const leg = poly.legByEndpoint(targetEndpoint);
+        if (!leg) {
+            throw new Error(`PolySessionRegistry.resolve target endpoint not found in pair ${key}: ${targetEndpoint}`);
+        }
         return { poly, leg, ref: poly.refOf(leg), key };
     }
 

@@ -8,31 +8,39 @@ const authIdentityLabel = identityLabel;
 const authNormalizeSessionId = normalizeSessionId;
 
 class SignalingAuthVerifier {
-    constructor({ blockchainGateway, sessions }) {
+    constructor({ blockchainGateway, sessions, sessionsByUser = null, stableKey = null }) {
         if (!blockchainGateway) throw new Error("SignalingAuthVerifier requires blockchainGateway");
         this.blockchainGateway = blockchainGateway;
         this.sessions = sessions;
+        this.sessionsByUser = sessionsByUser;
+        this.stableKey = typeof stableKey === "function" ? stableKey : null;
     }
+
+    pairSessionId(payload = {}) {
+        if (!this.sessionsByUser || !this.stableKey) return null;
+        if (!payload.from || !payload.to) return null;
+        return this.sessionsByUser.get(this.stableKey(payload.from, payload.to)) || null;
+    }
+
+    sessionMatchesPair(session, payload = {}) {
+        if (!session || !payload.from || !payload.to || !this.stableKey) return true;
+        return this.stableKey(session.callerEns, session.toIdentity) === this.stableKey(payload.from, payload.to);
+    }
+
     resolveSession(payload = {}) {
-        const candidates = new Set();
-        if (payload.sessionId) {
-            const normalizedSessionId = authNormalizeSessionId(payload.sessionId);
-            candidates.add(normalizedSessionId);
-            const parts = normalizedSessionId.split("|");
-            if (parts.length === 2) candidates.add(`${parts[1]}|${parts[0]}`);
+        const byPairId = this.pairSessionId(payload);
+        if (byPairId) {
+            const byPair = this.sessions.get(byPairId);
+            if (byPair) return byPair;
         }
-        const fromLabel = authIdentityLabel(payload.from);
-        const toLabel = authIdentityLabel(payload.to);
-        if (fromLabel && toLabel) {
-            candidates.add(`${fromLabel}|${toLabel}`);
-            candidates.add(`${toLabel}|${fromLabel}`);
-            candidates.add(pairKeyFromIdentities(fromLabel, toLabel));
+        if (!payload.sessionId) return null;
+        const normalizedSessionId = authNormalizeSessionId(payload.sessionId);
+        const session = this.sessions.get(normalizedSessionId);
+        if (!session) return null;
+        if (!this.sessionMatchesPair(session, payload)) {
+            return null;
         }
-        for (const candidate of candidates) {
-            const session = this.sessions.get(candidate);
-            if (session) return session;
-        }
-        return null;
+        return session;
     }
 
     verify(payload = {}, signalingPlan = {}) {

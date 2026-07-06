@@ -53,7 +53,12 @@ class WebRtcOutboundLegFactory {
         dc.onopen = () => {
             legSession.dataChannelOpen = true;
             if (typeof this.onDataChannelOpen === "function") {
-                this.onDataChannelOpen(sessionId, { channelRole: "callee-webrtc" });
+                this.onDataChannelOpen(sessionId, {
+                    channelRole: "callee-webrtc",
+                    calleeIdentity: legSession.toIdentity,
+                    walletAddress: legSession.walletAddress,
+                    signalingSessionId: legSession.signalingSessionId,
+                });
             }
         };
         dc.onMessage.subscribe((msg) => {
@@ -61,6 +66,9 @@ class WebRtcOutboundLegFactory {
             const raw = typeof msg === "string" ? msg : Buffer.from(msg).toString("utf-8");
             this.onDataChannelMessage(sessionId, raw, {
                 channelRole: "callee-webrtc",
+                calleeIdentity: legSession.toIdentity,
+                walletAddress: legSession.walletAddress,
+                signalingSessionId: legSession.signalingSessionId,
             });
         });
         dc.onclose = () => {
