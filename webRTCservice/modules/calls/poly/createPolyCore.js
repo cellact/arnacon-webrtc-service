@@ -57,18 +57,30 @@ function createPolyCore(deps = {}) {
                     ? async ({ destination: d } = {}) => outboundInvite({ callerSessionId, destination: d || destination })
                     : null);
         }
-        return new WebRtcNegotiation({
+        let negotiation = null;
+        const signaling = makeSignalingTransport({
+            id,
+            endpoint,
+            session,
+            callerSessionId,
+            // Important: callee legs bind their real session only after inviteCallee
+            // resolves. Use a live resolver so signaling always targets the current
+            // leg session, not the constructor-time placeholder.
+            getSession: () => negotiation?.session || session || null,
+        });
+        negotiation = new WebRtcNegotiation({
             id,
             endpoint,
             session,
             role,
             destination,
             inviteCallee,
-            signaling: makeSignalingTransport({ id, endpoint, session, callerSessionId }),
+            signaling,
             primitives: webrtcPrimitives,
             MediaStreamTrack: webrtcPrimitives.MediaStreamTrack,
             logger,
         });
+        return negotiation;
     };
 
     const sipNegotiationFactory = ({ id, endpoint, session, phoneNumber = null }) => new SipNegotiation({

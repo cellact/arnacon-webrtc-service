@@ -730,33 +730,38 @@ function endpointLabel(identity) {
     return pLabel(String(identity || "").toLowerCase());
 }
 
-function findOutboundLegSession(callerSession, legSession) {
-    if (!callerSession || !legSession) return null;
-    const targetWallet = String(legSession.walletAddress || "").toLowerCase();
+function findOutboundLegSession(callerSession, legSession, endpointHint = null) {
+    if (!callerSession) return null;
+    const targetWallet = String(legSession?.walletAddress || "").toLowerCase();
     if (targetWallet && callerSession.outboundWebrtcLegs?.get) {
         const mapped = callerSession.outboundWebrtcLegs.get(targetWallet);
-        if (mapped) return mapped;
+        if (mapped) {
+            const wanted = endpointLabel(legSession?.toIdentity || legSession?.endpoint || endpointHint);
+            const actual = endpointLabel(mapped?.toIdentity || mapped?.endpoint);
+            if (!wanted || wanted === actual) return mapped;
+            return null;
+        }
     }
-    if (callerSession.outboundWebrtcLegs?.values) {
-        const wanted = endpointLabel(legSession.toIdentity || legSession.endpoint);
+    const wanted = endpointLabel(legSession?.toIdentity || legSession?.endpoint || endpointHint);
+    if (wanted && callerSession.outboundWebrtcLegs?.values) {
         for (const candidate of callerSession.outboundWebrtcLegs.values()) {
             if (endpointLabel(candidate?.toIdentity || candidate?.endpoint) === wanted) return candidate;
         }
     }
     if (callerSession.outboundWebrtc) {
         const single = callerSession.outboundWebrtc;
-        const wanted = endpointLabel(legSession.toIdentity || legSession.endpoint);
-        if (!wanted || endpointLabel(single.toIdentity || single.endpoint) === wanted) return single;
+        if (wanted && endpointLabel(single.toIdentity || single.endpoint) === wanted) return single;
+        if (!wanted && !callerSession.outboundWebrtcLegs?.size) return single;
     }
     return null;
 }
 // Resolve the data channel a leg should signal over: the caller leg uses its own
 // session DC; a secnum<->secnum callee leg uses the outbound-leg DC attached to
 // the caller session (legSession === callerSession.outboundWebrtc).
-function resolveLegDataChannel(session, callerSessionId) {
+function resolveLegDataChannel(session, callerSessionId, endpoint) {
     if (session?.dataChannel) return session.dataChannel;
     const caller = callerSessionId ? sessions.get(callerSessionId) : null;
-    const outbound = findOutboundLegSession(caller, session);
+    const outbound = findOutboundLegSession(caller, session, endpoint);
     return outbound?.dataChannel || null;
 }
 const polyCore = createPolyCore({
@@ -775,16 +780,20 @@ const polyCore = createPolyCore({
         narrowAudioOfferForCodecPolicy: (...args) => narrowAudioOfferForCodecPolicy(...args),
         logSdp: (...args) => logSdp(...args),
     },
-    makeSignalingTransport: ({ session, callerSessionId }) => ({
+    makeSignalingTransport: ({ session, callerSessionId, endpoint, getSession }) => ({
         send: (message) => {
-            const dc = resolveLegDataChannel(session, callerSessionId);
+            const liveSession = typeof getSession === "function" ? getSession() : session;
+            const dc = resolveLegDataChannel(liveSession, callerSessionId, endpoint);
             if (!isOpenDc(dc)) {
                 console.error(`[poly-signaling] no open data channel for ${message.payload?.type || message.action || "message"}`);
                 return;
             }
             dc.send(JSON.stringify(message));
         },
-        isOpen: () => isOpenDc(resolveLegDataChannel(session, callerSessionId)),
+        isOpen: () => {
+            const liveSession = typeof getSession === "function" ? getSession() : session;
+            return isOpenDc(resolveLegDataChannel(liveSession, callerSessionId, endpoint));
+        },
     }),
     // secnum<->secnum callee invite: reuse the proven outbound leg factory + FCM.
     outboundInvite: (...args) => outboundInvite(...args),
