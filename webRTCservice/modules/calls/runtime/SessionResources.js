@@ -33,11 +33,20 @@ class MediaSession {
         const graph = this.getGraph();
         if (graph?.stop) await graph.stop(reason);
         else if (this.session.media?.bridge?.stop) await this.session.media.bridge.stop(reason);
+        this.clearReusableMediaState(reason);
         this.session.mediaGraph = null;
         this.session.media = null;
         this.session.mediaRelayActive = false;
         this.resources.remove("mediaSession");
         this.logger.log(`[${this.sessionId}] Media session released reason=${reason}`);
+    }
+
+    clearReusableMediaState(reason = "media-stop") {
+        // Keep signaling transport/PC alive for reuse, but drop per-call media state.
+        this.session.localAudioTrack = null;
+        this.session.sipLocalAudioTrack = null;
+        this.session.remoteTracks = [];
+        this.logger.log(`[${this.sessionId}] Media reuse state reset reason=${reason}`);
     }
 }
 

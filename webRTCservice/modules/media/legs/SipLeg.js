@@ -65,6 +65,7 @@ class SipLeg extends MediaLeg {
                 try { this.trackUnsubscribe(); } catch (_) {}
                 this.trackUnsubscribe = null;
             }
+            this.logger.log(`[${this.id}] SIP leg subscribing receiver track ssrc=${track.ssrc ?? "unknown"}`);
             const sub = track.onReceiveRtp.subscribe((packet) => {
                 if (!this.active) return;
                 this.trackPackets += 1;
@@ -90,6 +91,9 @@ class SipLeg extends MediaLeg {
             if (!this.active || !packet?.header) return;
             if (this.lastTrackRtpAt && Date.now() - this.lastTrackRtpAt < 500) return;
             this.routerFallbackPackets += 1;
+            if (this.routerFallbackPackets === 1) {
+                this.logger.warn(`[${this.id}] SIP leg RTP fallback path engaged (no recent receiver-track RTP)`);
+            }
             this.noteInbound();
             if (!Number.isFinite(this.payloadType)) this.payloadType = Number(packet.header.payloadType);
             handler(packet);
@@ -107,6 +111,9 @@ class SipLeg extends MediaLeg {
                 try { fn(); } catch (_) {}
             }
             this.trackUnsubscribe = null;
+            this.logger.log(
+                `[${this.id}] SIP leg RTP input detached trackPackets=${this.trackPackets} fallbackPackets=${this.routerFallbackPackets}`,
+            );
         };
         this.addDisposer(dispose);
         return dispose;

@@ -5,6 +5,8 @@ const { PolySession } = require("../PolySession");
 const { LEG_STATES: S } = require("../states");
 const { LEG_EVENTS, makeLegEvent } = require("../ports");
 const { FakeMediaController, makeWebRtcLeg, makeSipLeg, silentLogger } = require("./fakes");
+const { MediaBridge } = require("../../../media/MediaBridge");
+const { MediaLeg } = require("../../../media/MediaLeg");
 
 function buildPoly(legAInfo, legBInfo) {
     const media = new FakeMediaController();
@@ -368,4 +370,81 @@ test("repeated settle passes do not duplicate media disconnect", async () => {
     await poly._settle();
     await poly._settle();
     assert.equal(media.disconnects.length, 1, "teardown reconcile remains idempotent");
+});
+
+class FakeRtpLeg extends MediaLeg {
+    constructor({ id, kind, payloadType = 8 } = {}) {
+        super({ id, kind, payloadType, logger: silentLogger });
+        this._handler = null;
+        this.writtenPackets = 0;
+    }
+
+    onRtp(handler) {
+        this._handler = handler;
+        const dispose = () => { this._handler = null; };
+        this.addDisposer(dispose);
+        return dispose;
+    }
+
+    writeRtp() {
+        this.writtenPackets += 1;
+        this.noteOutbound();
+    }
+
+    emitRtp(packet) {
+        if (!this._handler) return;
+        this.noteInbound();
+        this._handler(packet);
+    }
+}
+
+function fakeRtpPacket(ssrc, seq) {
+    return {
+        header: {
+            ssrc,
+            sequenceNumber: seq,
+            timestamp: seq * 160,
+            payloadType: 8,
+        },
+    };
+}
+
+test("media bridge passes RTP both directions", async () => {
+    const a = new FakeRtpLeg({ id: "webrtc:a", kind: "webrtc" });
+    const b = new FakeRtpLeg({ id: "sip:b", kind: "sip" });
+    const bridge = new MediaBridge({ sessionId: "webrtc<->sip", a, b, logger: silentLogger, statsIntervalMs: 10000 });
+    await bridge.start();
+
+    for (let i = 0; i < 5; i += 1) a.emitRtp(fakeRtpPacket(1111, i + 1));
+    for (let i = 0; i < 4; i += 1) b.emitRtp(fakeRtpPacket(2222, i + 1));
+
+    const health = bridge.health();
+    assert.equal(health.aToB, 5);
+    assert.equal(health.bToA, 4);
+    assert.equal(a.stats.inboundPackets > 0, true);
+    assert.equal(b.stats.inboundPackets > 0, true);
+    await bridge.stop();
+});
+
+test("media bridge still bidirectional after teardown and reconnect", async () => {
+    const a1 = new FakeRtpLeg({ id: "webrtc:reuse-a", kind: "webrtc" });
+    const b1 = new FakeRtpLeg({ id: "sip:reuse-b", kind: "sip" });
+    const first = new MediaBridge({ sessionId: "reuse-call-1", a: a1, b: b1, logger: silentLogger, statsIntervalMs: 10000 });
+    await first.start();
+    a1.emitRtp(fakeRtpPacket(3333, 1));
+    b1.emitRtp(fakeRtpPacket(4444, 1));
+    await first.stop();
+    assert.equal(first.health().aToB, 1);
+    assert.equal(first.health().bToA, 1);
+
+    const a2 = new FakeRtpLeg({ id: "webrtc:reuse-a", kind: "webrtc" });
+    const b2 = new FakeRtpLeg({ id: "sip:reuse-b", kind: "sip" });
+    const second = new MediaBridge({ sessionId: "reuse-call-2", a: a2, b: b2, logger: silentLogger, statsIntervalMs: 10000 });
+    await second.start();
+    for (let i = 0; i < 3; i += 1) a2.emitRtp(fakeRtpPacket(5555, i + 1));
+    for (let i = 0; i < 2; i += 1) b2.emitRtp(fakeRtpPacket(6666, i + 1));
+    const health = second.health();
+    assert.equal(health.aToB, 3);
+    assert.equal(health.bToA, 2);
+    await second.stop();
 });

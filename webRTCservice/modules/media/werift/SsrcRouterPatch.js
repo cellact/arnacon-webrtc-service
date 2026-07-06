@@ -2,6 +2,18 @@ function patchRouterForDynamicSsrc(pc, logger = console) {
     const router = pc?.router;
     if (!router || router._ssrcPatchApplied) return false;
     const origRouteRtp = router.routeRtp.bind(router);
+    const rebindTrack = ({ recv, existingTrack, oldSsrc, incomingSsrc, reason }) => {
+        if (router.ssrcTable) {
+            delete router.ssrcTable[oldSsrc];
+            router.ssrcTable[incomingSsrc] = recv;
+        }
+        if (recv.trackBySSRC && recv.trackBySSRC[oldSsrc] === existingTrack) {
+            delete recv.trackBySSRC[oldSsrc];
+        }
+        existingTrack.ssrc = incomingSsrc;
+        if (recv.trackBySSRC) recv.trackBySSRC[incomingSsrc] = existingTrack;
+        logger.log(`[SSRC-FIX] Rebound existing track: ssrc ${oldSsrc} -> ${incomingSsrc} (${reason})`);
+    };
     router._rtpInCount = 0;
     router._inboundRtpSubscribers = router._inboundRtpSubscribers || new Set();
     router._ssrcPatchApplied = true;
@@ -21,24 +33,18 @@ function patchRouterForDynamicSsrc(pc, logger = console) {
                     const existingTrack = tracks[0];
                     const oldSsrc = existingTrack.ssrc;
                     const oldNum = Number(oldSsrc);
-                    const canLateBind =
+                    const looksLikePlaceholder =
                         !Number.isFinite(oldNum) ||
                         oldNum <= 0 ||
                         oldNum === 1;
-                    if (!canLateBind) {
-                        continue;
-                    }
                     if (oldSsrc !== incomingSsrc) {
-                        if (router.ssrcTable) {
-                            delete router.ssrcTable[oldSsrc];
-                            router.ssrcTable[incomingSsrc] = recv;
-                        }
-                        if (recv.trackBySSRC && recv.trackBySSRC[oldSsrc] === existingTrack) {
-                            delete recv.trackBySSRC[oldSsrc];
-                        }
-                        existingTrack.ssrc = incomingSsrc;
-                        if (recv.trackBySSRC) recv.trackBySSRC[incomingSsrc] = existingTrack;
-                        logger.log(`[SSRC-FIX] Rebound existing track: ssrc ${oldSsrc} -> ${incomingSsrc}`);
+                        rebindTrack({
+                            recv,
+                            existingTrack,
+                            oldSsrc,
+                            incomingSsrc,
+                            reason: looksLikePlaceholder ? "placeholder" : "single-track",
+                        });
                     }
                     break;
                 }
@@ -46,15 +52,13 @@ function patchRouterForDynamicSsrc(pc, logger = console) {
                 if (tracks.length > 0 && tracks.every((t) => t.ssrc === 1)) {
                     const existingTrack = recv.trackBySSRC?.[1];
                     if (existingTrack) {
-                        const oldSsrc = 1;
-                        if (router.ssrcTable) {
-                            delete router.ssrcTable[oldSsrc];
-                            router.ssrcTable[incomingSsrc] = recv;
-                        }
-                        existingTrack.ssrc = incomingSsrc;
-                        delete recv.trackBySSRC[oldSsrc];
-                        recv.trackBySSRC[incomingSsrc] = existingTrack;
-                        logger.log(`[SSRC-FIX] Rebound existing track: ssrc ${oldSsrc} -> ${incomingSsrc}`);
+                        rebindTrack({
+                            recv,
+                            existingTrack,
+                            oldSsrc: 1,
+                            incomingSsrc,
+                            reason: "all-placeholder",
+                        });
                         break;
                     }
                 }

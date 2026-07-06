@@ -58,6 +58,7 @@ class WebRtcClientLeg extends MediaLeg {
     getReceiverAudioTracks() {
         const out = [];
         const seen = new Set();
+        const liveReceiverTracks = new Set();
         const addTrack = (track) => {
             if (!track || track.kind !== "audio" || seen.has(track)) return;
             seen.add(track);
@@ -66,16 +67,25 @@ class WebRtcClientLeg extends MediaLeg {
 
         if (this.peerConnection?.getReceivers) {
             for (const receiver of this.peerConnection.getReceivers()) {
+                if (receiver?.track?.kind === "audio") liveReceiverTracks.add(receiver.track);
                 addTrack(receiver?.track);
             }
         }
         if (this.peerConnection?.getTransceivers) {
             for (const transceiver of this.peerConnection.getTransceivers()) {
                 if (transceiver?.kind !== "audio" || !transceiver.receiver?.tracks) continue;
-                for (const track of transceiver.receiver.tracks) addTrack(track);
+                for (const track of transceiver.receiver.tracks) {
+                    if (track?.kind === "audio") liveReceiverTracks.add(track);
+                    addTrack(track);
+                }
             }
         }
-        for (const track of this.session.remoteTracks || []) addTrack(track);
+        // Prefer currently attached receiver tracks. Keep remoteTracks as fallback only.
+        if (out.length === 0) {
+            for (const track of this.session.remoteTracks || []) addTrack(track);
+        } else if (Array.isArray(this.session.remoteTracks)) {
+            this.session.remoteTracks = this.session.remoteTracks.filter((track) => liveReceiverTracks.has(track));
+        }
         return out;
     }
 
@@ -96,7 +106,7 @@ class WebRtcClientLeg extends MediaLeg {
         for (const track of this.getReceiverAudioTracks()) subscribeTrack(track);
         const onTrackSub = this.peerConnection?.onTrack?.subscribe?.((track) => subscribeTrack(track));
         if (onTrackSub?.unSubscribe) disposers.push(() => onTrackSub.unSubscribe());
-        this.logger.log(`[${this.id}] WebRTC leg RTP input attached tracks=${subscribed.size}`);
+        this.logger.log(`[${this.id}] WebRTC leg RTP input attached tracks=${subscribed.size} remoteTracks=${(this.session.remoteTracks || []).length}`);
 
         const dispose = () => {
             for (const fn of disposers.splice(0)) {

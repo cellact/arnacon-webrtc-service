@@ -201,6 +201,18 @@ function createSipClient({
         const session = sessionStore.get(sessionId);
         if (!session) throw new Error("Session not found");
 
+        if (session.sipConnection || session.sipPeerConnection) {
+            logger.log(`[${sessionId}] openInbound preflight: closing stale SIP leg resources`);
+            const staleConnection = session.sipConnection;
+            if (staleConnection) {
+                try { await closeSipConnectionResources(staleConnection); } catch (_) {}
+            }
+            session.resources?.remove?.("sipLeg");
+            session.sipConnection = null;
+            session.sipPeerConnection = null;
+            session.sipLocalAudioTrack = null;
+        }
+
         logger.log(`[${sessionId}] Opening inbound SIP session — registering as ${phoneNumber}`);
         const transportOptions = {
             server: kamailioWssUrl,

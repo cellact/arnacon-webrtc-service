@@ -16,6 +16,13 @@ function createPeerConnectionFactory({
         if (!session) throw new Error("Session not found");
         const pcLabel = options.label || "PC1";
         const shouldRequestDestroy = options.destroyOnTerminalState !== false;
+        if (Array.isArray(session._pcInboundRtpDisposers)) {
+            for (const dispose of session._pcInboundRtpDisposers.splice(0)) {
+                try { dispose(); } catch (_) {}
+            }
+        }
+        session.remoteTracks = [];
+        logger.log(`[${sessionId}] ${pcLabel} media state reset before peer creation`);
 
         const pc = new RTCPeerConnection({ iceServers });
         pc.onIceCandidate.subscribe((candidate) => {
@@ -124,7 +131,7 @@ function createPeerConnectionFactory({
         });
         pc.onTrack.subscribe((track) => {
             logger.log(`[${sessionId}] ${pcLabel} remote track received: ${track.kind}`);
-            session.remoteTracks.push(track);
+            if (!session.remoteTracks.includes(track)) session.remoteTracks.push(track);
             if (track.kind === "audio" && typeof onInboundRtp === "function" && track.onReceiveRtp?.subscribe) {
                 const sub = track.onReceiveRtp.subscribe((rtp) => {
                     try {

@@ -821,6 +821,17 @@ async function tryInboundReuse(payload) {
     const hostSession = webLeg.negotiation?.session;
     if (!hostSession || !hostSession.peerConnection) return null;
 
+    // Reuse keeps the WebRTC transport, but SIP leg state must be fresh per call.
+    if (hostSession.sipConnection || hostSession.sipPeerConnection) {
+        console.log(`[${hostSession.sessionId}] inbound reuse: clearing stale SIP leg resources before openInbound`);
+        try {
+            await closeSipSession(hostSession.sessionId);
+        } catch (err) {
+            console.error(`[${hostSession.sessionId}] inbound reuse SIP cleanup failed: ${err.message}`);
+            return null;
+        }
+    }
+
     // Inject the per-call SIP context onto the reused session: the callee's own
     // number to REGISTER as (openInbound pulls the suspended SBC INVITE) and the
     // inbound metadata. Direction is decided by P firing answer() on the sip leg,
