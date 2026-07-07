@@ -797,8 +797,11 @@ const polyCore = createPolyCore({
             const liveSession = typeof getSession === "function" ? getSession() : session;
             const dc = resolveLegDataChannel(liveSession, callerSessionId, endpoint);
             if (!isOpenDc(dc)) {
-                console.error(`[poly-signaling] no open data channel for ${message.payload?.type || message.action || "message"}`);
-                return;
+                const kind = message.payload?.type || message.action || "message";
+                console.error(`[poly-signaling] no open data channel for ${kind}`);
+                const err = new Error(`[poly-signaling] no open data channel for ${kind}`);
+                err.code = "NO_OPEN_DC";
+                throw err;
             }
             dc.send(JSON.stringify(message));
         },

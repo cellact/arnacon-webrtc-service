@@ -187,6 +187,15 @@ class PolySession {
             }
         } catch (err) {
             this.logger.error(`[${this.id}] intent ${action.intent} on leg ${leg.id} failed: ${err.message}`);
+            // Ringing over a dead/missing data channel is recoverable transport loss.
+            // Keep the caller alive and force this leg back to DISCONNECTED so
+            // reconcile can run CONNECT -> RING again when transport is available.
+            if (action.intent === LEG_INTENTS.RING && err?.code === "NO_OPEN_DC") {
+                if (leg.state !== LEG_STATES.DISCONNECTED) {
+                    leg.setState(LEG_STATES.DISCONNECTED, { reason: "ring-no-open-dc", from: "self" });
+                }
+                return;
+            }
             // A reaching intent failed -> the leg cannot carry the call. Fail it so
             // reconcile drives the peer into an end-call reneg (a FAILED leg is a
             // teardown trigger). Idempotent: no-op if already FAILED/torn down.

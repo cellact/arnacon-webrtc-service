@@ -220,6 +220,26 @@ test("sip ring failure ends the webrtc caller, then the sip leg recovers for reu
     assert.equal(media.connects.length, 1, "media bridged on the reused call");
 });
 
+test("no-open-dc during ring marks callee disconnected and reconnects instead of ending caller", async () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeWebRtcLeg("bob", { deferConnect: true });
+    const { poly } = buildPoly(a, b);
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+
+    b.negotiation.ring = async () => {
+        const err = new Error("no open data channel for offer");
+        err.code = "NO_OPEN_DC";
+        throw err;
+    };
+
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o" }));
+    assert.equal(a.leg.state, S.CALLING, "caller must remain alive for retry");
+    assert.equal(b.leg.state, S.CONNECTING, "callee should reconnect after no-open-dc");
+    assert.equal(a.negotiation.named("endCall").length, 0, "no forced teardown on caller");
+    assert.equal(b.negotiation.named("connect").length, 1, "reconnect should be triggered");
+});
+
 test("reject before answer: caller is ended, no media ever bridged", async () => {
     const a = makeWebRtcLeg("alice");
     const b = makeWebRtcLeg("bob");
