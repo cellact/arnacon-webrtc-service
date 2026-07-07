@@ -78,6 +78,10 @@ function createOfferFlow({
             offer.sessionId = sessionId;
             const session = sessions.get(sessionId);
             if (!session || !session.peerConnection) {
+                logger.warn(
+                    `[${sessionId || "no-session"}] HTTP ice-batch dropped: session not ready`,
+                    { from, to, sessionId },
+                );
                 return { ok: true, ignored: true, reason: "session-not-ready", type: "ice-batch", sessionId };
             }
             // TEMPORARY: enforce xdata/xsign verification for trickle ICE once clients send it reliably.

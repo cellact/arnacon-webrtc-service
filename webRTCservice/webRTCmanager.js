@@ -1731,11 +1731,16 @@ async function onVerifiedNotifyAnswer(sessionId, offer, session) {
 // HTTP /notify "reject".
 async function onHttpReject(sessionId, offer) {
     const resolved = pairResolutionForOffer(offer);
-    if (!resolved?.poly || !resolved?.ref) return { ok: true, ignored: true, type: "reject", sessionId };
+    if (!resolved?.poly || !resolved?.ref) {
+        const err = "unresolved-pair-for-http-reject";
+        console.error(`[${sessionId || "no-session"}] ${err}`);
+        return { ok: false, error: err, type: "reject", sessionId };
+    }
     try {
         await resolved.poly.onIngress(resolved.ref, polyIngress.toLegEvent("reject", {}, {}));
     } catch (err) {
         console.error(`[${sessionId}] poly http-reject failed: ${err.message}`);
+        return { ok: false, error: "poly-http-reject-failed", type: "reject", sessionId };
     }
     return { ok: true, type: "reject", sessionId };
 }
@@ -1743,11 +1748,16 @@ async function onHttpReject(sessionId, offer) {
 // HTTP /notify "cancel".
 async function onHttpCancel(sessionId, offer) {
     const resolved = pairResolutionForOffer(offer);
-    if (!resolved?.poly || !resolved?.ref) return { ok: true, ignored: true, type: "cancel", sessionId };
+    if (!resolved?.poly || !resolved?.ref) {
+        const err = "unresolved-pair-for-http-cancel";
+        console.error(`[${sessionId || "no-session"}] ${err}`);
+        return { ok: false, error: err, type: "cancel", sessionId };
+    }
     try {
         await resolved.poly.onIngress(resolved.ref, polyIngress.toLegEvent("cancel", {}, {}));
     } catch (err) {
         console.error(`[${sessionId}] poly http-cancel failed: ${err.message}`);
+        return { ok: false, error: "poly-http-cancel-failed", type: "cancel", sessionId };
     }
     return { ok: true, type: "cancel", sessionId };
 }

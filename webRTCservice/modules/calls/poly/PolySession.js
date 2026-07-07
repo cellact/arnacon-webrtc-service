@@ -23,6 +23,11 @@ const FAIL_ON_ERROR_INTENTS = new Set([
     LEG_INTENTS.ACK_CONNECTED,
     LEG_INTENTS.ACK_RING,
 ]);
+const RETRY_ON_NO_OPEN_DC_INTENTS = new Set([
+    LEG_INTENTS.RING,
+    LEG_INTENTS.ACK_CONNECTED,
+    LEG_INTENTS.ACK_RING,
+]);
 
 class PolySession {
     constructor({ id, legA, legB, mediaController, rules = reconcile, teardownHooks = [], logger = console } = {}) {
@@ -187,12 +192,14 @@ class PolySession {
             }
         } catch (err) {
             this.logger.error(`[${this.id}] intent ${action.intent} on leg ${leg.id} failed: ${err.message}`);
-            // Ringing over a dead/missing data channel is recoverable transport loss.
-            // Keep the caller alive and force this leg back to DISCONNECTED so
-            // reconcile can run CONNECT -> RING again when transport is available.
-            if (action.intent === LEG_INTENTS.RING && err?.code === "NO_OPEN_DC") {
+            // Dead/missing data channel on forward signaling is recoverable transport
+            // loss: drop this leg to DISCONNECTED so reconcile drives CONNECT -> RING.
+            if (err?.code === "NO_OPEN_DC" && RETRY_ON_NO_OPEN_DC_INTENTS.has(action.intent)) {
                 if (leg.state !== LEG_STATES.DISCONNECTED) {
-                    leg.setState(LEG_STATES.DISCONNECTED, { reason: "ring-no-open-dc", from: "self" });
+                    leg.setState(LEG_STATES.DISCONNECTED, {
+                        reason: `intent-no-open-dc:${action.intent}`,
+                        from: "self",
+                    });
                 }
                 return;
             }
