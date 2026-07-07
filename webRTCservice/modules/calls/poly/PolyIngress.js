@@ -36,6 +36,9 @@ class PolyIngress {
     // (payload.type for signaling, msg.action for call messages, or "bye").
     toLegEvent(action, payload = {}, meta = {}) {
         if (action === "offer") {
+            if (meta.forceOffer === true) {
+                return makeLegEvent(LEG_EVENTS.OFFER, payload, meta);
+            }
             const type = isInactiveOffer(payload.sdp) ? LEG_EVENTS.END_RENEGOTIATION : LEG_EVENTS.OFFER;
             return makeLegEvent(type, payload, meta);
         }

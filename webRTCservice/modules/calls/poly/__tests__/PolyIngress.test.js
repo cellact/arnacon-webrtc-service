@@ -37,6 +37,12 @@ test("late inactive offer maps to END_RENEGOTIATION (teardown, not ring)", () =>
     assert.equal(ev.type, LEG_EVENTS.END_RENEGOTIATION);
 });
 
+test("forced offer meta keeps datachannel-only offer as OFFER", () => {
+    const { ingress } = build();
+    const ev = ingress.toLegEvent("offer", { sdp: "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" }, { forceOffer: true });
+    assert.equal(ev.type, LEG_EVENTS.OFFER);
+});
+
 test("call actions map to their leg events", () => {
     const { ingress } = build();
     assert.equal(ingress.toLegEvent("answer", {}).type, LEG_EVENTS.ANSWER);

@@ -1110,7 +1110,7 @@ async function onExistingPairOffer({ sessionId, offer, session, pairKey } = {}) 
                     sdp: offer?.sdp,
                     candidates: offer?.candidates || [],
                 },
-                {},
+                { forceOffer: true },
             ),
         );
     } catch (err) {
