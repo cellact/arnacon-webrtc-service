@@ -112,6 +112,24 @@ test("ackConnected fires even when the peer is not yet reachable", () => {
     assert.deepEqual(intents(actions), [{ kind: "intent", leg: "a", intent: I.ACK_CONNECTED, from: "self" }]);
 });
 
+test("glare (calling/calling) auto-answers both sides and connects media once", () => {
+    const actions = reconcile(snap(S.CALLING, S.CALLING, false), ringEvent);
+    assert.deepEqual(intents(actions), [
+        { kind: "intent", leg: "a", intent: I.ANSWER, from: "b" },
+        { kind: "intent", leg: "b", intent: I.ANSWER, from: "a" },
+    ]);
+    assert.deepEqual(mediaOps(actions), ["connect"]);
+});
+
+test("glare with media already connected does not duplicate connect op", () => {
+    const actions = reconcile(snap(S.CALLING, S.CALLING, true), ringEvent);
+    assert.deepEqual(intents(actions), [
+        { kind: "intent", leg: "a", intent: I.ANSWER, from: "b" },
+        { kind: "intent", leg: "b", intent: I.ANSWER, from: "a" },
+    ]);
+    assert.deepEqual(mediaOps(actions), []);
+});
+
 test("connecting peer with no fresh ring event does not re-ack or ring yet", () => {
     const actions = reconcile(snap(S.CALLING, S.CONNECTING, false), { state: S.CONNECTING });
     assert.deepEqual(intents(actions), []);

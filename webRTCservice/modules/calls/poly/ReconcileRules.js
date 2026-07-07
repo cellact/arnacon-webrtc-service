@@ -58,6 +58,16 @@ function reconcile(snapshot, event = null) {
     if (teardown.length) return teardown;
 
     // ---- 2. Progress ------------------------------------------------------
+    // Simultaneous offers (glare): both sides are actively calling each other.
+    // Resolve deterministically by finalizing both legs via ANSWER intents and
+    // bringing media up once. This reuses the normal answer plumbing end-to-end.
+    if (a.state === LEG_STATES.CALLING && b.state === LEG_STATES.CALLING) {
+        actions.push(intent("a", LEG_INTENTS.ANSWER, "b"));
+        actions.push(intent("b", LEG_INTENTS.ANSWER, "a"));
+        if (!mediaConnected) actions.push(media("connect"));
+        return actions;
+    }
+
     // (2a) Ack a *fresh* ring (caller's client offered -> CALLING). A leg only
     // enters CALLING from a client offer, so a CALLING-typed event marks exactly
     // one fresh ring -> ackConnected once (tells the client we heard it so it

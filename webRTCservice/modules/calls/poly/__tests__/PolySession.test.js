@@ -345,10 +345,8 @@ test("simultaneous offers (glare) converges to a single connected call graph", a
 
     await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o-a" }));
     await poly.onIngress("b", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o-b" }));
-    assert.equal(a.leg.state, S.CALLING);
-    assert.equal(b.leg.state, S.CALLING);
-
-    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "ans-b" }));
+    // Glare now auto-converges via symmetric ANSWER intents; no extra manual
+    // answer ingress nudge is required.
     assert.equal(a.leg.state, S.IN_CALL);
     assert.equal(b.leg.state, S.IN_CALL);
     assert.equal(media.connects.length, 1, "glare must not duplicate media bridge");
