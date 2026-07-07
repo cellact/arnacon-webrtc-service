@@ -662,7 +662,6 @@ const offerFlowApi = createOfferFlow({
     handleHandshake: (...args) => handleHandshake(...args),
     handleInboundAnswer: (...args) => handleInboundAnswer(...args),
     handleHttpReject: (sessionId, offer) => onHttpReject(sessionId, offer),
-    onExistingPairOffer: (...args) => onExistingPairOffer(...args),
     onVerifiedNotifyAnswer: (...args) => onVerifiedNotifyAnswer(...args),
     parseAddress: (...args) => parseAddress(...args),
     normalizeIdentity: (value, serviceId = null) => {
@@ -1094,40 +1093,6 @@ function polyForSession(session) {
 function pairResolutionForOffer(offer) {
     if (!offer?.from || !offer?.to) return null;
     return callPairResolver.resolvePairActor(offer.from, offer.to, offer.from);
-}
-
-async function onExistingPairOffer({ sessionId, offer, session, pairKey } = {}) {
-    const resolved = pairResolutionForOffer(offer);
-    if (!resolved?.poly || !resolved?.ref) {
-        return { handled: false };
-    }
-    try {
-        await resolved.poly.onIngress(
-            resolved.ref,
-            polyIngress.toLegEvent(
-                "offer",
-                {
-                    sdp: offer?.sdp,
-                    candidates: offer?.candidates || [],
-                },
-                {},
-            ),
-        );
-    } catch (err) {
-        console.error(
-            `[${sessionId || "no-session"}] existing-pair offer ingress failed for ${pairKey || "unknown-pair"}: ${err.message}`,
-        );
-        return { handled: false };
-    }
-    return {
-        handled: true,
-        responseBody: {
-            ok: true,
-            sessionId: sessionId || session?.sessionId || null,
-            type: "offer",
-            reusedPairContext: true,
-        },
-    };
 }
 
 function resolveCalleeLegSession(session, meta = {}) {

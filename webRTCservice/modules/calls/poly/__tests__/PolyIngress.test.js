@@ -79,33 +79,6 @@ test("cancel action routes through registry to caller leg state", async () => {
     assert.equal(poly.legs.a.state, S.CANCELED);
 });
 
-test("opposite-direction offers reuse one pair poly and never create self-pair", async () => {
-    const { ingress, registry } = build();
-    const ab = {
-        a: { endpoint: "alice", kind: "webrtc" },
-        b: { endpoint: "bob", kind: "webrtc" },
-        target: "alice",
-    };
-    const ba = {
-        a: { endpoint: "bob", kind: "webrtc" },
-        b: { endpoint: "alice", kind: "webrtc" },
-        target: "bob",
-    };
-    const { poly } = registry.resolve(ab);
-    await poly.onIngress("a", { type: LEG_EVENTS.TRANSPORT_OPEN, payload: {} });
-    await poly.onIngress("b", { type: LEG_EVENTS.TRANSPORT_OPEN, payload: {} });
-
-    await ingress.deliver(ab, "offer", { sdp: "v=0\r\nm=audio 9 UDP\r\na=sendrecv\r\n" });
-    await ingress.deliver(ba, "offer", { sdp: "v=0\r\nm=audio 9 UDP\r\na=sendrecv\r\n" });
-
-    const pairKey = registry.keyForPair("alice", "bob");
-    assert.ok(registry.get(pairKey), "pair poly must exist");
-    assert.equal(registry.get("alice|alice"), null, "self-pair must never be created");
-    assert.equal(registry.byKey.size, 1, "registry must keep a single pair-owned poly");
-    assert.equal(poly.legs.a.state, S.IN_CALL);
-    assert.equal(poly.legs.b.state, S.IN_CALL);
-});
-
 test("reject action delivered to callee transitions to rejected and ends caller", async () => {
     const { ingress, registry } = build();
     const { poly } = registry.resolve(parties);

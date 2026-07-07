@@ -1,4 +1,4 @@
-const { normalizeSessionId, identityLabel } = require("../../runtime/CallPairRef");
+const { normalizeSessionId } = require("../../runtime/CallPairRef");
 
 function createOfferFlow({
     sessions,
@@ -10,7 +10,6 @@ function createOfferFlow({
     handleInboundAnswer,
     handleHttpReject = null,
     onVerifiedNotifyAnswer = null,
-    onExistingPairOffer = null,
     parseAddress,
     addIceCandidates,
     normalizeIdentity = null,
@@ -56,8 +55,6 @@ function createOfferFlow({
     async function onIncomingOffer(offer) {
         logger.log(`Incoming offer: ${JSON.stringify(offer)}`);
         const serviceId = offer.serviceId || null;
-        const rawFrom = offer.from;
-        const rawTo = offer.to;
         const from = normalizeAddress(offer.from, serviceId);
         const to = normalizeAddress(offer.to, serviceId);
         const { sdp, candidates, callNonce, type } = offer;
@@ -130,33 +127,6 @@ function createOfferFlow({
             throw createHttpError(400, `Unsupported signaling type over HTTP: ${type}`);
         }
 
-        const rawFromLabel = identityLabel(String(rawFrom || "").toLowerCase());
-        const rawToLabel = identityLabel(String(rawTo || "").toLowerCase());
-        const normalizedFromLabel = identityLabel(String(from || "").toLowerCase());
-        const normalizedToLabel = identityLabel(String(to || "").toLowerCase());
-        const wasCrossParty =
-            !!rawFromLabel
-            && !!rawToLabel
-            && rawFromLabel !== rawToLabel;
-        const collapsedToSelf =
-            !!normalizedFromLabel
-            && !!normalizedToLabel
-            && normalizedFromLabel === normalizedToLabel;
-        if (wasCrossParty && collapsedToSelf) {
-            logger.error(
-                `[${sessionId || "no-session"}] rejecting invalid self-pair after normalization`,
-                {
-                    rawFrom,
-                    rawTo,
-                    normalizedFrom: from,
-                    normalizedTo: to,
-                    rawPair: `${rawFromLabel}|${rawToLabel}`,
-                    normalizedPair: `${normalizedFromLabel}|${normalizedToLabel}`,
-                },
-            );
-            throw createHttpError(409, "Invalid self-pair after normalization");
-        }
-
         assertAllowedInitialOfferFrom(from, sessionId, serviceId);
 
         const key = stableKey(from, to);
@@ -164,22 +134,10 @@ function createOfferFlow({
         if (pairSessionId && sessions.has(pairSessionId)) {
             sessionId = pairSessionId;
             offer.sessionId = sessionId;
-            const pairSession = sessions.get(pairSessionId);
-            if (typeof onExistingPairOffer === "function") {
-                const routed = await onExistingPairOffer({
-                    sessionId,
-                    pairKey: key,
-                    offer,
-                    session: pairSession,
-                });
-                if (routed && routed.handled) {
-                    return routed.responseBody || { ok: true, sessionId, handled: true, type: "offer" };
-                }
+            const existingSession = sessions.get(pairSessionId);
+            if (existingSession && callRuntime) {
+                await callRuntime.destroyRuntimeSession(pairSessionId, { source: "http", reason: "duplicate-offer-user" });
             }
-            logger.log(
-                `[${sessionId}] preserving existing pair-owned session for duplicate offer`,
-            );
-            return { ok: true, ignored: true, reason: "pair-session-active", type: "offer", sessionId };
         }
 
         if (sessions.has(sessionId) && callRuntime) {
