@@ -102,6 +102,16 @@ test("peer just rang: ackRing the caller (gated on the RINGING event)", () => {
     assert.deepEqual(intents(actions), [{ kind: "intent", leg: "a", intent: I.ACK_RING, from: "b" }]);
 });
 
+test("glare: calling+calling stays user-driven and presents one ringing side", () => {
+    const actions = reconcile(snap(S.CALLING, S.CALLING, false), ringEvent);
+    assert.deepEqual(intents(actions), [
+        { kind: "intent", leg: "a", intent: I.ACK_CONNECTED, from: "self" },
+        { kind: "intent", leg: "b", intent: I.ACK_CONNECTED, from: "self" },
+        { kind: "intent", leg: "b", intent: I.RING, from: "a" },
+    ]);
+    assert.equal(intents(actions).some((x) => x.intent === I.ANSWER), false);
+});
+
 test("no fresh-ring event: do not ack (a later pass must not re-ack the same ring)", () => {
     const actions = reconcile(snap(S.CALLING, S.CONNECTED, false), { state: S.CONNECTED });
     assert.deepEqual(intents(actions), [{ kind: "intent", leg: "b", intent: I.RING, from: "a" }]);

@@ -18,30 +18,9 @@ function createOfferFlow({
     createHttpError,
     logger = console,
 }) {
-    function directionalSessionId(from, to) {
-        const fromLabel = identityLabel(String(from || "").toLowerCase());
-        const toLabel = identityLabel(String(to || "").toLowerCase());
-        if (!fromLabel || !toLabel) return normalizeSessionId(`${from || ""}|${to || ""}`);
-        return `${fromLabel}|${toLabel}`;
-    }
-
-    function sessionMatchesDirection(session, from, to) {
+    function sessionMatchesPair(session, from, to) {
         if (!session) return false;
-        const sFrom = identityLabel(String(session.callerEns || "").toLowerCase());
-        const sTo = identityLabel(String(session.toIdentity || "").toLowerCase());
-        const wantedFrom = identityLabel(String(from || "").toLowerCase());
-        const wantedTo = identityLabel(String(to || "").toLowerCase());
-        return !!sFrom && !!sTo && sFrom === wantedFrom && sTo === wantedTo;
-    }
-
-    function findDirectionalSessionId(from, to) {
-        const wantedFrom = identityLabel(String(from || "").toLowerCase());
-        const wantedTo = identityLabel(String(to || "").toLowerCase());
-        if (!wantedFrom || !wantedTo) return null;
-        for (const [sid, session] of sessions.entries()) {
-            if (sessionMatchesDirection(session, wantedFrom, wantedTo)) return sid;
-        }
-        return null;
+        return stableKey(session.callerEns, session.toIdentity) === stableKey(from, to);
     }
 
     function normalizeAddress(addr, serviceId = null) {
@@ -53,18 +32,19 @@ function createOfferFlow({
     }
 
     function resolveExistingSessionId(from, to, sessionId) {
+        const pairKey = stableKey(from, to);
         const normalized = normalizeSessionId(sessionId);
         if (normalized && sessions.has(normalized)) {
             const exact = sessions.get(normalized);
-            if (sessionMatchesDirection(exact, from, to) || stableKey(exact?.callerEns, exact?.toIdentity) === stableKey(from, to)) {
+            if (sessionMatchesPair(exact, from, to)) {
                 return normalized;
             }
         }
-        const directional = findDirectionalSessionId(from, to);
-        if (directional) return directional;
-        const pairKey = stableKey(from, to);
         const pairSessionId = sessionsByUser.get(pairKey);
         if (pairSessionId && sessions.has(pairSessionId)) return pairSessionId;
+        for (const [candidateId, session] of sessions.entries()) {
+            if (sessionMatchesPair(session, from, to)) return candidateId;
+        }
         return normalized;
     }
 
@@ -186,12 +166,11 @@ function createOfferFlow({
         assertAllowedInitialOfferFrom(from, sessionId, serviceId);
 
         const key = stableKey(from, to);
-        const desiredSessionId = directionalSessionId(from, to);
-        const directionalExistingId = findDirectionalSessionId(from, to);
-        if (directionalExistingId && sessions.has(directionalExistingId)) {
-            sessionId = directionalExistingId;
+        const existingPairSessionId = resolveExistingSessionId(from, to, sessionId || key);
+        if (existingPairSessionId && sessions.has(existingPairSessionId)) {
+            sessionId = existingPairSessionId;
             offer.sessionId = sessionId;
-            const pairSession = sessions.get(directionalExistingId);
+            const pairSession = sessions.get(existingPairSessionId);
             if (typeof onExistingPairOffer === "function") {
                 const routed = await onExistingPairOffer({
                     sessionId,
@@ -203,13 +182,11 @@ function createOfferFlow({
                     return routed.responseBody || { ok: true, sessionId, handled: true, type: "offer" };
                 }
             }
-            logger.log(
-                `[${sessionId}] preserving existing pair-owned session for duplicate offer`,
-            );
-            return { ok: true, ignored: true, reason: "pair-session-active", type: "offer", sessionId };
+            logger.warn(`[${sessionId}] existing pair offer arrived without reusable ingress handler`);
+            return { ok: true, sessionId, handled: false, type: "offer", reusedPairContext: true };
         }
 
-        sessionId = desiredSessionId;
+        sessionId = key;
         offer.sessionId = sessionId;
 
         if (sessions.has(sessionId) && callRuntime) {

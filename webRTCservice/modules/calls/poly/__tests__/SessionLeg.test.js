@@ -49,6 +49,14 @@ test("idempotent ring: ringing again is a no-op", async () => {
     assert.equal(leg.state, S.RINGING);
 });
 
+test("ingress offer while ringing updates SDP but keeps ringing state", async () => {
+    const { leg, negotiation } = makeWebRtcLeg("g");
+    leg.setState(S.RINGING, { from: "peer" });
+    await leg.handleIngress(makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o-glare" }));
+    assert.equal(leg.state, S.RINGING);
+    assert.equal(negotiation.named("applyOffer").length, 1);
+});
+
 test("state change emits to observers with prev/next and cause", async () => {
     const { leg } = makeWebRtcLeg("o");
     const seen = [];

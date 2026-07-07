@@ -210,6 +210,13 @@ class SessionLeg {
                     await this._tx(() => this.negotiation.applyOffer?.({ leg: this, mode: "ice-restart", ...event }));
                     return;
                 }
+                // Glare guard: if this leg is already being presented as the callee,
+                // accept the fresh SDP but keep RINGING so reconcile can still
+                // progress toward a user-driven answer.
+                if (this.state === LEG_STATES.RINGING) {
+                    await this._tx(() => this.negotiation.applyOffer?.({ leg: this, mode: "ring", ...event }));
+                    return;
+                }
                 // Otherwise this endpoint wants to start a call.
                 await this._tx(() => this.negotiation.applyOffer?.({ leg: this, mode: "ring", ...event }));
                 this.setState(LEG_STATES.CALLING, { reason: "client-offer", from: "self", payload: event.payload });

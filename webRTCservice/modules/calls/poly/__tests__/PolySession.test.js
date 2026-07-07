@@ -336,7 +336,7 @@ test("caller transport closes during callee connect: no media, no duplicate tear
     assert.equal(b.negotiation.named("endCall").length, 0);
 });
 
-test("simultaneous offers (glare) converges to a single connected call graph", async () => {
+test("simultaneous offers (glare) remains ring-driven until explicit answer", async () => {
     const a = makeWebRtcLeg("alice");
     const b = makeWebRtcLeg("bob");
     const { poly, media } = buildPoly(a, b);
@@ -345,12 +345,15 @@ test("simultaneous offers (glare) converges to a single connected call graph", a
 
     await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o-a" }));
     await poly.onIngress("b", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o-b" }));
-    // Glare now auto-converges via symmetric ANSWER intents; no extra manual
-    // answer ingress nudge is required.
+    assert.equal(a.leg.state, S.CALLING);
+    assert.equal(b.leg.state, S.RINGING);
+    assert.equal(media.connects.length, 0, "glare must not auto-bridge media");
+    assert.equal(media.disconnects.length, 0);
+
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "ans-b" }));
     assert.equal(a.leg.state, S.IN_CALL);
     assert.equal(b.leg.state, S.IN_CALL);
-    assert.equal(media.connects.length, 1, "glare must not duplicate media bridge");
-    assert.equal(media.disconnects.length, 0);
+    assert.equal(media.connects.length, 1, "media bridges only after explicit answer");
 });
 
 test("repeated settle passes do not duplicate media disconnect", async () => {

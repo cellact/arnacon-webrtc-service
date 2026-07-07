@@ -73,6 +73,13 @@ function reconcile(snapshot, event = null) {
         if (a.state === LEG_STATES.RINGING && isCaller(b.state)) actions.push(intent("b", LEG_INTENTS.ACK_RING, "a"));
         if (b.state === LEG_STATES.RINGING && isCaller(a.state)) actions.push(intent("a", LEG_INTENTS.ACK_RING, "b"));
     }
+    // Glare guard: two fresh caller legs can coexist briefly. Keep this strictly
+    // user-driven (no auto-answer) and deterministically present one side so
+    // the state machine does not stall in CALLING+CALLING.
+    if (a.state === LEG_STATES.CALLING && b.state === LEG_STATES.CALLING) {
+        actions.push(intent("b", LEG_INTENTS.RING, "a"));
+        return actions;
+    }
 
     // One side reached in-call while the peer is still ringing/calling -> they
     // picked up: finalize the peer (flush its held answer) and bridge media.

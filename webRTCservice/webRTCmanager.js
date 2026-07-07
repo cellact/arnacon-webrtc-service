@@ -1099,6 +1099,10 @@ function pairResolutionForOffer(offer) {
 async function onExistingPairOffer({ sessionId, offer, session, pairKey } = {}) {
     const resolved = pairResolutionForOffer(offer);
     if (!resolved?.poly || !resolved?.ref) {
+        console.warn(
+            `[${sessionId || "no-session"}] existing-pair offer unresolved for ${pairKey || "unknown-pair"}`,
+            { from: offer?.from || null, to: offer?.to || null },
+        );
         return { handled: false };
     }
     try {
