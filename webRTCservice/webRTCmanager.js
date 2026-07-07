@@ -1234,11 +1234,43 @@ function endpointAllowsMultiCall(leg) {
     return leg?.kind === "sip";
 }
 
+function isPickupAnswerState(state) {
+    return (
+        state === LEG_STATES.CONNECTED
+        || state === LEG_STATES.CALLING
+        || state === LEG_STATES.RINGING
+        || state === LEG_STATES.ANSWERING
+    );
+}
+
+function isPolyIdleForSwitch(poly) {
+    if (!poly?.legs) return true;
+    for (const ref of ["a", "b"]) {
+        const state = poly.legs[ref]?.state;
+        if (!state) continue;
+        if (state === LEG_STATES.END_REQUESTED) return false;
+        if (isActiveCall(state)) return false;
+    }
+    return true;
+}
+
+async function waitForPolyIdle(poly, timeoutMs = 7000, intervalMs = 50) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+        if (isPolyIdleForSwitch(poly)) return true;
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    return isPolyIdleForSwitch(poly);
+}
+
 async function enforceSingleCallBeforeAnswer(poly, ref) {
     if (!poly || !ref) return;
     const leg = poly.legs?.[ref];
     if (!leg) return;
     if (endpointAllowsMultiCall(leg)) return;
+    // Important: do NOT evict on session-establishment answers (CONNECTING).
+    // Only evict when this answer is a pickup path that leads to in-call.
+    if (!isPickupAnswerState(leg.state)) return;
 
     const endpoint = leg.endpoint;
     if (!endpoint || typeof polyRegistry.listByEndpoint !== "function") return;
@@ -1261,6 +1293,13 @@ async function enforceSingleCallBeforeAnswer(poly, ref) {
             );
             try {
                 await candidate.onIngress(candidateRef, makeLegEvent(LEG_EVENTS.END, { reason: "single-call-policy" }));
+                const idle = await waitForPolyIdle(candidate);
+                if (!idle) {
+                    console.warn(
+                        `[${poly.id}] single-call guard timeout waiting for ${candidate.id} to go idle`,
+                        { endpoint, activePoly: candidate.id, incomingPoly: poly.id },
+                    );
+                }
             } catch (err) {
                 console.error(
                     `[${poly.id}] single-call guard failed to end ${candidate.id} for ${endpoint}: ${err.message}`,
