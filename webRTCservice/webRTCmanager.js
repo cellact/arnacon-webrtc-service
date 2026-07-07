@@ -1227,6 +1227,49 @@ function polyRefByEndpoint(poly, endpoint) {
     return null;
 }
 
+// Temporary concurrency policy:
+// - SIP legs are multi-call.
+// - Non-SIP legs are single-call.
+function endpointAllowsMultiCall(leg) {
+    return leg?.kind === "sip";
+}
+
+async function enforceSingleCallBeforeAnswer(poly, ref) {
+    if (!poly || !ref) return;
+    const leg = poly.legs?.[ref];
+    if (!leg) return;
+    if (endpointAllowsMultiCall(leg)) return;
+
+    const endpoint = leg.endpoint;
+    if (!endpoint || typeof polyRegistry.listByEndpoint !== "function") return;
+    const siblings = polyRegistry.listByEndpoint(endpoint);
+    for (const candidate of siblings) {
+        if (!candidate || candidate === poly) continue;
+        const candidateRef = polyRefByEndpoint(candidate, endpoint);
+        if (!candidateRef) continue;
+        const candidateLeg = candidate.legs?.[candidateRef];
+        if (!candidateLeg) continue;
+        if (isActiveCall(candidateLeg.state)) {
+            console.warn(
+                `[${poly.id}] single-call guard: ending overlapping call ${candidate.id} for endpoint ${endpoint}`,
+                {
+                    activeState: candidateLeg.state,
+                    endpoint,
+                    activePoly: candidate.id,
+                    incomingPoly: poly.id,
+                },
+            );
+            try {
+                await candidate.onIngress(candidateRef, makeLegEvent(LEG_EVENTS.END, { reason: "single-call-policy" }));
+            } catch (err) {
+                console.error(
+                    `[${poly.id}] single-call guard failed to end ${candidate.id} for ${endpoint}: ${err.message}`,
+                );
+            }
+        }
+    }
+}
+
 // Resolve routing at the audio RING and create the PolySession for the pair.
 // Prepaid minute gate for an SBC/SIP outbound. Resolves the per-service budget
 // and asserts the caller may still start a call. Returns { allowed, settings,
@@ -1544,7 +1587,13 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
         console.error(`[${sessionId}] poly ingress (${action}) skipped: no owned webrtc leg`);
         return;
     }
-    poly.onIngress(ref, event).catch((err) => {
+    const runIngress = async () => {
+        if (action === "answer") {
+            await enforceSingleCallBeforeAnswer(poly, ref);
+        }
+        await poly.onIngress(ref, event);
+    };
+    runIngress().catch((err) => {
         if (action === "offer" && isRecoverableOfferIngressError(err) && !payload.__polyIngressRetriedOnce) {
             payload.__polyIngressRetriedOnce = true;
             // Keep the current poly/session/PC alive and retry ingress in place.
@@ -1578,6 +1627,7 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
 async function onVerifiedNotifyAnswer(sessionId, offer, session) {
     const resolved = pairResolutionForOffer(offer);
     if (!resolved?.poly || !resolved?.ref) return { handled: false };
+    await enforceSingleCallBeforeAnswer(resolved.poly, resolved.ref);
     try {
         await resolved.poly.onIngress(
             resolved.ref,

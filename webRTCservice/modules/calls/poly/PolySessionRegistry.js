@@ -37,6 +37,19 @@ class PolySessionRegistry {
         return key ? (this.byKey.get(key) || null) : null;
     }
 
+    // All PolySessions that currently include this endpoint.
+    listByEndpoint(endpoint) {
+        if (!endpoint) return [];
+        const wanted = identityLabel(String(endpoint).toLowerCase());
+        if (!wanted) return [];
+        const matches = [];
+        for (const poly of this.byKey.values()) {
+            if (!poly) continue;
+            if (poly.legByEndpoint(wanted)) matches.push(poly);
+        }
+        return matches;
+    }
+
     keyForPair(a, b) {
         return pairKeyFromIdentities(a, b);
     }
