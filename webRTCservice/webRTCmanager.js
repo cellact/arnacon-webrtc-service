@@ -1234,6 +1234,11 @@ function endpointAllowsMultiCall(leg) {
     return leg?.kind === "sip";
 }
 
+// Experimental gate for switch behavior:
+//  - false => trust client ordering fully (no server-side forced switch)
+//  - true  => enforce single-call switch (non-SIP) before pickup answer
+const ENABLE_SINGLE_CALL_SWITCH_GUARD = String(process.env.POLY_SINGLE_CALL_SWITCH_GUARD || "").toLowerCase() === "1";
+
 function isPickupAnswerState(state) {
     return (
         state === LEG_STATES.CONNECTED
@@ -1264,6 +1269,7 @@ async function waitForPolyIdle(poly, timeoutMs = 7000, intervalMs = 50) {
 }
 
 async function enforceSingleCallBeforeAnswer(poly, ref) {
+    if (!ENABLE_SINGLE_CALL_SWITCH_GUARD) return;
     if (!poly || !ref) return;
     const leg = poly.legs?.[ref];
     if (!leg) return;
