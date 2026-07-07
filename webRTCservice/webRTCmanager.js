@@ -662,6 +662,7 @@ const offerFlowApi = createOfferFlow({
     handleHandshake: (...args) => handleHandshake(...args),
     handleInboundAnswer: (...args) => handleInboundAnswer(...args),
     handleHttpReject: (sessionId, offer) => onHttpReject(sessionId, offer),
+    handleHttpCancel: (sessionId, offer) => onHttpCancel(sessionId, offer),
     onExistingPairOffer: (...args) => onExistingPairOffer(...args),
     onVerifiedNotifyAnswer: (...args) => onVerifiedNotifyAnswer(...args),
     parseAddress: (...args) => parseAddress(...args),
@@ -1737,6 +1738,18 @@ async function onHttpReject(sessionId, offer) {
         console.error(`[${sessionId}] poly http-reject failed: ${err.message}`);
     }
     return { ok: true, type: "reject", sessionId };
+}
+
+// HTTP /notify "cancel".
+async function onHttpCancel(sessionId, offer) {
+    const resolved = pairResolutionForOffer(offer);
+    if (!resolved?.poly || !resolved?.ref) return { ok: true, ignored: true, type: "cancel", sessionId };
+    try {
+        await resolved.poly.onIngress(resolved.ref, polyIngress.toLegEvent("cancel", {}, {}));
+    } catch (err) {
+        console.error(`[${sessionId}] poly http-cancel failed: ${err.message}`);
+    }
+    return { ok: true, type: "cancel", sessionId };
 }
 
 // secnum<->secnum callee invite: reuse the proven outbound leg factory + FCM.

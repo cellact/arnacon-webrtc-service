@@ -9,6 +9,7 @@ function createOfferFlow({
     handleHandshake,
     handleInboundAnswer,
     handleHttpReject = null,
+    handleHttpCancel = null,
     onVerifiedNotifyAnswer = null,
     onExistingPairOffer = null,
     parseAddress,
@@ -89,7 +90,10 @@ function createOfferFlow({
         if (type === "cancel") {
             sessionId = resolveExistingSessionId(from, to, sessionId);
             offer.sessionId = sessionId;
-            logger.log(`[${sessionId || "no-session"}] Ignoring HTTP cancel`);
+            if (typeof handleHttpCancel === "function") {
+                return handleHttpCancel(sessionId, offer);
+            }
+            logger.warn(`[${sessionId || "no-session"}] HTTP cancel received without handler`);
             return { ok: true, ignored: true, type: "cancel", sessionId };
         }
 
