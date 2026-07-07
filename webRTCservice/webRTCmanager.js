@@ -1101,31 +1101,6 @@ async function onExistingPairOffer({ sessionId, offer, session, pairKey } = {}) 
     if (!resolved?.poly || !resolved?.ref) {
         return { handled: false };
     }
-    const leg = resolved.poly.legs?.[resolved.ref];
-    const state = leg?.state || null;
-    const legBusyForDuplicateOffer =
-        state === LEG_STATES.CONNECTING
-        || state === LEG_STATES.CALLING
-        || state === LEG_STATES.RINGING
-        || state === LEG_STATES.ANSWERING
-        || state === LEG_STATES.IN_CALL
-        || state === LEG_STATES.ENDING
-        || state === LEG_STATES.END_REQUESTED;
-    if (legBusyForDuplicateOffer) {
-        console.log(
-            `[${sessionId || "no-session"}] existing-pair duplicate offer ignored: leg=${resolved.ref} state=${state || "unknown"}`,
-        );
-        return {
-            handled: true,
-            responseBody: {
-                ok: true,
-                ignored: true,
-                reason: "pair-leg-busy",
-                sessionId: sessionId || session?.sessionId || null,
-                type: "offer",
-            },
-        };
-    }
     try {
         await resolved.poly.onIngress(
             resolved.ref,

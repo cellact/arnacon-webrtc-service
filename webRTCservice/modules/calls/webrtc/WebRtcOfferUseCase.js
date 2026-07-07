@@ -18,6 +18,32 @@ function createOfferFlow({
     createHttpError,
     logger = console,
 }) {
+    function directionalSessionId(from, to) {
+        const fromLabel = identityLabel(String(from || "").toLowerCase());
+        const toLabel = identityLabel(String(to || "").toLowerCase());
+        if (!fromLabel || !toLabel) return normalizeSessionId(`${from || ""}|${to || ""}`);
+        return `${fromLabel}|${toLabel}`;
+    }
+
+    function sessionMatchesDirection(session, from, to) {
+        if (!session) return false;
+        const sFrom = identityLabel(String(session.callerEns || "").toLowerCase());
+        const sTo = identityLabel(String(session.toIdentity || "").toLowerCase());
+        const wantedFrom = identityLabel(String(from || "").toLowerCase());
+        const wantedTo = identityLabel(String(to || "").toLowerCase());
+        return !!sFrom && !!sTo && sFrom === wantedFrom && sTo === wantedTo;
+    }
+
+    function findDirectionalSessionId(from, to) {
+        const wantedFrom = identityLabel(String(from || "").toLowerCase());
+        const wantedTo = identityLabel(String(to || "").toLowerCase());
+        if (!wantedFrom || !wantedTo) return null;
+        for (const [sid, session] of sessions.entries()) {
+            if (sessionMatchesDirection(session, wantedFrom, wantedTo)) return sid;
+        }
+        return null;
+    }
+
     function normalizeAddress(addr, serviceId = null) {
         if (!addr) return addr;
         if (normalizeIdentity && typeof normalizeIdentity === "function") {
@@ -27,18 +53,18 @@ function createOfferFlow({
     }
 
     function resolveExistingSessionId(from, to, sessionId) {
+        const normalized = normalizeSessionId(sessionId);
+        if (normalized && sessions.has(normalized)) {
+            const exact = sessions.get(normalized);
+            if (sessionMatchesDirection(exact, from, to) || stableKey(exact?.callerEns, exact?.toIdentity) === stableKey(from, to)) {
+                return normalized;
+            }
+        }
+        const directional = findDirectionalSessionId(from, to);
+        if (directional) return directional;
         const pairKey = stableKey(from, to);
         const pairSessionId = sessionsByUser.get(pairKey);
-        if (pairSessionId && sessions.has(pairSessionId)) {
-            return pairSessionId;
-        }
-        const normalized = normalizeSessionId(sessionId);
-        if (!normalized || !sessions.has(normalized)) return normalized;
-        const session = sessions.get(normalized);
-        if (!session) return normalized;
-        if (stableKey(session.callerEns, session.toIdentity) !== pairKey) {
-            return null;
-        }
+        if (pairSessionId && sessions.has(pairSessionId)) return pairSessionId;
         return normalized;
     }
 
@@ -160,11 +186,12 @@ function createOfferFlow({
         assertAllowedInitialOfferFrom(from, sessionId, serviceId);
 
         const key = stableKey(from, to);
-        const pairSessionId = sessionsByUser.get(key);
-        if (pairSessionId && sessions.has(pairSessionId)) {
-            sessionId = pairSessionId;
+        const desiredSessionId = directionalSessionId(from, to);
+        const directionalExistingId = findDirectionalSessionId(from, to);
+        if (directionalExistingId && sessions.has(directionalExistingId)) {
+            sessionId = directionalExistingId;
             offer.sessionId = sessionId;
-            const pairSession = sessions.get(pairSessionId);
+            const pairSession = sessions.get(directionalExistingId);
             if (typeof onExistingPairOffer === "function") {
                 const routed = await onExistingPairOffer({
                     sessionId,
@@ -182,14 +209,11 @@ function createOfferFlow({
             return { ok: true, ignored: true, reason: "pair-session-active", type: "offer", sessionId };
         }
 
+        sessionId = desiredSessionId;
+        offer.sessionId = sessionId;
+
         if (sessions.has(sessionId) && callRuntime) {
             await callRuntime.destroyRuntimeSession(sessionId, { source: "http", reason: "duplicate-offer-session" });
-        }
-        const existingId = sessionsByUser.get(key);
-        if (existingId && existingId !== sessionId && sessions.has(existingId)) {
-            if (callRuntime) {
-                await callRuntime.destroyRuntimeSession(existingId, { source: "http", reason: "duplicate-offer-user" });
-            }
         }
 
         const session = createSession(sessionId, from, to);
