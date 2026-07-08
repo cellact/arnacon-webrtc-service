@@ -190,8 +190,9 @@ function createOfferFlow({
                     return routed.responseBody || { ok: true, sessionId, handled: true, type: "offer" };
                 }
             }
-            logger.warn(`[${sessionId}] existing pair offer arrived without reusable ingress handler`);
-            return { ok: true, sessionId, handled: false, type: "offer", reusedPairContext: true };
+            // Never silently drop a fresh invite/reconnect attempt. If pair ingress
+            // cannot reuse the current context, force a clean handshake path.
+            logger.warn(`[${sessionId}] existing pair offer could not reuse ingress; forcing fresh handshake`);
         }
 
         sessionId = key;

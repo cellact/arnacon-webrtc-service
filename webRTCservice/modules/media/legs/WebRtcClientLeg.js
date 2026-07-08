@@ -93,6 +93,30 @@ class WebRtcClientLeg extends MediaLeg {
         return out;
     }
 
+    pickPreferredReceiverTrack(tracks = []) {
+        if (!Array.isArray(tracks) || tracks.length === 0) return null;
+        const remoteOrder = new Map();
+        for (let i = 0; i < (this.session.remoteTracks || []).length; i += 1) {
+            remoteOrder.set(this.session.remoteTracks[i], i);
+        }
+        const score = (track) => {
+            const isLive = track?.readyState === "live" ? 1 : 0;
+            const order = remoteOrder.has(track) ? remoteOrder.get(track) : -1;
+            return (isLive * 1000000) + order;
+        };
+        let best = tracks[0];
+        let bestScore = score(best);
+        for (let i = 1; i < tracks.length; i += 1) {
+            const candidate = tracks[i];
+            const candidateScore = score(candidate);
+            if (candidateScore > bestScore) {
+                best = candidate;
+                bestScore = candidateScore;
+            }
+        }
+        return best;
+    }
+
     onRtp(handler) {
         const disposers = [];
         const subscribed = new Set();
@@ -115,7 +139,19 @@ class WebRtcClientLeg extends MediaLeg {
             if (this.trackUnsubscribe) disposers.push(this.trackUnsubscribe);
         };
 
-        for (const track of this.getReceiverAudioTracks()) subscribeTrack(track);
+        const receiverTracks = this.getReceiverAudioTracks();
+        const preferredTrack = this.pickPreferredReceiverTrack(receiverTracks);
+        if (preferredTrack) {
+            if (receiverTracks.length > 1) {
+                this.logger.warn(
+                    `[${this.id}] WebRTC leg has ${receiverTracks.length} receiver audio tracks; preferring freshest live track`,
+                );
+            }
+            subscribeTrack(preferredTrack);
+            if (Array.isArray(this.session.remoteTracks) && this.session.remoteTracks.length > 1) {
+                this.session.remoteTracks = this.session.remoteTracks.filter((track) => track === preferredTrack);
+            }
+        }
         const onTrackSub = this.peerConnection?.onTrack?.subscribe?.((track) => subscribeTrack(track));
         if (onTrackSub?.unSubscribe) disposers.push(() => onTrackSub.unSubscribe());
 
