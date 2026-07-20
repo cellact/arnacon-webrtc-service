@@ -6,6 +6,7 @@ class ServiceContextFactory {
         normalizePhone,
         blockchainApi,
         callRouterApi,
+        lightPbxProvisionReader = null,
         sendNotification,
         findOutboundSessionForInbound,
         openSipSession,
@@ -26,6 +27,7 @@ class ServiceContextFactory {
             normalizePhone,
             blockchainApi,
             callRouterApi,
+            lightPbxProvisionReader,
             sendNotification,
             findOutboundSessionForInbound,
             openSipSession,
@@ -89,6 +91,9 @@ class ServiceContextFactory {
             lookupBusinessNumber: (...args) => this.callRouterApi.roflFindBusinessNumber(...args),
             lookupBusinessNumberCascade: (...args) => this.callRouterApi.roflCascadingBusinessLookup(...args),
             assignPoolFromNumber: (...args) => this.callRouterApi.roflAssignFromNumber(...args),
+            readLightPbxProvision: this.lightPbxProvisionReader
+                ? (...args) => this.lightPbxProvisionReader.readLightPbxProvision(...args)
+                : null,
             getProviderForDomain: (domain) => {
                 if (!domain) return null;
                 const configured = Array.isArray(serviceRuntime.serviceConstants?.domains)

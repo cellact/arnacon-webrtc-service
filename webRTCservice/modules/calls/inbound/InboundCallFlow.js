@@ -28,7 +28,21 @@ function createInboundCallFlow({
         logger.log(`[Inbound] Received inbound call from=${from} to=${to} callId=${callId}${diversion ? ` diversion=${diversion}` : ""}${toDomain ? ` toDomain=${toDomain}` : ""}`);
         const inboundDecision = await resolveInboundTarget(data, serviceId);
         if (!inboundDecision || inboundDecision.route !== "webrtc") {
-            throw Object.assign(new Error(inboundDecision?.reason || `No WebRTC user for ${to}`), { statusCode: 404 });
+            const routeStatusCodes = {
+                "not-enabled": 501,
+                unavailable: 503,
+            };
+            const statusCode =
+                inboundDecision?.statusCode ||
+                routeStatusCodes[inboundDecision?.route] ||
+                404;
+            throw Object.assign(
+                new Error(inboundDecision?.reason || `No WebRTC user for ${to}`),
+                {
+                    statusCode,
+                    route: inboundDecision?.route || "reject",
+                },
+            );
         }
 
         const destination = inboundDecision;

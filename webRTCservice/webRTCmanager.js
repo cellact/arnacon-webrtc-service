@@ -131,6 +131,7 @@ const { MinuteCounterPolicy } = require("./modules/callFeatures/minuteCounter/Mi
 const { AddressParser } = require("./modules/routing/AddressParser");
 const { ServiceRegistry: ServiceRuntimeRegistry } = require("./modules/routing/ServiceRegistry");
 const { ServiceContextFactory } = require("./modules/routing/ServiceContextFactory");
+const { createLightPbxProvisionReader } = require("./modules/routing/LightPbxProvisionReader");
 const { DestinationResolver } = require("./modules/routing/DestinationResolver");
 const { CallerIdResolver } = require("./modules/routing/CallerIdResolver");
 const { CallRegistry } = require("./modules/calls/CallRegistry");
@@ -292,6 +293,7 @@ const config = {
     messageProcessorUrl: pickRuntimeConfig("messageProcessorUrl"),
     minuteCounterPath: process.env.MINUTE_COUNTER_PATH || pickRuntimeConfig("minuteCounterPath", "/etc/webrtcservice/minute-counter.json"),
     polygon: pickRuntimeConfig("polygon", {}),
+    lightPbx: pickRuntimeConfig("lightPbx", {}),
     sapphire: pickRuntimeConfig("sapphire", {}),
     sapphireTestnet: pickRuntimeConfig("sapphireTestnet", {}),
     roflLogic: pickRuntimeConfig("roflLogic", {}),
@@ -470,6 +472,24 @@ const notificationApi = createNotificationApi({
 });
 const notificationGateway = new NotificationGateway({ notificationApi, logger: console });
 const addressParserApi = new AddressParser({ callRouter: callRouterApi });
+const lightPbxConfig = config.lightPbx || {};
+const lightPbxProvisionReader = lightPbxConfig.enabled
+    ? createLightPbxProvisionReader({
+        rpcUrl: process.env.LIGHTPBX_RPC_URL || config.polygon.rpc,
+        contractAddresses: lightPbxConfig.contractAddresses,
+        tenantName: process.env.LIGHTPBX_TENANT || lightPbxConfig.tenantName,
+        chainId: Number(process.env.LIGHTPBX_CHAIN_ID || lightPbxConfig.chainId || 137),
+        timeoutMs: Number(process.env.LIGHTPBX_LOOKUP_TIMEOUT_MS || lightPbxConfig.lookupTimeoutMs || 1200),
+        routeTtlMs: Number(lightPbxConfig.routeTtlMs || 45000),
+        missTtlMs: Math.min(Number(lightPbxConfig.missTtlMs || 10000), 10000),
+        logger: console,
+    })
+    : null;
+console.log("[Startup] LightPBX reader", {
+    enabled: Boolean(lightPbxProvisionReader),
+    chainId: lightPbxConfig.chainId || null,
+    tenant: lightPbxConfig.tenantName || null,
+});
 const serviceContextFactory = new ServiceContextFactory({
     serviceRegistry: serviceRuntimeRegistry,
     zeroAddress: ethers.constants.AddressZero,
@@ -477,6 +497,7 @@ const serviceContextFactory = new ServiceContextFactory({
     normalizePhone: (...args) => normalizePhone(...args),
     blockchainApi,
     callRouterApi,
+    lightPbxProvisionReader,
     sendNotification: (...args) => sendNotification(...args),
     findOutboundSessionForInbound: (...args) => findOutboundSessionForInbound(...args),
     openSipSession: (...args) => openSipSession(...args),

@@ -46,6 +46,92 @@ function buildExactEnsCandidates(value, domains) {
     return domains.map((domain) => `${target}.${domain}`);
 }
 
+async function resolveLightPbxInbound(targetValue, payload, helpers) {
+    if (!/^\d+$/.test(targetValue) || typeof helpers.readLightPbxProvision !== "function") {
+        return null;
+    }
+
+    let provision;
+    try {
+        provision = await helpers.readLightPbxProvision(targetValue);
+    } catch (error) {
+        helpers.logRouteDecision?.({
+            serviceId: "secnum",
+            route: "lightpbx-error",
+            targetValue,
+            callId: payload?.callId || null,
+            errorCode: error.code || "LIGHTPBX_UNKNOWN_ERROR",
+        });
+        throw error;
+    }
+
+    if (!provision) {
+        helpers.logRouteDecision?.({
+            serviceId: "secnum",
+            route: "lightpbx-miss-legacy-fallback",
+            targetValue,
+            callId: payload?.callId || null,
+        });
+        return null;
+    }
+
+    if (provision.type !== "DIRECT") {
+        helpers.logRouteDecision?.({
+            serviceId: "secnum",
+            route: "lightpbx-not-enabled",
+            targetValue,
+            callId: payload?.callId || null,
+            provisionIdentifier: provision.provisionIdentifier,
+            routeType: provision.type,
+            revision: provision.revision,
+        });
+        return {
+            route: "not-enabled",
+            statusCode: 501,
+            reason: `LightPBX ${provision.type} inbound routing is not enabled`,
+            routeType: provision.type,
+        };
+    }
+
+    const ensName = provision.targets[0];
+    const wallet = await resolveEnsWallet(helpers, ensName);
+    if (!wallet) {
+        helpers.logRouteDecision?.({
+            serviceId: "secnum",
+            route: "lightpbx-direct-target-unavailable",
+            targetValue,
+            callId: payload?.callId || null,
+            provisionIdentifier: provision.provisionIdentifier,
+            ensName,
+            revision: provision.revision,
+        });
+        return {
+            route: "reject",
+            statusCode: 404,
+            reason: `LightPBX DIRECT target is unavailable for ${targetValue}`,
+        };
+    }
+
+    helpers.logRouteDecision?.({
+        serviceId: "secnum",
+        route: "lightpbx-direct",
+        targetValue,
+        callId: payload?.callId || null,
+        provisionIdentifier: provision.provisionIdentifier,
+        ensName,
+        wallet,
+        revision: provision.revision,
+    });
+    return {
+        route: "webrtc",
+        wallet,
+        ensName,
+        targetValue,
+        routingSource: "lightpbx",
+        routingRevision: provision.revision,
+    };
+}
+
 function normalizeMultiringEndpoint(value, helpers) {
     const firstLabel = String(value || "").trim().split(".")[0] || "";
     return helpers.normalizePhone(firstLabel).replace(/\D/g, "");
@@ -160,6 +246,9 @@ async function resolveInboundTarget(ctx) {
             reason: `No WebRTC user for (target empty, raw to='${String(payload?.to || "")}')`,
         };
     }
+    const lightPbxTarget = await resolveLightPbxInbound(targetValue, payload, helpers);
+    if (lightPbxTarget) return lightPbxTarget;
+
     const inboundDomain = String(payload?.toDomain || "").trim().toLowerCase();
     const allowedDomains = new Set(getDomains(helpers));
     const domains = Array.from(new Set([
