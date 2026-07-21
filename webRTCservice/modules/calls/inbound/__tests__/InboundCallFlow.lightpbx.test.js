@@ -6,7 +6,7 @@ const { createInboundCallFlow } = require("../InboundCallFlow");
 const TARGET = `${"c".repeat(64)}.email.global`;
 const WALLET = "0x6666666666666666666666666666666666666666";
 
-function buildFlow(resolveInboundTarget) {
+function buildFlow(resolveInboundTarget, startMultiring = null) {
     const sessions = [];
     const notifications = [];
     const pendingInboundCalls = new Map();
@@ -48,6 +48,7 @@ function buildFlow(resolveInboundTarget) {
         destroySession() {},
         notiTypeCall: 0,
         crypto: { randomUUID: () => "nonce-direct" },
+        startMultiring,
         logger: { log() {} },
     });
     return { flow, sessions, notifications, pendingInboundCalls };
@@ -81,6 +82,36 @@ test("a DIRECT email identity enters the existing single-callee inbound flow", a
     assert.equal(notifications[0][1], TARGET);
 
     clearTimeout(pendingInboundCalls.get(WALLET.toLowerCase()).timer);
+});
+
+test("MULTI_RING delegates fan-out without creating the single-callee inbound session", async () => {
+    const decision = {
+        route: "webrtc-multiring",
+        targets: [
+            { wallet: WALLET, ensName: TARGET },
+        ],
+        groupId: "group-1",
+    };
+    const starts = [];
+    const { flow, sessions, notifications } = buildFlow(
+        async () => decision,
+        async (data, resolved) => {
+            starts.push({ data, resolved });
+            return { ok: true, route: "webrtc-multiring", sessionId: "mr-host" };
+        },
+    );
+    const data = {
+        from: "+972501234567",
+        to: "972557012402",
+        callId: "sip-multiring",
+        serviceId: "secnum",
+    };
+
+    const result = await flow.handleInboundCallRequest(data);
+    assert.equal(result.sessionId, "mr-host");
+    assert.deepEqual(starts, [{ data, resolved: decision }]);
+    assert.equal(sessions.length, 0);
+    assert.equal(notifications.length, 0);
 });
 
 test("not-enabled and unavailable inbound decisions retain distinct HTTP outcomes", async () => {

@@ -3,7 +3,7 @@ const ArnaconSDK = require("arnacon-sdk");
 
 const EMAIL_IDENTITY = /^[a-f0-9]{64}\.email\.global$/;
 const OWNER_ADDRESS = /^0x[a-fA-F0-9]{40}$/;
-const ROUTE_TYPES = new Set(["DIRECT", "MULTI_RING", "IVR"]);
+const ROUTE_TYPES = new Set(["DIRECT", "MULTI_RING"]);
 const REQUIRED_CONTRACTS = ["ENSRegistry", "PublicResolver", "ProvisionRegistry"];
 
 class LightPbxProvisionError extends Error {
@@ -44,7 +44,7 @@ function parseProvision(rawProvision) {
             throw new LightPbxProvisionError(
                 "LIGHTPBX_PAYLOAD_INVALID_JSON",
                 "LightPBX provision payload is not valid JSON",
-                { cause },
+                { cause, statusCode: 422 },
             );
         }
     }
@@ -52,35 +52,58 @@ function parseProvision(rawProvision) {
         throw new LightPbxProvisionError(
             "LIGHTPBX_PAYLOAD_INVALID",
             "LightPBX provision payload is missing or invalid",
+            { statusCode: 422 },
         );
     }
     return rawProvision;
 }
 
-function toCanonicalRoute({ provisionIdentifier, provisionKey, provision }, expectedLabel) {
+function toCanonicalRoute(
+    { provisionIdentifier, provisionKey, provision },
+    { expectedLabel, expectedIdentity },
+) {
     const label = String(expectedLabel || "");
+    const identity = String(expectedIdentity || "").toLowerCase();
     if (provision.schema !== "arnacon.lightpbx.endpoint.v1") {
         throw new LightPbxProvisionError(
             "LIGHTPBX_SCHEMA_UNSUPPORTED",
             "Unsupported LightPBX provision schema",
+            { statusCode: 422 },
         );
     }
     if (provision.kind !== "lightpbx_external_extension") {
         throw new LightPbxProvisionError(
             "LIGHTPBX_KIND_INVALID",
             "Unexpected LightPBX provision kind",
+            { statusCode: 422 },
         );
     }
     if (String(provision.label) !== label) {
         throw new LightPbxProvisionError(
             "LIGHTPBX_LABEL_MISMATCH",
             "LightPBX provision label does not match the called number",
+            { statusCode: 422 },
+        );
+    }
+    if (String(provision.identity || "").toLowerCase() !== identity) {
+        throw new LightPbxProvisionError(
+            "LIGHTPBX_IDENTITY_MISMATCH",
+            "LightPBX provision identity does not match the called identity",
+            { statusCode: 422 },
+        );
+    }
+    if (String(provision.provider || "").toLowerCase() !== "cellact") {
+        throw new LightPbxProvisionError(
+            "LIGHTPBX_PROVIDER_INVALID",
+            "LightPBX provision provider is invalid",
+            { statusCode: 422 },
         );
     }
     if (!OWNER_ADDRESS.test(String(provision.owner || ""))) {
         throw new LightPbxProvisionError(
             "LIGHTPBX_OWNER_INVALID",
             "LightPBX provision owner is invalid",
+            { statusCode: 422 },
         );
     }
 
@@ -89,6 +112,7 @@ function toCanonicalRoute({ provisionIdentifier, provisionKey, provision }, expe
         throw new LightPbxProvisionError(
             "LIGHTPBX_ROUTE_UNSUPPORTED",
             `Unsupported LightPBX route type: ${type || "missing"}`,
+            { statusCode: 422 },
         );
     }
 
@@ -97,25 +121,39 @@ function toCanonicalRoute({ provisionIdentifier, provisionKey, provision }, expe
         throw new LightPbxProvisionError(
             "LIGHTPBX_TARGETS_INVALID",
             "LightPBX route targets must be an array",
+            { statusCode: 422 },
         );
     }
-    const targets = [...new Set((rawTargets || []).map((target) => String(target).toLowerCase()))];
-    if (!targets.every((target) => EMAIL_IDENTITY.test(target))) {
-        throw new LightPbxProvisionError(
-            "LIGHTPBX_TARGET_INVALID",
-            "LightPBX provision contains an invalid target identity",
-        );
-    }
-    if (type === "DIRECT" && targets.length !== 1) {
+    const normalizedTargets = (rawTargets || []).map((target) => String(target).toLowerCase());
+    if (type === "DIRECT" && normalizedTargets.length !== 1) {
         throw new LightPbxProvisionError(
             "LIGHTPBX_DIRECT_TARGET_COUNT",
             "LightPBX DIRECT routing requires exactly one target",
+            { statusCode: 422 },
         );
     }
-    if (type === "MULTI_RING" && targets.length < 1) {
+    if (type === "MULTI_RING" && (normalizedTargets.length < 1 || normalizedTargets.length > 5)) {
         throw new LightPbxProvisionError(
             "LIGHTPBX_MULTIRING_TARGET_COUNT",
-            "LightPBX MULTI_RING routing requires at least one target",
+            "LightPBX MULTI_RING routing requires between one and five targets",
+            { statusCode: 422 },
+        );
+    }
+    const targets = [...new Set(normalizedTargets.filter((target) => EMAIL_IDENTITY.test(target)))];
+    const rejectedTargetCount = normalizedTargets.length - targets.length;
+    if (targets.length === 0 || (type === "DIRECT" && rejectedTargetCount > 0)) {
+        throw new LightPbxProvisionError(
+            "LIGHTPBX_TARGET_INVALID",
+            "LightPBX provision has no valid target identities",
+            { statusCode: 422 },
+        );
+    }
+    const revision = Number(provision.routing?.revision);
+    if (!Number.isSafeInteger(revision) || revision < 0) {
+        throw new LightPbxProvisionError(
+            "LIGHTPBX_REVISION_INVALID",
+            "LightPBX routing revision is invalid",
+            { statusCode: 422 },
         );
     }
 
@@ -123,12 +161,13 @@ function toCanonicalRoute({ provisionIdentifier, provisionKey, provision }, expe
         source: "chain",
         provisionIdentifier,
         provisionKey,
-        identity: provision.identity || null,
+        identity,
         owner: provision.owner,
         type,
         targets,
+        rejectedTargetCount,
         groupId: provision.routing?.groupId || null,
-        revision: provision.routing?.revision ?? null,
+        revision,
         configHash: provision.routing?.configHash || null,
     };
 }
@@ -149,7 +188,7 @@ function withTimeout(promise, timeoutMs) {
 function createLightPbxProvisionReader({
     rpcUrl,
     contractAddresses,
-    tenantName = "cellact",
+    tenantName = "secnumtest",
     chainId = 137,
     timeoutMs = 1200,
     routeTtlMs = 45000,
@@ -170,18 +209,17 @@ function createLightPbxProvisionReader({
     requireConfig(typeof sdk.getProvision === "function", "Arnacon SDK getProvision() is unavailable");
     sdk.setContractAddresses(contractAddresses);
 
-    const cache = new Map();
+    const provisionCache = new Map();
+    const missCache = new Map();
+    const highestRevisionByIdentity = new Map();
 
     function log(event, fields) {
         logger.log("[LightPBX]", { event, ...fields });
     }
 
-    async function readUncached(label) {
-        const provisionIdentifier = `lightpbx.${label}`.toLowerCase();
-        const startedAt = now();
-        let provisionKey;
+    async function resolveProvisionKey(label) {
         try {
-            provisionKey = await sdk.getRecord(provisionIdentifier, tenantName);
+            return await sdk.getRecord(`lightpbx.${label}`.toLowerCase(), tenantName);
         } catch (cause) {
             throw new LightPbxProvisionError(
                 "LIGHTPBX_RECORD_LOOKUP_FAILED",
@@ -189,16 +227,9 @@ function createLightPbxProvisionReader({
                 { cause },
             );
         }
+    }
 
-        if (!provisionKey) {
-            log("lookup-miss", {
-                label,
-                provisionIdentifier,
-                latencyMs: Math.max(0, now() - startedAt),
-            });
-            return null;
-        }
-
+    async function fetchProvision({ label, expectedIdentity, provisionIdentifier, provisionKey }) {
         let rawProvision;
         try {
             rawProvision = await sdk.getProvision(tenantName, provisionIdentifier);
@@ -220,7 +251,70 @@ function createLightPbxProvisionReader({
             provisionIdentifier,
             provisionKey,
             provision: parseProvision(rawProvision),
-        }, label);
+        }, {
+            expectedLabel: label,
+            expectedIdentity,
+        });
+        const highestRevision = highestRevisionByIdentity.get(expectedIdentity);
+        if (highestRevision !== undefined && route.revision < highestRevision) {
+            throw new LightPbxProvisionError(
+                "LIGHTPBX_REVISION_ROLLBACK",
+                "LightPBX resolver points to an older routing revision",
+                { statusCode: 422 },
+            );
+        }
+        highestRevisionByIdentity.set(
+            expectedIdentity,
+            Math.max(highestRevision ?? route.revision, route.revision),
+        );
+        return route;
+    }
+
+    async function readUncached(label, expectedIdentity) {
+        const provisionIdentifier = `lightpbx.${label}`.toLowerCase();
+        const startedAt = now();
+        const provisionKey = await resolveProvisionKey(label);
+
+        if (!provisionKey) {
+            log("lookup-miss", {
+                label,
+                provisionIdentifier,
+                latencyMs: Math.max(0, now() - startedAt),
+            });
+            return null;
+        }
+
+        const provisionCacheKey = `${expectedIdentity}:${String(provisionKey)}`;
+        const cached = provisionCache.get(provisionCacheKey);
+        let route;
+        if (cached && cached.expiresAt > now()) {
+            route = cached.route;
+            const highestRevision = highestRevisionByIdentity.get(expectedIdentity);
+            if (highestRevision !== undefined && route.revision < highestRevision) {
+                throw new LightPbxProvisionError(
+                    "LIGHTPBX_REVISION_ROLLBACK",
+                    "LightPBX resolver points to an older routing revision",
+                    { statusCode: 422 },
+                );
+            }
+            log("provision-cache-hit", {
+                label,
+                provisionIdentifier,
+                provisionKeyHash: crypto.createHash("sha256").update(String(provisionKey)).digest("hex").slice(0, 12),
+                revision: route.revision,
+            });
+        } else {
+            route = await fetchProvision({
+                label,
+                expectedIdentity,
+                provisionIdentifier,
+                provisionKey,
+            });
+            provisionCache.set(provisionCacheKey, {
+                route,
+                expiresAt: now() + Number(routeTtlMs),
+            });
+        }
         log("lookup-hit", {
             label,
             provisionIdentifier,
@@ -233,7 +327,7 @@ function createLightPbxProvisionReader({
         return route;
     }
 
-    async function readLightPbxProvision(inputLabel) {
+    async function readLightPbxProvision(inputLabel, inputIdentity = null) {
         const label = String(inputLabel || "").trim();
         if (!/^\d+$/.test(label)) {
             throw new LightPbxProvisionError(
@@ -242,29 +336,46 @@ function createLightPbxProvisionReader({
                 { statusCode: 400 },
             );
         }
+        const expectedIdentity = String(
+            inputIdentity || `${label}.${tenantName}.global`,
+        ).trim().toLowerCase();
+        if (expectedIdentity !== `${label}.${tenantName}.global`) {
+            throw new LightPbxProvisionError(
+                "LIGHTPBX_CALLED_IDENTITY_INVALID",
+                "Called identity is not an exact LightPBX number identity",
+                { statusCode: 400 },
+            );
+        }
 
-        const cacheKey = `${tenantName}:${label}`;
-        const cached = cache.get(cacheKey);
-        if (cached && cached.expiresAt > now()) {
+        const cachedMiss = missCache.get(expectedIdentity);
+        if (cachedMiss && cachedMiss.expiresAt > now()) {
             log("cache-hit", {
                 label,
-                result: cached.value === null ? "miss" : "route",
+                result: "miss",
             });
-            return cached.value;
+            return null;
         }
-        cache.delete(cacheKey);
+        missCache.delete(expectedIdentity);
 
-        const route = await withTimeout(readUncached(label), Number(timeoutMs));
-        cache.set(cacheKey, {
-            value: route,
-            expiresAt: now() + (route === null ? Number(missTtlMs) : Number(routeTtlMs)),
-        });
+        const route = await withTimeout(
+            readUncached(label, expectedIdentity),
+            Number(timeoutMs),
+        );
+        if (route === null) {
+            missCache.set(expectedIdentity, {
+                expiresAt: now() + Math.min(Number(missTtlMs), 10000),
+            });
+        }
         return route;
     }
 
     return {
         readLightPbxProvision,
-        clearCache: () => cache.clear(),
+        clearCache: () => {
+            provisionCache.clear();
+            missCache.clear();
+            highestRevisionByIdentity.clear();
+        },
     };
 }
 

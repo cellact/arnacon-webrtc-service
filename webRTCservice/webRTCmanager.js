@@ -120,6 +120,7 @@ const { createMessagingFlow } = require("./modules/messaging/MessagingFlow");
 const { createInboundCallFlow } = require("./modules/calls/inbound/InboundCallFlow");
 const { createOfferFlow } = require("./modules/calls/webrtc/WebRtcOfferUseCase");
 const { createHandshakeFlow } = require("./modules/calls/webrtc/WebRtcHandshakeUseCase");
+const { MultiringCoordinator } = require("./modules/calls/webrtc/MultiringCoordinator");
 const { createDataChannelApi } = require("./modules/participants/signaling/DataChannelGateway");
 const { createSipRuntime } = require("./modules/gateways/sip/SipRuntime");
 const { adaptRtpPayloadType } = require("./modules/media/codecs/rtp");
@@ -586,6 +587,23 @@ const peerConnectionApi = createPeerConnectionFactory({
     onSessionDestroyRequested: (sessionId, event) => onTransportClosed(sessionId, event),
     logger: console,
 });
+const multiringCoordinator = new MultiringCoordinator({
+    sessions,
+    sessionsByUser,
+    stableKey: (...args) => stableKey(...args),
+    createSession: (...args) => createSession(...args),
+    outboundLegFactory,
+    sendNotification: (...args) => sendNotification(...args),
+    applySessionAnswer: async (legSession, offer) => {
+        const pc = legSession?.peerConnection;
+        if (!pc) throw new Error("MULTI_RING candidate PeerConnection is unavailable");
+        await pc.setRemoteDescription(new RTCSessionDescription(offer.sdp, "answer"));
+        await addIceCandidates(pc, offer.candidates || []);
+    },
+    destroySession: (...args) => destroySession(...args),
+    notiTypeCall: NOTI_TYPE_CALL,
+    logger: console,
+});
 
 // Module-backed APIs used by manager orchestration.
 function parseAddress(addr, serviceId = null) {
@@ -663,6 +681,7 @@ const inboundCallFlowApi = createInboundCallFlow({
     callRuntime,
     notiTypeCall: NOTI_TYPE_CALL,
     crypto,
+    startMultiring: (...args) => multiringCoordinator.startInbound(...args),
     logger: console,
 });
 function relationIdentityLabel(identity) {
@@ -684,6 +703,7 @@ const offerFlowApi = createOfferFlow({
     handleInboundAnswer: (...args) => handleInboundAnswer(...args),
     handleHttpReject: (sessionId, offer) => onHttpReject(sessionId, offer),
     handleHttpCancel: (sessionId, offer) => onHttpCancel(sessionId, offer),
+    handlePreSessionSignal: (offer) => multiringCoordinator.handleHttpSignal(offer),
     onExistingPairOffer: (...args) => onExistingPairOffer(...args),
     onVerifiedNotifyAnswer: (...args) => onVerifiedNotifyAnswer(...args),
     parseAddress: (...args) => parseAddress(...args),
@@ -931,11 +951,16 @@ async function tryInboundReuse(payload) {
 
 async function handleInboundCallRequest(data, serviceContext = null) {
     const payload = serviceContext?.serviceId ? { ...data, serviceId: serviceContext.serviceId } : data;
-    // Fast path: reuse a connected callee's existing transport (P rings over DC).
-    const reused = await tryInboundReuse(payload);
-    if (reused) return reused;
+    const inboundDecision = await resolveInboundTarget(payload, payload.serviceId || null);
+    // A DIRECT route may reuse its one resolved endpoint. MULTI_RING must always
+    // fan out from the current LightPBX target set; reusing one historical pair
+    // would silently collapse the policy to a single callee.
+    if (inboundDecision?.route === "webrtc") {
+        const reused = await tryInboundReuse(payload);
+        if (reused) return reused;
+    }
     // Cold path: the inbound flow creates the session + PC1 and FCM-invites the secnum callee.
-    const result = await inboundCallFlowApi.handleInboundCallRequest(payload);
+    const result = await inboundCallFlowApi.handleInboundCallRequest(payload, inboundDecision);
     if (result?.ok && result.sessionId) {
         const session = sessions.get(result.sessionId);
         if (session) {
@@ -990,6 +1015,59 @@ async function handleInboundCallRequest(data, serviceContext = null) {
         }
     }
     return result;
+}
+
+async function handoffMultiringWinner(claim, message) {
+    const group = claim?.group;
+    const candidate = claim?.candidate;
+    const hostSession = group?.hostSession;
+    const winnerSession = candidate?.legSession;
+    if (!group || !candidate || !hostSession || !winnerSession) {
+        throw new Error("MULTI_RING winner handoff is incomplete");
+    }
+
+    const calleeEns = candidate.ensName;
+    const callerNumber = hostSession.inboundCall?.fromNumber || hostSession.callerEns;
+    const phoneNumber = hostSession.inboundCall?.toNumber;
+    const pairKey = polyRegistry.keyForPair(callerNumber, calleeEns);
+    await polyRegistry.destroy(pairKey, "inbound-multiring-fresh-call");
+
+    hostSession.toIdentity = calleeEns;
+    hostSession.calleeWallet = candidate.walletKey;
+    sessionsByUser.set(stableKey(callerNumber, calleeEns), hostSession.sessionId);
+    callPairResolver.bindSessionPairRef(hostSession, callerNumber, calleeEns);
+    const { poly } = polyRegistry.resolve({
+        a: {
+            endpoint: callerNumber,
+            kind: "sip",
+            phoneNumber,
+            session: hostSession,
+        },
+        b: {
+            endpoint: calleeEns,
+            kind: "webrtc",
+            role: "caller",
+            session: winnerSession,
+        },
+        target: "b",
+    });
+
+    // The candidate's authenticated HTTP answer already negotiated its media and
+    // its DC is the channel carrying this verified pickup. Adopt that ready
+    // transport, seed the suspended PSTN INVITE so normal policy places the
+    // pre-negotiated winner in RINGING, then deliver the pickup. Reconcile
+    // consequently calls SIP openInbound exactly once and bridges media.
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    if (group.finished) throw new Error("MULTI_RING winner transport closed during handoff");
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER));
+    if (group.finished) throw new Error("MULTI_RING winner transport closed while ringing");
+    const pickupPayload = message.msgType === "signaling" ? (message.payload || {}) : message;
+    await poly.onIngress("b", polyIngress.toLegEvent("answer", pickupPayload, {
+        channelRole: "callee-webrtc",
+        multiring: true,
+    }));
+    if (group.finished) throw new Error("MULTI_RING winner transport closed during pickup");
+    multiringCoordinator.completeHandoff(group);
 }
 
 /**
@@ -1562,6 +1640,7 @@ async function onDcRing(callerSessionId, payload) {
 function onDataChannelOpen(sessionId, meta = {}) {
     const session = sessions.get(sessionId);
     if (!session) return;
+    if (multiringCoordinator.handleDataChannelOpen(sessionId, meta).handled) return;
     const poly = polyForSession(session);
     if (!poly) return;
     // The callee's outbound DC reuses the caller's sessionId, so the channelRole
@@ -1611,6 +1690,31 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
     const session = sessions.get(sessionId);
     if (!session) return;
     const channelRole = meta.channelRole || "caller-webrtc";
+
+    const multiring = multiringCoordinator.handleDataChannelMessage(sessionId, msg, meta);
+    if (multiring.handled) {
+        if (multiring.won && !multiring.duplicate) {
+            handoffMultiringWinner(multiring, msg).catch(async (err) => {
+                console.error("[multiring] winner handoff failed", {
+                    call: multiring.group?.id || null,
+                    target: multiring.candidate?.ensName || null,
+                    error: err.message,
+                    routingGroupId: multiring.group?.metadataGroupId || null,
+                });
+                const key = multiring.group?.hostSession && multiring.candidate
+                    ? polyRegistry.keyForPair(
+                        multiring.group.hostSession.inboundCall?.fromNumber,
+                        multiring.candidate.ensName,
+                    )
+                    : null;
+                if (key) {
+                    try { await polyRegistry.destroy(key, "multiring-handoff-failed"); } catch (_) {}
+                }
+                multiringCoordinator.failHandoff(multiring.group);
+            });
+        }
+        return;
+    }
 
     if (msg.msgType === "data") {
         messagingFlowApi.handleDataMessage(sessionId, msg, session.phase).catch((err) => {
@@ -1815,6 +1919,7 @@ function isSessionInCall(session) {
 
 // Terminal PC state -> tear the pair down and clean up.
 async function onTransportClosed(sessionId, event = {}) {
+    if (multiringCoordinator.handleTransportClosed(event).handled) return;
     const session = sessions.get(sessionId);
     const transportBinding = resolveSessionByPeerConnection(session, event.pc);
     // A 2nd call reuses the same sessionId on a fresh transport. The old call's PC

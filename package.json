@@ -22,7 +22,7 @@
   ],
   "scripts": {
     "test": "npm run test:routing && npm run test:poly",
-    "test:routing": "node --test webRTCservice/modules/routing/__tests__/*.test.js webRTCservice/services/__tests__/*.test.js webRTCservice/modules/calls/inbound/__tests__/*.test.js",
+    "test:routing": "node --test webRTCservice/modules/routing/__tests__/*.test.js webRTCservice/services/__tests__/*.test.js webRTCservice/modules/calls/inbound/__tests__/*.test.js webRTCservice/modules/calls/webrtc/__tests__/*.test.js",
     "test:poly": "node --test webRTCservice/modules/calls/poly/__tests__/*.test.js",
     "test:werift": "node --test --test-concurrency=1 webRTCservice/modules/calls/poly/__tests__/WebRtcNegotiation.werift.integration.test.js",
     "test:poly:all": "npm run test:poly && npm run test:werift",

@@ -10,6 +10,7 @@ function createOfferFlow({
     handleInboundAnswer,
     handleHttpReject = null,
     handleHttpCancel = null,
+    handlePreSessionSignal = null,
     onVerifiedNotifyAnswer = null,
     onExistingPairOffer = null,
     parseAddress,
@@ -92,6 +93,10 @@ function createOfferFlow({
         }
 
         if (type === "cancel") {
+            if (typeof handlePreSessionSignal === "function") {
+                const preSession = await handlePreSessionSignal(offer);
+                if (preSession?.handled) return preSession.responseBody;
+            }
             sessionId = resolveExistingSessionId(from, to, sessionId);
             offer.sessionId = sessionId;
             if (typeof handleHttpCancel === "function") {
@@ -102,6 +107,10 @@ function createOfferFlow({
         }
 
         if (type === "reject") {
+            if (typeof handlePreSessionSignal === "function") {
+                const preSession = await handlePreSessionSignal(offer);
+                if (preSession?.handled) return preSession.responseBody;
+            }
             sessionId = resolveExistingSessionId(from, to, sessionId);
             offer.sessionId = sessionId;
             if (typeof handleHttpReject === "function") {
@@ -112,6 +121,10 @@ function createOfferFlow({
         }
 
         if (type === "answer") {
+            if (typeof handlePreSessionSignal === "function") {
+                const preSession = await handlePreSessionSignal(offer);
+                if (preSession?.handled) return preSession.responseBody;
+            }
             sessionId = resolveExistingSessionId(from, to, sessionId);
             offer.sessionId = sessionId;
             const session = sessions.get(sessionId);

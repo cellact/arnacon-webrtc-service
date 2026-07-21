@@ -21,12 +21,22 @@ function createInboundCallFlow({
     callRuntime = null,
     notiTypeCall,
     crypto,
+    startMultiring = null,
     logger = console,
 }) {
-    async function handleInboundCallRequest(data) {
+    async function handleInboundCallRequest(data, preResolvedDecision = null) {
         const { from, to, callId, diversion, toDomain, serviceId = null } = data;
         logger.log(`[Inbound] Received inbound call from=${from} to=${to} callId=${callId}${diversion ? ` diversion=${diversion}` : ""}${toDomain ? ` toDomain=${toDomain}` : ""}`);
-        const inboundDecision = await resolveInboundTarget(data, serviceId);
+        const inboundDecision = preResolvedDecision || await resolveInboundTarget(data, serviceId);
+        if (inboundDecision?.route === "webrtc-multiring") {
+            if (typeof startMultiring !== "function") {
+                throw Object.assign(new Error("MULTI_RING orchestration is unavailable"), {
+                    statusCode: 503,
+                    route: "webrtc-multiring",
+                });
+            }
+            return startMultiring(data, inboundDecision);
+        }
         if (!inboundDecision || inboundDecision.route !== "webrtc") {
             const routeStatusCodes = {
                 "not-enabled": 501,

@@ -342,6 +342,18 @@ test("applyAnswer applies remote answer and acks", async () => {
     assert.ok(signaling.lastOfType("call", "ack"));
 });
 
+test("pre-negotiated MULTI_RING pickup does not emit or apply a second SDP", async () => {
+    const { neg, signaling, session } = build();
+    session.multiRingPreNegotiated = true;
+
+    await neg.ring({ from: "972501234567" });
+    assert.equal(signaling.lastOfType("signaling", "offer"), undefined);
+
+    await neg.applyAnswer({ payload: {} });
+    assert.equal(session.peerConnection.remoteDescription, null);
+    assert.ok(signaling.lastOfType("call", "ack"));
+});
+
 test("endCall (remote inactive offer) replies with an end-call answer, audio kept reusable", async () => {
     const { neg, signaling } = build({ answerSdp: "v=0\r\nm=audio 0 UDP\r\na=mid:0\r\na=inactive\r\n" });
     await neg.endCall({

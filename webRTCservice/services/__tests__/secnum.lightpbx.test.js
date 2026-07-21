@@ -5,6 +5,7 @@ const secnum = require("../secnum");
 
 const LABEL = "972557012401";
 const TARGET = `${"b".repeat(64)}.email.global`;
+const SECOND_TARGET = `${"c".repeat(64)}.email.global`;
 const WALLET = "0x5555555555555555555555555555555555555555";
 
 function buildHelpers({
@@ -26,8 +27,8 @@ function buildHelpers({
             getServiceConstants: () => ({ domains: ["secnumtest.global", "secnum.global"] }),
             selectInboundLookupValue: ({ payload }) => payload.to,
             normalizePhone: (value) => String(value || "").replace(/^\+/, ""),
-            readLightPbxProvision: async (label) => {
-                calls.lightPbx.push(label);
+            readLightPbxProvision: async (label, identity) => {
+                calls.lightPbx.push({ label, identity });
                 if (lightPbxError) throw lightPbxError;
                 return lightPbxRoute;
             },
@@ -49,7 +50,9 @@ function chainRoute(type = "DIRECT") {
         source: "chain",
         provisionIdentifier: `lightpbx.${LABEL}`,
         type,
-        targets: type === "IVR" ? [] : [TARGET],
+        targets: type === "MULTI_RING" ? [TARGET, SECOND_TARGET] : [TARGET],
+        groupId: type === "MULTI_RING" ? "group-1" : null,
+        rejectedTargetCount: 0,
         revision: 4,
     };
 }
@@ -62,8 +65,8 @@ test("DIRECT resolves the published email identity before legacy Secnum ENS cand
     const result = await secnum.resolveInboundTarget({
         payload: {
             from: "972501234567",
-            to: `${LABEL}.cellact.global`,
-            toDomain: "cellact.global",
+            to: `${LABEL}.secnumtest.global`,
+            toDomain: "secnumtest.global",
             callId: "call-direct",
         },
         helpers,
@@ -77,16 +80,17 @@ test("DIRECT resolves the published email identity before legacy Secnum ENS cand
         routingSource: "lightpbx",
         routingRevision: 4,
     });
-    assert.deepEqual(calls.lightPbx, [LABEL]);
+    assert.deepEqual(calls.lightPbx, [{
+        label: LABEL,
+        identity: `${LABEL}.secnumtest.global`,
+    }]);
     assert.deepEqual(calls.addresses, [TARGET]);
     assert.equal(calls.decisions.at(-1).route, "lightpbx-direct");
 });
 
-test("a true LightPBX miss continues through the legacy Secnum lookup", async () => {
-    const legacyEns = `${LABEL}.secnumtest.global`;
+test("a missing secnumtest LightPBX provision rejects without legacy fallback", async () => {
     const { helpers, calls } = buildHelpers({
         lightPbxRoute: null,
-        addresses: { [legacyEns]: WALLET },
     });
     const result = await secnum.resolveInboundTarget({
         payload: {
@@ -97,10 +101,10 @@ test("a true LightPBX miss continues through the legacy Secnum lookup", async ()
         helpers,
     });
 
-    assert.equal(result.route, "webrtc");
-    assert.equal(result.ensName, legacyEns);
-    assert.deepEqual(calls.addresses, [legacyEns]);
-    assert.ok(calls.decisions.some((entry) => entry.route === "lightpbx-miss-legacy-fallback"));
+    assert.equal(result.route, "reject");
+    assert.equal(result.statusCode, 404);
+    assert.deepEqual(calls.addresses, []);
+    assert.equal(calls.decisions.at(-1).route, "lightpbx-unconfigured");
 });
 
 test("RPC and validation failures propagate without legacy fallback", async () => {
@@ -112,7 +116,11 @@ test("RPC and validation failures propagate without legacy fallback", async () =
 
     await assert.rejects(
         secnum.resolveInboundTarget({
-            payload: { to: LABEL, callId: "call-error" },
+            payload: {
+                to: LABEL,
+                toDomain: "secnumtest.global",
+                callId: "call-error",
+            },
             helpers,
         }),
         (received) => received === error,
@@ -121,22 +129,53 @@ test("RPC and validation failures propagate without legacy fallback", async () =
     assert.equal(calls.decisions.at(-1).route, "lightpbx-error");
 });
 
-test("MULTI_RING and IVR return explicit not-enabled decisions without fallback", async () => {
-    for (const routeType of ["MULTI_RING", "IVR"]) {
-        const { helpers, calls } = buildHelpers({
-            lightPbxRoute: chainRoute(routeType),
-        });
-        const result = await secnum.resolveInboundTarget({
-            payload: { to: LABEL, callId: `call-${routeType}` },
-            helpers,
-        });
+test("MULTI_RING resolves available targets, skips misses, and returns fan-out policy", async () => {
+    const { helpers, calls } = buildHelpers({
+        lightPbxRoute: chainRoute("MULTI_RING"),
+        addresses: {
+            [TARGET]: WALLET,
+        },
+    });
+    const result = await secnum.resolveInboundTarget({
+        payload: {
+            to: LABEL,
+            toDomain: "secnumtest.global",
+            callId: "call-multiring",
+        },
+        helpers,
+    });
 
-        assert.equal(result.route, "not-enabled");
-        assert.equal(result.statusCode, 501);
-        assert.equal(result.routeType, routeType);
-        assert.deepEqual(calls.addresses, []);
-        assert.equal(calls.decisions.at(-1).route, "lightpbx-not-enabled");
-    }
+    assert.equal(result.route, "webrtc-multiring");
+    assert.equal(result.mode, "first-verified-answer-wins");
+    assert.equal(result.groupId, "group-1");
+    assert.deepEqual(result.targets, [
+        { ensName: TARGET, wallet: WALLET },
+    ]);
+    assert.ok(calls.decisions.some((entry) =>
+        entry.route === "lightpbx-multiring-target-skipped"
+        && entry.ensName === SECOND_TARGET
+    ));
+    assert.equal(calls.decisions.at(-1).route, "lightpbx-multiring");
+});
+
+test("a non-LightPBX Secnum domain keeps legacy routing and never reads a provision", async () => {
+    const legacyEns = `${LABEL}.secnum.global`;
+    const { helpers, calls } = buildHelpers({
+        lightPbxRoute: chainRoute("DIRECT"),
+        addresses: { [legacyEns]: WALLET },
+    });
+    const result = await secnum.resolveInboundTarget({
+        payload: {
+            to: LABEL,
+            toDomain: "secnum.global",
+            callId: "call-legacy",
+        },
+        helpers,
+    });
+
+    assert.equal(result.route, "webrtc");
+    assert.equal(result.ensName, legacyEns);
+    assert.deepEqual(calls.lightPbx, []);
 });
 
 test("an unresolved DIRECT target is rejected without falling through to legacy routing", async () => {
@@ -144,7 +183,11 @@ test("an unresolved DIRECT target is rejected without falling through to legacy 
         lightPbxRoute: chainRoute("DIRECT"),
     });
     const result = await secnum.resolveInboundTarget({
-        payload: { to: LABEL, callId: "call-unavailable" },
+        payload: {
+            to: LABEL,
+            toDomain: "secnumtest.global",
+            callId: "call-unavailable",
+        },
         helpers,
     });
 

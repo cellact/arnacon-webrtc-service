@@ -1,4 +1,5 @@
 const DOMAINS = ["secnum.global", "secnumtest.global"];
+const LIGHTPBX_DOMAIN = "secnumtest.global";
 const IVR_WAITING_AUDIO_FILE = "waiting.mp3";
 const MULTIRING_CONFIG_BASE_URL = "https://lightpbx-save-config-343948402138.europe-west1.run.app";
 const MULTIRING_CONFIG_TIMEOUT_MS = 2500;
@@ -46,14 +47,24 @@ function buildExactEnsCandidates(value, domains) {
     return domains.map((domain) => `${target}.${domain}`);
 }
 
-async function resolveLightPbxInbound(targetValue, payload, helpers) {
-    if (!/^\d+$/.test(targetValue) || typeof helpers.readLightPbxProvision !== "function") {
+function exactLightPbxIdentity(targetValue, payload) {
+    if (!/^\d+$/.test(targetValue)) return null;
+    const rawTo = String(payload?.to || "").trim().toLowerCase();
+    const toDomain = String(payload?.toDomain || "").trim().toLowerCase();
+    const expectedIdentity = `${targetValue}.${LIGHTPBX_DOMAIN}`;
+    if (rawTo === expectedIdentity) return expectedIdentity;
+    if (rawTo === targetValue && toDomain === LIGHTPBX_DOMAIN) return expectedIdentity;
+    return null;
+}
+
+async function resolveLightPbxInbound(targetValue, fullIdentity, payload, helpers) {
+    if (!fullIdentity || typeof helpers.readLightPbxProvision !== "function") {
         return null;
     }
 
     let provision;
     try {
-        provision = await helpers.readLightPbxProvision(targetValue);
+        provision = await helpers.readLightPbxProvision(targetValue, fullIdentity);
     } catch (error) {
         helpers.logRouteDecision?.({
             serviceId: "secnum",
@@ -68,64 +79,98 @@ async function resolveLightPbxInbound(targetValue, payload, helpers) {
     if (!provision) {
         helpers.logRouteDecision?.({
             serviceId: "secnum",
-            route: "lightpbx-miss-legacy-fallback",
+            route: "lightpbx-unconfigured",
             targetValue,
+            identity: fullIdentity,
             callId: payload?.callId || null,
-        });
-        return null;
-    }
-
-    if (provision.type !== "DIRECT") {
-        helpers.logRouteDecision?.({
-            serviceId: "secnum",
-            route: "lightpbx-not-enabled",
-            targetValue,
-            callId: payload?.callId || null,
-            provisionIdentifier: provision.provisionIdentifier,
-            routeType: provision.type,
-            revision: provision.revision,
-        });
-        return {
-            route: "not-enabled",
-            statusCode: 501,
-            reason: `LightPBX ${provision.type} inbound routing is not enabled`,
-            routeType: provision.type,
-        };
-    }
-
-    const ensName = provision.targets[0];
-    const wallet = await resolveEnsWallet(helpers, ensName);
-    if (!wallet) {
-        helpers.logRouteDecision?.({
-            serviceId: "secnum",
-            route: "lightpbx-direct-target-unavailable",
-            targetValue,
-            callId: payload?.callId || null,
-            provisionIdentifier: provision.provisionIdentifier,
-            ensName,
-            revision: provision.revision,
         });
         return {
             route: "reject",
             statusCode: 404,
-            reason: `LightPBX DIRECT target is unavailable for ${targetValue}`,
+            reason: `LightPBX number is unconfigured: ${fullIdentity}`,
         };
     }
 
+    if (provision.type === "DIRECT") {
+        const ensName = provision.targets[0];
+        const wallet = await resolveEnsWallet(helpers, ensName);
+        if (!wallet) {
+            helpers.logRouteDecision?.({
+                serviceId: "secnum",
+                route: "lightpbx-direct-target-unavailable",
+                targetValue,
+                callId: payload?.callId || null,
+                provisionIdentifier: provision.provisionIdentifier,
+                ensName,
+                revision: provision.revision,
+            });
+            return {
+                route: "reject",
+                statusCode: 404,
+                reason: `LightPBX DIRECT target is unavailable for ${targetValue}`,
+            };
+        }
+
+        helpers.logRouteDecision?.({
+            serviceId: "secnum",
+            route: "lightpbx-direct",
+            targetValue,
+            callId: payload?.callId || null,
+            provisionIdentifier: provision.provisionIdentifier,
+            ensName,
+            wallet,
+            revision: provision.revision,
+        });
+        return {
+            route: "webrtc",
+            wallet,
+            ensName,
+            targetValue,
+            routingSource: "lightpbx",
+            routingRevision: provision.revision,
+        };
+    }
+
+    const resolvedTargets = await Promise.all(provision.targets.map(async (ensName) => ({
+        ensName,
+        wallet: await resolveEnsWallet(helpers, ensName),
+    })));
+    const targets = resolvedTargets.filter((target) => target.wallet);
+    for (const target of resolvedTargets.filter((item) => !item.wallet)) {
+        helpers.logRouteDecision?.({
+            serviceId: "secnum",
+            route: "lightpbx-multiring-target-skipped",
+            targetValue,
+            callId: payload?.callId || null,
+            provisionIdentifier: provision.provisionIdentifier,
+            ensName: target.ensName,
+            revision: provision.revision,
+        });
+    }
+    if (targets.length === 0) {
+        return {
+            route: "reject",
+            statusCode: 404,
+            reason: `No LightPBX MULTI_RING targets currently resolve for ${targetValue}`,
+        };
+    }
     helpers.logRouteDecision?.({
         serviceId: "secnum",
-        route: "lightpbx-direct",
+        route: "lightpbx-multiring",
         targetValue,
         callId: payload?.callId || null,
         provisionIdentifier: provision.provisionIdentifier,
-        ensName,
-        wallet,
+        groupId: provision.groupId,
+        resolvedTargetCount: targets.length,
+        rejectedTargetCount: provision.rejectedTargetCount,
         revision: provision.revision,
     });
     return {
-        route: "webrtc",
-        wallet,
-        ensName,
+        route: "webrtc-multiring",
+        mode: "first-verified-answer-wins",
+        targets,
+        groupId: provision.groupId,
+        ruleId: `lightpbx:${targetValue}:v${provision.revision}`,
         targetValue,
         routingSource: "lightpbx",
         routingRevision: provision.revision,
@@ -246,7 +291,13 @@ async function resolveInboundTarget(ctx) {
             reason: `No WebRTC user for (target empty, raw to='${String(payload?.to || "")}')`,
         };
     }
-    const lightPbxTarget = await resolveLightPbxInbound(targetValue, payload, helpers);
+    const lightPbxIdentity = exactLightPbxIdentity(targetValue, payload);
+    const lightPbxTarget = await resolveLightPbxInbound(
+        targetValue,
+        lightPbxIdentity,
+        payload,
+        helpers,
+    );
     if (lightPbxTarget) return lightPbxTarget;
 
     const inboundDomain = String(payload?.toDomain || "").trim().toLowerCase();

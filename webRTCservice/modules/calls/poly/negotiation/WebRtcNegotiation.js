@@ -77,6 +77,12 @@ class WebRtcNegotiation extends CallNegotiationPort {
     // data channel (renegotiating audio on top of the DC-only session). Same for a
     // caller leg being re-rung and a freshly-connected callee leg.
     async ring(ctx = {}) {
+        // A MULTI_RING candidate already negotiated audio in its authenticated
+        // session offer and the coordinator has already observed the user's
+        // pickup. PolySession still needs the leg to enter RINGING so its normal
+        // two-leg policy can answer SIP, but sending a second offer here would
+        // invalidate the ready transport.
+        if (this.session.multiRingPreNegotiated) return;
         return this._sendDataChannelRing(ctx);
     }
 
@@ -458,8 +464,15 @@ class WebRtcNegotiation extends CallNegotiationPort {
         const pc = this.pc;
         if (!pc) throw new Error(`[${this.id}] cannot apply answer without a peer connection`);
         const payload = ctx.payload || {};
-        await pc.setRemoteDescription(new this.p.RTCSessionDescription(payload.sdp, "answer"));
-        await this.p.addIceCandidates?.(pc, payload.candidates || []);
+        // Inbound MULTI_RING candidates negotiate audio in the authenticated HTTP
+        // session answer before the user picks up. Their later data-channel
+        // `answer` is the verified acceptance signal, not a second SDP answer.
+        if (payload.sdp) {
+            await pc.setRemoteDescription(new this.p.RTCSessionDescription(payload.sdp, "answer"));
+            await this.p.addIceCandidates?.(pc, payload.candidates || []);
+        } else if (!this.session.multiRingPreNegotiated) {
+            throw new Error(`[${this.id}] call answer missing SDP`);
+        }
         this.signaling.send({ msgType: "call", action: "ack", ackFor: "answer" });
     }
 

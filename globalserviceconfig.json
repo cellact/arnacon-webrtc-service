@@ -20,7 +20,7 @@
     "lightPbx": {
       "enabled": true,
       "chainId": 137,
-      "tenantName": "secnum",
+      "tenantName": "secnumtest",
       "lookupTimeoutMs": 1200,
       "routeTtlMs": 45000,
       "missTtlMs": 10000,
@@ -149,7 +149,7 @@
     "lightPbx": {
       "enabled": true,
       "chainId": 137,
-      "tenantName": "secnum",
+      "tenantName": "secnumtest",
       "lookupTimeoutMs": 1200,
       "routeTtlMs": 45000,
       "missTtlMs": 10000,
