@@ -966,6 +966,10 @@ async function handleInboundCallRequest(data, serviceContext = null) {
     }
     // Cold path: the inbound flow creates the session + PC1 and FCM-invites the secnum callee.
     const result = await inboundCallFlowApi.handleInboundCallRequest(payload, inboundDecision);
+    // MULTI_RING owns its host and candidate legs until a verified winner is
+    // selected. The host deliberately has no callee identity yet, so the
+    // single-callee PolySession path below must not run before winner handoff.
+    if (result?.route === "webrtc-multiring") return result;
     if (result?.ok && result.sessionId) {
         const session = sessions.get(result.sessionId);
         if (session) {
