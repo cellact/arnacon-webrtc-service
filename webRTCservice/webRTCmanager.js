@@ -890,12 +890,17 @@ console.log("[poly] PolySession core is the live coordinator");
 // channel -- byte-for-byte the webrtc<->webrtc redial path. Same S, same P; no
 // fresh session, no notification. Returns the reuse result, or null to fall back
 // to the cold (FCM-wake) flow when the callee isn't reachably connected.
-async function tryInboundReuse(payload) {
-    const calleeLabel = pLabel(String(payload.to || "").toLowerCase());
+async function tryInboundReuse(payload, destination = null) {
+    const resolvedCallee = destination?.ensName || destination?.wallet || payload.to;
+    const calleeLabel = pLabel(String(resolvedCallee || "").toLowerCase());
     const callerLabel = pLabel(String(payload.from || "").replace(/^\+/, "").toLowerCase());
     if (!calleeLabel || !callerLabel) return null;
 
-    const reuseResolution = callPairResolver.resolvePairActor(payload.from, payload.to, payload.to);
+    const reuseResolution = callPairResolver.resolvePairActor(
+        payload.from,
+        resolvedCallee,
+        resolvedCallee,
+    );
     if (!reuseResolution?.poly || !reuseResolution?.ref) return null;
     const poly = reuseResolution.poly;
     const webRef = reuseResolution.ref;
@@ -956,7 +961,7 @@ async function handleInboundCallRequest(data, serviceContext = null) {
     // fan out from the current LightPBX target set; reusing one historical pair
     // would silently collapse the policy to a single callee.
     if (inboundDecision?.route === "webrtc") {
-        const reused = await tryInboundReuse(payload);
+        const reused = await tryInboundReuse(payload, inboundDecision);
         if (reused) return reused;
     }
     // Cold path: the inbound flow creates the session + PC1 and FCM-invites the secnum callee.

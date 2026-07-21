@@ -88,6 +88,56 @@ test("DIRECT resolves the published email identity before legacy Secnum ENS cand
     assert.equal(calls.decisions.at(-1).route, "lightpbx-direct");
 });
 
+test("a bare SBC DID probes LightPBX before the registered number identity", async () => {
+    const numberIdentity = `${LABEL}.secnumtest.global`;
+    const { helpers, calls } = buildHelpers({
+        lightPbxRoute: chainRoute("DIRECT"),
+        addresses: {
+            [TARGET]: WALLET,
+            [numberIdentity]: "0x9999999999999999999999999999999999999999",
+        },
+    });
+    const result = await secnum.resolveInboundTarget({
+        payload: {
+            from: "972501234567",
+            to: LABEL,
+            callId: "call-bare-direct",
+        },
+        helpers,
+    });
+
+    assert.equal(result.route, "webrtc");
+    assert.equal(result.ensName, TARGET);
+    assert.equal(result.wallet, WALLET);
+    assert.deepEqual(calls.lightPbx, [{
+        label: LABEL,
+        identity: numberIdentity,
+    }]);
+    assert.deepEqual(calls.addresses, [TARGET]);
+});
+
+test("a bare legacy DID falls back only when no LightPBX provision exists", async () => {
+    const numberIdentity = `${LABEL}.secnumtest.global`;
+    const { helpers, calls } = buildHelpers({
+        lightPbxRoute: null,
+        addresses: { [numberIdentity]: WALLET },
+    });
+    const result = await secnum.resolveInboundTarget({
+        payload: {
+            to: LABEL,
+            callId: "call-bare-legacy",
+        },
+        helpers,
+    });
+
+    assert.equal(result.route, "webrtc");
+    assert.equal(result.ensName, numberIdentity);
+    assert.deepEqual(calls.lightPbx, [{
+        label: LABEL,
+        identity: numberIdentity,
+    }]);
+});
+
 test("a missing secnumtest LightPBX provision rejects without legacy fallback", async () => {
     const { helpers, calls } = buildHelpers({
         lightPbxRoute: null,

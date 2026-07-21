@@ -47,20 +47,31 @@ function buildExactEnsCandidates(value, domains) {
     return domains.map((domain) => `${target}.${domain}`);
 }
 
-function exactLightPbxIdentity(targetValue, payload) {
+function lightPbxLookupContext(targetValue, payload) {
     if (!/^\d+$/.test(targetValue)) return null;
     const rawTo = String(payload?.to || "").trim().toLowerCase();
     const toDomain = String(payload?.toDomain || "").trim().toLowerCase();
     const expectedIdentity = `${targetValue}.${LIGHTPBX_DOMAIN}`;
-    if (rawTo === expectedIdentity) return expectedIdentity;
-    if (rawTo === targetValue && toDomain === LIGHTPBX_DOMAIN) return expectedIdentity;
+    if (rawTo === expectedIdentity) {
+        return { identity: expectedIdentity, provisionRequired: true };
+    }
+    if (rawTo === targetValue && toDomain === LIGHTPBX_DOMAIN) {
+        return { identity: expectedIdentity, provisionRequired: true };
+    }
+    // The SBC commonly sends only the numeric DID, so the original SIP domain
+    // is unavailable at this boundary. Probe LightPBX before legacy ENS routing;
+    // a miss may still be a legacy Secnum DID, while a hit is authoritative.
+    if (rawTo === targetValue && !toDomain) {
+        return { identity: expectedIdentity, provisionRequired: false };
+    }
     return null;
 }
 
-async function resolveLightPbxInbound(targetValue, fullIdentity, payload, helpers) {
-    if (!fullIdentity || typeof helpers.readLightPbxProvision !== "function") {
+async function resolveLightPbxInbound(targetValue, lookupContext, payload, helpers) {
+    if (!lookupContext || typeof helpers.readLightPbxProvision !== "function") {
         return null;
     }
+    const { identity: fullIdentity, provisionRequired } = lookupContext;
 
     let provision;
     try {
@@ -84,6 +95,7 @@ async function resolveLightPbxInbound(targetValue, fullIdentity, payload, helper
             identity: fullIdentity,
             callId: payload?.callId || null,
         });
+        if (!provisionRequired) return null;
         return {
             route: "reject",
             statusCode: 404,
@@ -291,10 +303,10 @@ async function resolveInboundTarget(ctx) {
             reason: `No WebRTC user for (target empty, raw to='${String(payload?.to || "")}')`,
         };
     }
-    const lightPbxIdentity = exactLightPbxIdentity(targetValue, payload);
+    const lightPbxLookup = lightPbxLookupContext(targetValue, payload);
     const lightPbxTarget = await resolveLightPbxInbound(
         targetValue,
-        lightPbxIdentity,
+        lightPbxLookup,
         payload,
         helpers,
     );
