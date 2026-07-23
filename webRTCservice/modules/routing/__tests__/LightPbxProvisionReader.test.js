@@ -15,6 +15,7 @@ const LABEL = "972557012401";
 const IDENTITY = `${LABEL}.secnumtest.global`;
 const TARGET = `${"a".repeat(64)}.email.global`;
 const SECOND_TARGET = `${"b".repeat(64)}.email.global`;
+const IVR_TARGET = "sip:proj_j7t7dkhHYbeh6komMrB6xWnc@sip.api.openai.com;transport=tls";
 
 function provision(overrides = {}) {
     const base = {
@@ -132,6 +133,21 @@ test("accepts object MULTI_RING payloads and filters malformed or duplicate targ
     assert.equal(route.rejectedTargetCount, 2);
 });
 
+test("accepts an IVR provision with one exact OpenAI project SIP target", async () => {
+    const { reader } = build({
+        payload: provision({
+            routing: {
+                type: "IVR",
+                targets: [IVR_TARGET],
+            },
+        }),
+    });
+    const route = await reader.readLightPbxProvision(LABEL);
+    assert.equal(route.type, "IVR");
+    assert.deepEqual(route.targets, [IVR_TARGET]);
+    assert.equal(route.rejectedTargetCount, 0);
+});
+
 test("caches a confirmed empty resolver record for at most the configured miss TTL", async () => {
     let now = 100;
     const { reader, calls } = build({ record: "", now: () => now });
@@ -171,9 +187,12 @@ test("rejects malformed JSON and invalid schema, label, and target data", async 
         [JSON.stringify(provision({ label: "123" })), "LIGHTPBX_LABEL_MISMATCH"],
         [JSON.stringify(provision({ identity: `${LABEL}.secnum.global` })), "LIGHTPBX_IDENTITY_MISMATCH"],
         [JSON.stringify(provision({ provider: "other" })), "LIGHTPBX_PROVIDER_INVALID"],
-        [JSON.stringify(provision({ routing: { type: "IVR" } })), "LIGHTPBX_ROUTE_UNSUPPORTED"],
+        [JSON.stringify(provision({ routing: { type: "QUEUE" } })), "LIGHTPBX_ROUTE_UNSUPPORTED"],
         [JSON.stringify(provision({ routing: { targets: ["person@example.com"] } })), "LIGHTPBX_TARGET_INVALID"],
         [JSON.stringify(provision({ routing: { type: "MULTI_RING", targets: Array(6).fill(TARGET) } })), "LIGHTPBX_MULTIRING_TARGET_COUNT"],
+        [JSON.stringify(provision({ routing: { type: "IVR", targets: [] } })), "LIGHTPBX_IVR_TARGET_COUNT"],
+        [JSON.stringify(provision({ routing: { type: "IVR", targets: ["sip:proj_test@evil.example;transport=tls"] } })), "LIGHTPBX_IVR_TARGET_INVALID"],
+        [JSON.stringify(provision({ routing: { type: "IVR", targets: ["sip:proj_test@sip.api.openai.com;transport=udp"] } })), "LIGHTPBX_IVR_TARGET_INVALID"],
     ];
     for (const [payload, code] of cases) {
         const { reader } = build({ payload });

@@ -28,6 +28,12 @@ function createInboundCallFlow({
         const { from, to, callId, diversion, toDomain, serviceId = null } = data;
         logger.log(`[Inbound] Received inbound call from=${from} to=${to} callId=${callId}${diversion ? ` diversion=${diversion}` : ""}${toDomain ? ` toDomain=${toDomain}` : ""}`);
         const inboundDecision = preResolvedDecision || await resolveInboundTarget(data, serviceId);
+        if (inboundDecision?.route === "external-sip") {
+            return {
+                ok: true,
+                ...inboundDecision,
+            };
+        }
         if (inboundDecision?.route === "webrtc-multiring") {
             if (typeof startMultiring !== "function") {
                 throw Object.assign(new Error("MULTI_RING orchestration is unavailable"), {

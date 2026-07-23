@@ -103,6 +103,26 @@ async function resolveLightPbxInbound(targetValue, lookupContext, payload, helpe
         };
     }
 
+    if (provision.type === "IVR") {
+        const sipUri = provision.targets[0];
+        helpers.logRouteDecision?.({
+            serviceId: "secnum",
+            route: "lightpbx-ivr",
+            targetValue,
+            callId: payload?.callId || null,
+            provisionIdentifier: provision.provisionIdentifier,
+            sipUri,
+            revision: provision.revision,
+        });
+        return {
+            route: "external-sip",
+            sipUri,
+            targetValue,
+            routingSource: "lightpbx",
+            routingRevision: provision.revision,
+        };
+    }
+
     if (provision.type === "DIRECT") {
         const ensName = provision.targets[0];
         const wallet = await resolveEnsWallet(helpers, ensName);

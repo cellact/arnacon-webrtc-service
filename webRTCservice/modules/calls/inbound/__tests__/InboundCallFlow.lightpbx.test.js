@@ -5,6 +5,7 @@ const { createInboundCallFlow } = require("../InboundCallFlow");
 
 const TARGET = `${"c".repeat(64)}.email.global`;
 const WALLET = "0x6666666666666666666666666666666666666666";
+const IVR_TARGET = "sip:proj_j7t7dkhHYbeh6komMrB6xWnc@sip.api.openai.com;transport=tls";
 
 function buildFlow(resolveInboundTarget, startMultiring = null) {
     const sessions = [];
@@ -110,6 +111,34 @@ test("MULTI_RING delegates fan-out without creating the single-callee inbound se
     const result = await flow.handleInboundCallRequest(data);
     assert.equal(result.sessionId, "mr-host");
     assert.deepEqual(starts, [{ data, resolved: decision }]);
+    assert.equal(sessions.length, 0);
+    assert.equal(notifications.length, 0);
+});
+
+test("IVR returns the external SIP route without creating or notifying a WebRTC session", async () => {
+    const { flow, sessions, notifications } = buildFlow(async () => ({
+        route: "external-sip",
+        sipUri: IVR_TARGET,
+        targetValue: "972557012402",
+        routingSource: "lightpbx",
+        routingRevision: 1,
+    }));
+
+    const result = await flow.handleInboundCallRequest({
+        from: "+972501234567",
+        to: "972557012402",
+        callId: "sip-ivr",
+        serviceId: "secnum",
+    });
+
+    assert.deepEqual(result, {
+        ok: true,
+        route: "external-sip",
+        sipUri: IVR_TARGET,
+        targetValue: "972557012402",
+        routingSource: "lightpbx",
+        routingRevision: 1,
+    });
     assert.equal(sessions.length, 0);
     assert.equal(notifications.length, 0);
 });

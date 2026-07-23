@@ -2,8 +2,9 @@ const crypto = require("crypto");
 const ArnaconSDK = require("arnacon-sdk");
 
 const EMAIL_IDENTITY = /^[a-f0-9]{64}\.email\.global$/;
+const OPENAI_SIP_TARGET = /^sip:(proj_[A-Za-z0-9]+)@sip\.api\.openai\.com;transport=tls$/;
 const OWNER_ADDRESS = /^0x[a-fA-F0-9]{40}$/;
-const ROUTE_TYPES = new Set(["DIRECT", "MULTI_RING"]);
+const ROUTE_TYPES = new Set(["DIRECT", "MULTI_RING", "IVR"]);
 const REQUIRED_CONTRACTS = ["ENSRegistry", "PublicResolver", "ProvisionRegistry"];
 
 class LightPbxProvisionError extends Error {
@@ -124,23 +125,47 @@ function toCanonicalRoute(
             { statusCode: 422 },
         );
     }
-    const normalizedTargets = (rawTargets || []).map((target) => String(target).toLowerCase());
-    if (type === "DIRECT" && normalizedTargets.length !== 1) {
+    const rawTargetValues = (rawTargets || []).map((target) => String(target).trim());
+    if (type === "DIRECT" && rawTargetValues.length !== 1) {
         throw new LightPbxProvisionError(
             "LIGHTPBX_DIRECT_TARGET_COUNT",
             "LightPBX DIRECT routing requires exactly one target",
             { statusCode: 422 },
         );
     }
-    if (type === "MULTI_RING" && (normalizedTargets.length < 1 || normalizedTargets.length > 5)) {
+    if (type === "MULTI_RING" && (rawTargetValues.length < 1 || rawTargetValues.length > 5)) {
         throw new LightPbxProvisionError(
             "LIGHTPBX_MULTIRING_TARGET_COUNT",
             "LightPBX MULTI_RING routing requires between one and five targets",
             { statusCode: 422 },
         );
     }
-    const targets = [...new Set(normalizedTargets.filter((target) => EMAIL_IDENTITY.test(target)))];
-    const rejectedTargetCount = normalizedTargets.length - targets.length;
+    if (type === "IVR" && rawTargetValues.length !== 1) {
+        throw new LightPbxProvisionError(
+            "LIGHTPBX_IVR_TARGET_COUNT",
+            "LightPBX IVR routing requires exactly one SIP target",
+            { statusCode: 422 },
+        );
+    }
+
+    let targets;
+    let rejectedTargetCount;
+    if (type === "IVR") {
+        const match = OPENAI_SIP_TARGET.exec(rawTargetValues[0] || "");
+        if (!match) {
+            throw new LightPbxProvisionError(
+                "LIGHTPBX_IVR_TARGET_INVALID",
+                "LightPBX IVR target must be an OpenAI project SIP URI over TLS",
+                { statusCode: 422 },
+            );
+        }
+        targets = [`sip:${match[1]}@sip.api.openai.com;transport=tls`];
+        rejectedTargetCount = 0;
+    } else {
+        const normalizedTargets = rawTargetValues.map((target) => target.toLowerCase());
+        targets = [...new Set(normalizedTargets.filter((target) => EMAIL_IDENTITY.test(target)))];
+        rejectedTargetCount = normalizedTargets.length - targets.length;
+    }
     if (targets.length === 0 || (type === "DIRECT" && rejectedTargetCount > 0)) {
         throw new LightPbxProvisionError(
             "LIGHTPBX_TARGET_INVALID",

@@ -7,6 +7,7 @@ const LABEL = "972557012401";
 const TARGET = `${"b".repeat(64)}.email.global`;
 const SECOND_TARGET = `${"c".repeat(64)}.email.global`;
 const WALLET = "0x5555555555555555555555555555555555555555";
+const IVR_TARGET = "sip:proj_j7t7dkhHYbeh6komMrB6xWnc@sip.api.openai.com;transport=tls";
 
 function buildHelpers({
     lightPbxRoute = null,
@@ -50,7 +51,11 @@ function chainRoute(type = "DIRECT") {
         source: "chain",
         provisionIdentifier: `lightpbx.${LABEL}`,
         type,
-        targets: type === "MULTI_RING" ? [TARGET, SECOND_TARGET] : [TARGET],
+        targets: type === "MULTI_RING"
+            ? [TARGET, SECOND_TARGET]
+            : type === "IVR"
+                ? [IVR_TARGET]
+                : [TARGET],
         groupId: type === "MULTI_RING" ? "group-1" : null,
         rejectedTargetCount: 0,
         revision: 4,
@@ -206,6 +211,31 @@ test("MULTI_RING resolves available targets, skips misses, and returns fan-out p
         && entry.ensName === SECOND_TARGET
     ));
     assert.equal(calls.decisions.at(-1).route, "lightpbx-multiring");
+});
+
+test("IVR returns the provisioned external SIP trunk without resolving an ENS wallet", async () => {
+    const { helpers, calls } = buildHelpers({
+        lightPbxRoute: chainRoute("IVR"),
+    });
+    const result = await secnum.resolveInboundTarget({
+        payload: {
+            to: LABEL,
+            toDomain: "secnumtest.global",
+            callId: "call-ivr",
+        },
+        helpers,
+    });
+
+    assert.deepEqual(result, {
+        route: "external-sip",
+        sipUri: IVR_TARGET,
+        targetValue: LABEL,
+        routingSource: "lightpbx",
+        routingRevision: 4,
+    });
+    assert.deepEqual(calls.addresses, []);
+    assert.deepEqual(calls.owners, []);
+    assert.equal(calls.decisions.at(-1).route, "lightpbx-ivr");
 });
 
 test("a non-LightPBX Secnum domain keeps legacy routing and never reads a provision", async () => {
