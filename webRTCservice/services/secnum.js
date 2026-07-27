@@ -95,12 +95,18 @@ async function resolveLightPbxInbound(targetValue, lookupContext, payload, helpe
             identity: fullIdentity,
             callId: payload?.callId || null,
         });
-        if (!provisionRequired) return null;
-        return {
-            route: "reject",
-            statusCode: 404,
-            reason: `LightPBX number is unconfigured: ${fullIdentity}`,
-        };
+        // LightPBX is optional at runtime: if missing, continue with the
+        // standard inbound routing flow (ENS/WebRTC lookup and downstream policy).
+        // This prevents hard-failing regular calls just because a DID has no
+        // LightPBX provision.
+        helpers.logRouteDecision?.({
+            serviceId: "secnum",
+            route: provisionRequired ? "lightpbx-unconfigured-fallback" : "lightpbx-miss-fallback",
+            targetValue,
+            identity: fullIdentity,
+            callId: payload?.callId || null,
+        });
+        return null;
     }
 
     if (provision.type === "IVR") {
