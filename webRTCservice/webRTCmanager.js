@@ -901,6 +901,16 @@ const polyIngress = polyCore.ingress;
 const callPairResolver = new CallPairResolver({ polyRegistry });
 console.log("[poly] PolySession core is the live coordinator");
 
+const referBridgeSessions = new Map(); // referKey -> sessionId
+
+function referBridgeKey(payload = {}) {
+    const callId = String(payload.callId || "").trim();
+    const from = String(payload.from || "").trim();
+    const to = String(payload.to || "").trim();
+    if (!callId || !from || !to) return null;
+    return `${callId}|${from}|${to}`;
+}
+
 
 // Call routing implementation moved to modules/routing/CallRouterApi.js.
 
@@ -992,12 +1002,15 @@ async function seedInboundSipToWebrtcPoly(payload, result, { reason = "inbound-f
         await polyRegistry.destroy(polyRegistry.keyForPair(callerNumber, calleeEns), reason);
         callPairResolver.bindSessionPairRef(session, callerNumber, calleeEns);
         if (referTransfer) {
+            const referKey = referBridgeKey(payload);
             session.referTransfer = {
                 enabled: true,
                 refereeEndpoint: callerNumber,
                 referTarget: phoneNumber,
                 referCallId: payload.callId || null,
+                key: referKey,
             };
+            if (referKey) referBridgeSessions.set(referKey, session.sessionId);
         } else {
             session.referTransfer = null;
         }
@@ -1032,6 +1045,24 @@ async function handleInboundCallRequest(data, serviceContext = null) {
             return inboundDecision;
         }
         if (inboundDecision?.route === "webrtc") {
+            const referKey = referBridgeKey(payload);
+            if (referKey) {
+                const existingSessionId = referBridgeSessions.get(referKey);
+                const existing = existingSessionId ? sessions.get(existingSessionId) : null;
+                if (existing) {
+                    console.log(
+                        `[Inbound][REFER] duplicate refer key=${referKey} target=${payload?.to || ""} -> local-bridge-reused`,
+                    );
+                    return {
+                        ok: true,
+                        route: "refer-local-bridge-accepted",
+                        callType: "refer",
+                        sessionId: existing.sessionId,
+                        reused: true,
+                    };
+                }
+                referBridgeSessions.delete(referKey);
+            }
             const result = await inboundCallFlowApi.handleInboundCallRequest(payload, inboundDecision);
             await seedInboundSipToWebrtcPoly(payload, result, {
                 reason: "refer-local-bridge-fresh-call",
@@ -2089,11 +2120,15 @@ function createSession(sessionId, callerEns, toIdentity) {
 
 function destroySession(sessionId, notify = false) {
     const session = sessions.get(sessionId);
+    const referKey = session?.referTransfer?.key || null;
     const result = sessionStore.destroySession(sessionId, {
         notify,
         sendDataChannelMessage,
         logger: console,
     });
+    if (referKey && referBridgeSessions.get(referKey) === sessionId) {
+        referBridgeSessions.delete(referKey);
+    }
     if (session?.callId) callRegistry.remove(session.callId);
     return result;
 }
