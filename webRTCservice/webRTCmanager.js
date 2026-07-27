@@ -956,7 +956,27 @@ async function tryInboundReuse(payload, destination = null) {
 
 async function handleInboundCallRequest(data, serviceContext = null) {
     const payload = serviceContext?.serviceId ? { ...data, serviceId: serviceContext.serviceId } : data;
+    const callType = String(payload?.callType || "").toLowerCase();
+    const isReferCall = callType === "refer";
     const inboundDecision = await resolveInboundTarget(payload, payload.serviceId || null);
+    if (isReferCall) {
+        // REFER callbacks may use /inbound-call for policy lookups, but must not
+        // bootstrap an inbound SIP resume flow (openInbound), because transfer
+        // signaling is already being handled in-dialog by SIP REFER itself.
+        if (inboundDecision?.route === "external-sip") {
+            return inboundDecision;
+        }
+        if (inboundDecision?.route === "reject") {
+            console.log(
+                `[Inbound][REFER] policy rejected target=${payload?.to || ""} (${inboundDecision.reason || "unknown"}) -> pass-through`,
+            );
+        } else {
+            console.log(
+                `[Inbound][REFER] policy route=${inboundDecision?.route || "none"} target=${payload?.to || ""} -> pass-through`,
+            );
+        }
+        return { ok: true, route: "refer-pass-through", callType: "refer" };
+    }
     // A DIRECT route may reuse its one resolved endpoint. MULTI_RING must always
     // fan out from the current LightPBX target set; reusing one historical pair
     // would silently collapse the policy to a single callee.
