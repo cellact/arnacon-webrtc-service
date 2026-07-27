@@ -1026,9 +1026,8 @@ async function handleInboundCallRequest(data, serviceContext = null) {
     const isReferCall = callType === "refer";
     const inboundDecision = await resolveInboundTarget(payload, payload.serviceId || null);
     if (isReferCall) {
-        // REFER callbacks may use /inbound-call for policy lookups, but must not
-        // bootstrap an inbound SIP resume flow (openInbound), because transfer
-        // signaling is already being handled in-dialog by SIP REFER itself.
+        // REFER callbacks use /inbound-call policy and now selectively bootstrap a
+        // local bridge for WebRTC targets; non-WebRTC routes keep pass-through.
         if (inboundDecision?.route === "external-sip") {
             return inboundDecision;
         }
