@@ -1252,6 +1252,44 @@ async function onExistingPairOffer({ sessionId, offer, session, pairKey } = {}) 
         );
         return { handled: false };
     }
+    const sourceLabel = endpointLabel(offer?.from);
+    const callerLabel = endpointLabel(session?.callerEns);
+    const channelRole = sourceLabel && callerLabel && sourceLabel === callerLabel
+        ? "caller-webrtc"
+        : "callee-webrtc";
+    const roleMeta = channelRole === "callee-webrtc"
+        ? {
+            calleeIdentity: offer?.from || null,
+            signalingSessionId: offer?.sessionId || null,
+        }
+        : {};
+    if (!polyOwnsSession(resolved.poly, session, channelRole, roleMeta)) {
+        console.warn(
+            `[${sessionId || "no-session"}] existing-pair offer rejected: source transport not owned`,
+            {
+                pairKey: pairKey || "unknown-pair",
+                from: offer?.from || null,
+                channelRole,
+            },
+        );
+        return { handled: false };
+    }
+    const sourceLegSession = channelRole === "callee-webrtc"
+        ? resolveCalleeLegSession(session, roleMeta)
+        : session;
+    const sourceDc = resolveLegDataChannel(sourceLegSession, session?.sessionId, offer?.from);
+    if (!isOpenDc(sourceDc)) {
+        console.warn(
+            `[${sessionId || "no-session"}] existing-pair offer rejected: source data channel is closed`,
+            {
+                pairKey: pairKey || "unknown-pair",
+                from: offer?.from || null,
+                channelRole,
+                signalingSessionId: offer?.sessionId || null,
+            },
+        );
+        return { handled: false };
+    }
     try {
         await resolved.poly.onIngress(
             resolved.ref,
