@@ -76,6 +76,32 @@ function sendAckAndAnswer(sessionId, answerSdp) {
     return dataChannelApi.sendAckAndAnswer(sessionId, answerSdp);
 }
 
+function normalizePositiveCallId(value) {
+    if (value === undefined || value === null || value === "") return null;
+    const n = Number.parseInt(String(value), 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function ensureSessionCallId(session) {
+    if (!session) return Math.max(1, (Date.now() % 1000000000) + Math.floor(Math.random() * 1000));
+    const existing = normalizePositiveCallId(session.activeCallId);
+    if (existing) return existing;
+    const fromRing = normalizePositiveCallId(session.lastRingOfferPayload?.callId);
+    session.activeCallId = fromRing || Math.max(1, (Date.now() % 1000000000) + Math.floor(Math.random() * 1000));
+    return session.activeCallId;
+}
+
+function sendEndCallSignal(sessionId, reason = "hangup") {
+    const session = sessions.get(sessionId);
+    const callId = ensureSessionCallId(session);
+    sendDataChannelMessage(sessionId, {
+        msgType: "signaling",
+        action: "end-call",
+        callId,
+        reason,
+    });
+}
+
 function ensureLocalAudioTrack(session, pc, sessionId) {
     return callSdpUseCases.ensureLocalAudioTrack(session, pc, sessionId);
 }
@@ -954,6 +980,46 @@ async function tryInboundReuse(payload, destination = null) {
     return { ok: true, sessionId: hostSession.sessionId, reused: true };
 }
 
+async function seedInboundSipToWebrtcPoly(payload, result, { reason = "inbound-fresh-call", referTransfer = false } = {}) {
+    if (!result?.ok || !result.sessionId) return;
+    const session = sessions.get(result.sessionId);
+    if (!session) return;
+
+    const calleeEns = result.ensName || session.toIdentity;
+    const phoneNumber = session.inboundCall?.toNumber || payload.to;
+    const callerNumber = session.inboundCall?.fromNumber || session.callerEns;
+    try {
+        await polyRegistry.destroy(polyRegistry.keyForPair(callerNumber, calleeEns), reason);
+        callPairResolver.bindSessionPairRef(session, callerNumber, calleeEns);
+        if (referTransfer) {
+            session.referTransfer = {
+                enabled: true,
+                refereeEndpoint: callerNumber,
+                referTarget: phoneNumber,
+                referCallId: payload.callId || null,
+            };
+        } else {
+            session.referTransfer = null;
+        }
+        const { poly } = polyRegistry.resolve({
+            a: { endpoint: callerNumber, kind: "sip", phoneNumber, session },
+            b: {
+                endpoint: calleeEns,
+                kind: "webrtc",
+                role: "callee",
+                session,
+                adoptSession: true,
+                destination: { ensName: calleeEns },
+            },
+            target: "a",
+        });
+        await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER));
+    } catch (err) {
+        console.error(`[${result.sessionId}] inbound poly seed failed: ${err.message}`);
+        throw err;
+    }
+}
+
 async function handleInboundCallRequest(data, serviceContext = null) {
     const payload = serviceContext?.serviceId ? { ...data, serviceId: serviceContext.serviceId } : data;
     const callType = String(payload?.callType || "").toLowerCase();
@@ -965,6 +1031,22 @@ async function handleInboundCallRequest(data, serviceContext = null) {
         // signaling is already being handled in-dialog by SIP REFER itself.
         if (inboundDecision?.route === "external-sip") {
             return inboundDecision;
+        }
+        if (inboundDecision?.route === "webrtc") {
+            const result = await inboundCallFlowApi.handleInboundCallRequest(payload, inboundDecision);
+            await seedInboundSipToWebrtcPoly(payload, result, {
+                reason: "refer-local-bridge-fresh-call",
+                referTransfer: true,
+            });
+            console.log(
+                `[Inbound][REFER] policy route=webrtc target=${payload?.to || ""} -> local-bridge-accepted`,
+            );
+            return {
+                ok: true,
+                route: "refer-local-bridge-accepted",
+                callType: "refer",
+                sessionId: result?.sessionId || null,
+            };
         }
         if (inboundDecision?.route === "reject") {
             console.log(
@@ -991,57 +1073,7 @@ async function handleInboundCallRequest(data, serviceContext = null) {
     // single-callee PolySession path below must not run before winner handoff.
     if (result?.route === "webrtc-multiring") return result;
     if (result?.ok && result.sessionId) {
-        const session = sessions.get(result.sessionId);
-        if (session) {
-            // sip->secnum: legA = SIP gateway (PSTN dialing in), legB = secnum
-            // webrtc callee. P seeds the *real* starting condition and lets reconcile
-            // drive -- it never hand-sets a leg state. The PSTN INVITE is delivered as
-            // the sip caller's OFFER ingress (-> CALLING); the webrtc callee is a
-            // deferred callee leg that ADOPTS the already-sent FCM session offer
-            // (adoptSession) so reconcile runs: connect (adopt -> stay CONNECTING) ->
-            // the client's session answer lands while CONNECTING (applySessionAnswer,
-            // NOT a pickup) -> DC opens -> CONNECTED -> ring (audio offer) -> the
-            // human pickup is a separate answer -> IN_CALL -> ANSWER the sip leg
-            // (openInbound) + bridge. This mirrors the proven secnum<->secnum callee.
-            const calleeEns = result.ensName || session.toIdentity;
-            // phoneNumber = the callee's own number we REGISTER as on Kamailio to
-            // pull back the suspended SBC INVITE (openInbound). It is NOT the leg's
-            // identity: the SIP leg represents the PSTN caller, so its endpoint must
-            // be the gateway caller number. Using phoneNumber here would make both
-            // legs normalize to the callee -> degenerate pair key (callee|callee),
-            // misrouting the client's answer onto the SIP leg and skipping
-            // openInbound (no sipPeerConnection -> media bridge fails).
-            const phoneNumber = session.inboundCall?.toNumber || payload.to;
-            const callerNumber = session.inboundCall?.fromNumber || session.callerEns;
-            try {
-                // The registry keys polys by an order-independent pair key, so a
-                // stale poly from a prior call between these two parties (e.g. an
-                // earlier W->SIP attempt) resolves to the SAME key. Reusing it is
-                // wrong here: its leg layout (a/b) and bound session belong to that
-                // old call, so the hardcoded onIngress("a") would hit the wrong leg.
-                // An inbound call always brings a fresh session + FCM wake, so it
-                // must own a fresh poly -> tear any stale one down first.
-                await polyRegistry.destroy(polyRegistry.keyForPair(callerNumber, calleeEns), "inbound-fresh-call");
-                callPairResolver.bindSessionPairRef(session, callerNumber, calleeEns);
-                const { poly } = polyRegistry.resolve({
-                    a: { endpoint: callerNumber, kind: "sip", phoneNumber, session },
-                    b: {
-                        endpoint: calleeEns,
-                        kind: "webrtc",
-                        role: "callee",
-                        session, // PC1 (already created + FCM-invited by the inbound flow)
-                        adoptSession: true, // connect() adopts the pre-sent invite, stays deferred
-                        destination: { ensName: calleeEns },
-                    },
-                    target: "a",
-                });
-                // Seed via ingress only: the PSTN INVITE is the sip caller's offer.
-                // Reconcile takes it from here (connect -> ring -> answer + bridge).
-                await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER));
-            } catch (err) {
-                console.error(`[${result.sessionId}] inbound poly seed failed: ${err.message}`);
-            }
-        }
+        await seedInboundSipToWebrtcPoly(payload, result, { reason: "inbound-fresh-call", referTransfer: false });
     }
     return result;
 }
@@ -1505,7 +1537,7 @@ function checkSbcMinuteBudget({ session, callerSessionId, parsedFrom, serviceId 
         });
     } catch (err) {
         console.log(`[${callerSessionId}] minute limit reached for ${identity}: ${err.message}`);
-        sendDataChannelMessage(callerSessionId, { msgType: "call", action: "end", reason: "minute-limit" });
+        sendEndCallSignal(callerSessionId, "minute-limit");
         return { allowed: false, settings, identity };
     }
     return { allowed: true, settings, identity };
@@ -1577,6 +1609,7 @@ async function onDcRing(callerSessionId, payload) {
     const session = sessions.get(callerSessionId);
     if (!session || !session.peerConnection) return;
     session.lastRingOfferPayload = payload;
+    session.activeCallId = normalizePositiveCallId(payload?.callId) || session.activeCallId;
     const serviceId = session.serviceId || null;
     const to = payload.to || session.toIdentity;
     const parsedTo = parseAddress(to, serviceId);
@@ -1584,7 +1617,7 @@ async function onDcRing(callerSessionId, payload) {
     const destination = await resolveDestination(parsedTo, parsedFrom, serviceId);
 
     if (!destination || destination.route === "reject") {
-        sendDataChannelMessage(callerSessionId, { msgType: "call", action: "end", reason: "reject-route" });
+        sendEndCallSignal(callerSessionId, "reject-route");
         return;
     }
 
@@ -1781,7 +1814,7 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
                 await onDcRing(sessionId, msg.payload);
             })().catch((err) => {
                 console.error(`[${sessionId}] ring routing failed: ${err.message}`);
-                sendDataChannelMessage(sessionId, { msgType: "call", action: "end", reason: "ring-failed" });
+                sendEndCallSignal(sessionId, "ring-failed");
             });
             return;
         }
@@ -1816,7 +1849,11 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
     let payload;
     if (msg.msgType === "signaling") {
         action = msg.action === "end-call" ? "end-call" : msg.payload?.type;
-        payload = msg.payload || {};
+        payload = { ...(msg.payload || {}) };
+        if (payload.callId === undefined && msg.callId !== undefined) payload.callId = msg.callId;
+        if (!payload.sessionId && msg.sessionId) payload.sessionId = msg.sessionId;
+        if (!payload.from && msg.from) payload.from = msg.from;
+        if (!payload.to && msg.to) payload.to = msg.to;
     } else if (msg.msgType === "call") {
         if (msg.action === "hold") { action = "hold"; payload = { enabled: true }; }
         else if (msg.action === "unhold") { action = "hold"; payload = { enabled: false }; }

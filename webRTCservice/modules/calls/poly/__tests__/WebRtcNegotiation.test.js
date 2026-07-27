@@ -339,7 +339,9 @@ test("applyAnswer applies remote answer and acks", async () => {
     const { neg, signaling, session } = build();
     await neg.applyAnswer({ payload: { sdp: "answer-sdp" } });
     assert.equal(session.peerConnection.remoteDescription.type, "answer");
-    assert.ok(signaling.lastOfType("call", "ack"));
+    const ack = signaling.lastOfType("call", "ack");
+    assert.ok(ack);
+    assert.ok(Number.isInteger(ack.callId) && ack.callId > 0);
 });
 
 test("pre-negotiated MULTI_RING pickup does not emit or apply a second SDP", async () => {
@@ -351,48 +353,96 @@ test("pre-negotiated MULTI_RING pickup does not emit or apply a second SDP", asy
 
     await neg.applyAnswer({ payload: {} });
     assert.equal(session.peerConnection.remoteDescription, null);
-    assert.ok(signaling.lastOfType("call", "ack"));
+    const ack = signaling.lastOfType("call", "ack");
+    assert.ok(ack);
+    assert.ok(Number.isInteger(ack.callId) && ack.callId > 0);
 });
 
 test("endCall (remote inactive offer) replies with an end-call answer, audio kept reusable", async () => {
     const { neg, signaling } = build({ answerSdp: "v=0\r\nm=audio 0 UDP\r\na=mid:0\r\na=inactive\r\n" });
     await neg.endCall({
         mode: "remote",
-        payload: { type: "offer", sdp: "v=0\r\na=group:BUNDLE 0\r\nm=audio 0 UDP\r\na=mid:0\r\na=inactive\r\n" },
+        payload: {
+            type: "offer",
+            from: "alice.secnum.global",
+            to: "bob.secnum.global",
+            sessionId: "alice.secnum.global|bob.secnum.global",
+            callId: 12345,
+            sdp: "v=0\r\na=group:BUNDLE 0\r\nm=audio 0 UDP\r\na=mid:0\r\na=inactive\r\n",
+        },
     });
     const msg = signaling.lastOfType("signaling");
     assert.equal(msg.action, "end-call");
+    assert.equal(msg.callId, 12345);
     assert.equal(msg.payload.type, "answer");
+    assert.equal(msg.payload.callId, 12345);
+    assert.equal(msg.payload.to, "alice.secnum.global");
+    assert.equal(msg.payload.sessionId, "alice.secnum.global|bob.secnum.global");
     assert.match(msg.payload.sdp, /m=audio 9 /);
 });
 
 test("endCall (initiator) sends an inactive end-call offer and defers", async () => {
     const { neg, signaling } = build({ offerSdp: "v=0\r\nm=audio 0 UDP\r\na=mid:0\r\na=inactive\r\n" });
+    await neg.applyOffer({
+        payload: {
+            type: "offer",
+            from: "alice.secnum.global",
+            to: "bob.secnum.global",
+            sessionId: "alice.secnum.global|bob.secnum.global",
+            callId: 9876,
+            sdp: "v=0\r\nm=audio 9 UDP\r\na=mid:0\r\na=sendrecv\r\n",
+        },
+    });
     const result = await neg.endCall({ from: "bob.secnum.global" });
     const msg = signaling.lastOfType("signaling");
     assert.equal(msg.action, "end-call");
+    assert.equal(msg.callId, 9876);
     assert.equal(msg.payload.type, "offer");
-    assert.equal(msg.payload.from, "bob");
+    assert.equal(msg.payload.from, "bob.secnum.global");
+    assert.equal(msg.payload.to, "alice.secnum.global");
+    assert.equal(msg.payload.sessionId, "alice.secnum.global|bob.secnum.global");
+    assert.equal(msg.payload.callId, 9876);
     assert.match(msg.payload.sdp, /m=audio 9 /);
     assert.deepEqual(result, { deferred: true }, "the leg stays ENDING until the client's end-call answer");
 });
 
 test("endCall completion (peer answered our offer) applies the answer AND sends the call/end signal", async () => {
     const { neg, signaling, session } = build();
-    await neg.endCall({ mode: "remote", payload: { type: "answer", sdp: "end-ans-sdp" } });
+    await neg.endCall({
+        mode: "remote",
+        payload: {
+            type: "answer",
+            from: "alice.secnum.global",
+            to: "bob.secnum.global",
+            sessionId: "alice.secnum.global|bob.secnum.global",
+            callId: 54321,
+            sdp: "end-ans-sdp",
+        },
+    });
     assert.equal(session.peerConnection.remoteDescription.type, "answer", "the end-call answer is applied");
-    const endSignal = signaling.sent.find((m) => m.msgType === "call" && m.action === "end");
+    const endSignal = signaling.sent.find((m) => m.msgType === "signaling" && m.action === "end-call");
     assert.ok(endSignal, "the call-level END signal must be sent so the client's UI actually ends");
+    assert.equal(endSignal.callId, 54321);
 });
 
 test("ackEnd answers the client's end-call offer (audio off) and reports CONNECTED", async () => {
     const { neg, signaling } = build({ answerSdp: "v=0\r\nm=audio 0 UDP\r\na=mid:0\r\na=inactive\r\n" });
     const result = await neg.ackEnd({
-        payload: { type: "offer", sdp: "v=0\r\na=group:BUNDLE 0\r\nm=audio 0 UDP\r\na=mid:0\r\na=inactive\r\n" },
+        payload: {
+            type: "offer",
+            from: "alice.secnum.global",
+            to: "bob.secnum.global",
+            sessionId: "alice.secnum.global|bob.secnum.global",
+            callId: 321,
+            sdp: "v=0\r\na=group:BUNDLE 0\r\nm=audio 0 UDP\r\na=mid:0\r\na=inactive\r\n",
+        },
     });
     const msg = signaling.lastOfType("signaling");
     assert.equal(msg.action, "end-call");
+    assert.equal(msg.callId, 321);
     assert.equal(msg.payload.type, "answer");
+    assert.equal(msg.payload.callId, 321);
+    assert.equal(msg.payload.to, "alice.secnum.global");
     assert.match(msg.payload.sdp, /m=audio 9 /);
     assert.equal(result.state, "connected", "the leg returns to connected, transport kept");
 });

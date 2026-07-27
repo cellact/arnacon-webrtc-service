@@ -56,6 +56,15 @@ class SipNegotiation extends CallNegotiationPort {
     // CALLER (a PSTN call dialed in and our WebRTC side just answered it).
     async answer(ctx = {}) {
         if (this.session.sipConnection) return; // idempotent
+        const referTransfer = this.session.referTransfer;
+        if (referTransfer?.enabled) {
+            await this.sip.openOutbound(this.session.sessionId, {
+                target: referTransfer.refereeEndpoint || this.endpoint,
+                from: this.session.sipFrom || this.session.toIdentity || null,
+                sipDirective: this.session.sipDirective || null,
+            });
+            return;
+        }
         await this.sip.openInbound(this.session.sessionId, {
             phoneNumber: this.phoneNumber || ctx.phoneNumber || null,
         });

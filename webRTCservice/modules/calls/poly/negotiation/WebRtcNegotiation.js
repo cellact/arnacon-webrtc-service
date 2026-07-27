@@ -53,6 +53,56 @@ class WebRtcNegotiation extends CallNegotiationPort {
         this.logger = logger;
     }
 
+    _normalizeCallId(value) {
+        if (value === undefined || value === null || value === "") return null;
+        const n = Number.parseInt(String(value), 10);
+        return Number.isFinite(n) && n > 0 ? n : null;
+    }
+
+    _allocateCallId() {
+        const now = Date.now() % 1000000000;
+        const salt = Math.floor(Math.random() * 1000);
+        return Math.max(1, now + salt);
+    }
+
+    _rememberCallMeta(payload = {}) {
+        const session = this.session || {};
+        if (!session._activeCallMeta) session._activeCallMeta = {};
+        const meta = session._activeCallMeta;
+
+        if (payload.from) meta.remoteIdentity = payload.from;
+        if (payload.to) meta.localIdentity = payload.to;
+        if (payload.sessionId) meta.signalingSessionId = payload.sessionId;
+
+        const payloadCallId = this._normalizeCallId(payload.callId);
+        if (payloadCallId) {
+            meta.callId = payloadCallId;
+            return;
+        }
+        if (!meta.callId) {
+            meta.callId = this._allocateCallId();
+        }
+    }
+
+    _activeCallMeta() {
+        const session = this.session || {};
+        if (!session._activeCallMeta) session._activeCallMeta = {};
+        const meta = session._activeCallMeta;
+        if (!meta.callId) {
+            meta.callId = this._allocateCallId();
+        }
+        if (!meta.remoteIdentity) {
+            meta.remoteIdentity = identityLabel(session.callerEns);
+        }
+        if (!meta.localIdentity) {
+            meta.localIdentity = session.toIdentity;
+        }
+        if (!meta.signalingSessionId) {
+            meta.signalingSessionId = session.signalingSessionId || session.sessionId;
+        }
+        return meta;
+    }
+
     get pc() {
         return this.session?.peerConnection || null;
     }
@@ -109,6 +159,12 @@ class WebRtcNegotiation extends CallNegotiationPort {
         const session = this.session;
         const pc = this.pc;
         if (!pc) throw new Error(`[${this.id}] cannot ring without a peer connection`);
+        this._rememberCallMeta({
+            from: identityLabel(session.callerEns),
+            to: session.toIdentity,
+            sessionId: session.signalingSessionId || session.sessionId,
+        });
+        const callMeta = this._activeCallMeta();
 
         if (!session.localAudioTrack) {
             const track = new this.MediaStreamTrack({ kind: "audio" });
@@ -138,6 +194,7 @@ class WebRtcNegotiation extends CallNegotiationPort {
         const fromLabel = identityLabel(session.callerEns);
         this.signaling.send({
             msgType: "signaling",
+            callId: callMeta.callId,
             payload: {
                 type: "offer",
                 from: ctx.from ? identityLabel(ctx.from) : fromLabel,
@@ -148,6 +205,7 @@ class WebRtcNegotiation extends CallNegotiationPort {
                 // to their own session id.
                 sessionId: session.signalingSessionId || session.sessionId,
                 sdp: offerSdp,
+                callId: callMeta.callId,
                 // srflx+relay, not relay-only: a relay-only client can only reach us
                 // via our public srflx (relay<->relay on the same TURN is refused as a
                 // loopback peer). Same reasoning as the outbound invite candidates.
@@ -163,6 +221,7 @@ class WebRtcNegotiation extends CallNegotiationPort {
         const pc = this.pc;
         if (!pc) throw new Error(`[${this.id}] cannot apply offer without a peer connection`);
         const payload = ctx.payload || {};
+        this._rememberCallMeta(payload);
         const isIceRestart = ctx.mode === "ice-restart";
         let offerSdp = payload.sdp;
         // Pin the audio to the route's codec policy (e.g. PCMA for webrtc<->webrtc)
@@ -193,14 +252,17 @@ class WebRtcNegotiation extends CallNegotiationPort {
         // peer actually picks up. PolySession fires answer() (peer reached
         // in-call) and we flush the held SDP then.
         if (isIceRestart) {
+            const callMeta = this._activeCallMeta();
             this.signaling.send({
                 msgType: "signaling",
+                callId: callMeta.callId,
                 payload: {
                     type: "answer",
                     from: identityLabel(this.session.callerEns),
                     to: this.session.toIdentity,
                     sessionId: this.session.sessionId,
                     sdp: answerSdp,
+                    callId: callMeta.callId,
                 },
             });
             return;
@@ -433,7 +495,8 @@ class WebRtcNegotiation extends CallNegotiationPort {
     // guard: P fires this once per fresh ring (gated on the CALLING event), so a
     // reused leg gets a fresh ack on each new call.
     async ackConnected() {
-        this.signaling.send({ msgType: "call", action: "ack", ackFor: "ring" });
+        const callMeta = this._activeCallMeta();
+        this.signaling.send({ msgType: "call", action: "ack", ackFor: "ring", callId: callMeta.callId });
     }
 
     // The peer is actually ringing now. The webrtc caller already received its
@@ -464,6 +527,7 @@ class WebRtcNegotiation extends CallNegotiationPort {
         const pc = this.pc;
         if (!pc) throw new Error(`[${this.id}] cannot apply answer without a peer connection`);
         const payload = ctx.payload || {};
+        this._rememberCallMeta(payload);
         // Inbound MULTI_RING candidates negotiate audio in the authenticated HTTP
         // session answer before the user picks up. Their later data-channel
         // `answer` is the verified acceptance signal, not a second SDP answer.
@@ -473,7 +537,8 @@ class WebRtcNegotiation extends CallNegotiationPort {
         } else if (!this.session.multiRingPreNegotiated) {
             throw new Error(`[${this.id}] call answer missing SDP`);
         }
-        this.signaling.send({ msgType: "call", action: "ack", ackFor: "answer" });
+        const callMeta = this._activeCallMeta();
+        this.signaling.send({ msgType: "call", action: "ack", ackFor: "answer", callId: callMeta.callId });
     }
 
     // PolySession told us the peer picked up. Flush the answer SDP we held back
@@ -481,20 +546,23 @@ class WebRtcNegotiation extends CallNegotiationPort {
     // then ack. If there is no held answer (e.g. ICE-restart already answered),
     // just ack.
     async answer() {
+        const callMeta = this._activeCallMeta();
         if (this._pendingAnswerSdp) {
             this.signaling.send({
                 msgType: "signaling",
+                callId: callMeta.callId,
                 payload: {
                     type: "answer",
                     from: identityLabel(this.session.callerEns),
                     to: this.session.toIdentity,
                     sessionId: this.session.sessionId,
                     sdp: this._pendingAnswerSdp,
+                    callId: callMeta.callId,
                 },
             });
             this._pendingAnswerSdp = null;
         }
-        this.signaling.send({ msgType: "call", action: "ack", ackFor: "answer" });
+        this.signaling.send({ msgType: "call", action: "ack", ackFor: "answer", callId: callMeta.callId });
     }
 
     // The client asked to end (sent us its end-call reneg offer). Answer it
@@ -509,6 +577,7 @@ class WebRtcNegotiation extends CallNegotiationPort {
     async ackEnd(ctx = {}) {
         const pc = this.pc;
         const payload = ctx.payload || {};
+        this._rememberCallMeta(payload);
         if (pc && payload.sdp) await this._answerEndCallOffer(pc, payload);
         return { state: LEG_STATES.CONNECTED };
     }
@@ -522,6 +591,8 @@ class WebRtcNegotiation extends CallNegotiationPort {
         const pc = this.pc;
         if (!pc) return; // already gone
         const payload = ctx.payload || {};
+        this._rememberCallMeta(payload);
+        const callMeta = this._activeCallMeta();
 
         if (ctx.mode === "remote") {
             // Client drove the end. NEVER (re)initiate an end-call offer here.
@@ -533,7 +604,11 @@ class WebRtcNegotiation extends CallNegotiationPort {
                 if (payload.sdp) {
                     await pc.setRemoteDescription(new this.p.RTCSessionDescription(payload.sdp, "answer"));
                 }
-                this.signaling.send({ msgType: "call", action: "end" });
+                this.signaling.send({
+                    msgType: "signaling",
+                    action: "end-call",
+                    callId: callMeta.callId,
+                });
             } else if (payload.sdp) {
                 // client sent an inactive offer -> answer it inactive (reusable).
                 await this._answerEndCallOffer(pc, payload);
@@ -550,15 +625,19 @@ class WebRtcNegotiation extends CallNegotiationPort {
         const offerSdp = normalizeEndCallOfferSdp(offer.sdp);
         await pc.setLocalDescription(new this.p.RTCSessionDescription(offerSdp, "offer"));
         this.p.logSdp?.(this.id, "END-CALL OFFER SDP", offerSdp);
+        const localFrom = callMeta.localIdentity || (ctx.from ? identityLabel(ctx.from) : identityLabel(this.session.callerEns));
+        const remoteTo = callMeta.remoteIdentity || identityLabel(this.session.callerEns);
         this.signaling.send({
             msgType: "signaling",
             action: "end-call",
+            callId: callMeta.callId,
             payload: {
                 type: "offer",
-                from: ctx.from ? identityLabel(ctx.from) : identityLabel(this.session.callerEns),
-                to: this.session.toIdentity,
-                sessionId: this.session.sessionId,
+                from: localFrom,
+                to: remoteTo,
+                sessionId: callMeta.signalingSessionId || this.session.sessionId,
                 sdp: offerSdp,
+                callId: callMeta.callId,
             },
         });
         return { deferred: true };
@@ -567,6 +646,8 @@ class WebRtcNegotiation extends CallNegotiationPort {
     // Answer a client's inactive end-call offer (audio off, transport kept) and
     // send the end-call answer back. Shared by ackEnd + the remote-absorb path.
     async _answerEndCallOffer(pc, payload = {}) {
+        this._rememberCallMeta(payload);
+        const callMeta = this._activeCallMeta();
         if (payload.sdp) {
             await pc.setRemoteDescription(new this.p.RTCSessionDescription(payload.sdp, "offer"));
         }
@@ -578,12 +659,14 @@ class WebRtcNegotiation extends CallNegotiationPort {
         this.signaling.send({
             msgType: "signaling",
             action: "end-call",
+            callId: callMeta.callId,
             payload: {
                 type: "answer",
-                from: identityLabel(this.session.toIdentity || this.session.callerEns),
-                to: identityLabel(this.session.callerEns),
-                sessionId: this.session.sessionId,
+                from: callMeta.localIdentity || identityLabel(this.session.toIdentity || this.session.callerEns),
+                to: callMeta.remoteIdentity || identityLabel(this.session.callerEns),
+                sessionId: callMeta.signalingSessionId || this.session.sessionId,
                 sdp: answerSdp,
+                callId: callMeta.callId,
             },
         });
     }
