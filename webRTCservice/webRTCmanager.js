@@ -365,7 +365,9 @@ const INTERNAL_CALLBACK_PROTOCOL =
         .toLowerCase() === "http"
         ? "http"
         : "https";
-const REFER_TRANSFER_STATUS_URL = String(process.env.REFER_TRANSFER_STATUS_URL || "https://127.0.0.1:8443/refer-transfer-status").trim();
+const REFER_TRANSFER_STATUS_URL = String(
+    process.env.REFER_TRANSFER_STATUS_URL || `https://${KAMAILIO_WSS_HOST}:${KAMAILIO_WSS_PORT}/refer-transfer-status`,
+).trim();
 const REFER_TRANSFER_TIMEOUT_MS = Number(process.env.REFER_TRANSFER_TIMEOUT_MS || 45000);
 const OPENAI_SIP_CONFIG = {
     kamailioHost: process.env.OPENAI_SIP_KAMAILIO_HOST || config.kamailioWssHost || config.domain,
@@ -1071,7 +1073,9 @@ async function notifyReferTransferController(state, stage, extras = {}) {
             console.warn(`[REFER][${state.transferId}] status callback failed ${resp.status} ${body}`);
         }
     } catch (err) {
-        console.warn(`[REFER][${state.transferId}] status callback error: ${err.message}`);
+        console.warn(
+            `[REFER][${state.transferId}] status callback error url=${REFER_TRANSFER_STATUS_URL} err=${err.message}`,
+        );
     }
 }
 
