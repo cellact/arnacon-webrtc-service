@@ -75,6 +75,22 @@ test("answer in REFER transfer mode originates outbound to referee (no openInbou
     assert.equal(sip.calls.filter((c) => c.name === "openInbound").length, 0, "REFER mode answer must not call openInbound");
 });
 
+test("answer in REFER transfer mode prefers referPresentedFrom as outbound caller", async () => {
+    const { leg, sip, session } = makeLeg({ phoneNumber: "972500" });
+    session.referTransfer = {
+        enabled: true,
+        refereeEndpoint: "972557220060",
+        referTarget: "972797001126",
+        referCallId: "refer-ctx",
+        referPresentedFrom: "972557012402",
+    };
+    leg.setState(LEG_STATES.CALLING, { from: "self" });
+    await leg.answer({});
+    const outbound = sip.calls.find((c) => c.name === "openOutbound");
+    assert.ok(outbound);
+    assert.equal(outbound.opts.from, "972557012402");
+});
+
 test("answer in REFER transfer mode falls back target to leg endpoint when referee is missing", async () => {
     const { leg, sip, session } = makeLeg({ phoneNumber: "972500" });
     session.referTransfer = {

@@ -60,7 +60,7 @@ class SipNegotiation extends CallNegotiationPort {
         if (referTransfer?.enabled) {
             await this.sip.openOutbound(this.session.sessionId, {
                 target: referTransfer.refereeEndpoint || this.endpoint,
-                from: this.session.sipFrom || this.session.toIdentity || null,
+                from: referTransfer.referPresentedFrom || this.session.sipFrom || this.session.toIdentity || null,
                 sipDirective: this.session.sipDirective || null,
             });
             return;

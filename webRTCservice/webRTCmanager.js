@@ -992,12 +992,17 @@ async function seedInboundSipToWebrtcPoly(payload, result, { reason = "inbound-f
         await polyRegistry.destroy(polyRegistry.keyForPair(callerNumber, calleeEns), reason);
         callPairResolver.bindSessionPairRef(session, callerNumber, calleeEns);
         if (referTransfer) {
+            const referPresentedFrom = String(payload.referPresentedFrom || "").replace(/^\+/, "");
             session.referTransfer = {
                 enabled: true,
                 refereeEndpoint: callerNumber,
                 referTarget: phoneNumber,
                 referCallId: payload.callId || null,
+                referPresentedFrom: referPresentedFrom || null,
             };
+            if (referPresentedFrom) {
+                session.sipFrom = referPresentedFrom;
+            }
         } else {
             session.referTransfer = null;
         }
