@@ -1,6 +1,9 @@
 const DOMAINS = ["secnum.global", "secnumtest.global"];
 const LIGHTPBX_DOMAIN = "secnumtest.global";
 const IVR_WAITING_AUDIO_FILE = "waiting.mp3";
+const FORCED_IVR_SIP_URI =
+    process.env.SECNUM_FORCED_IVR_SIP_URI ||
+    "sip:proj_7yVgTSBvJC4MpWvg257qY6kk@sip.api.openai.com;transport=tls";
 const MULTIRING_CONFIG_BASE_URL = "https://lightpbx-save-config-343948402138.europe-west1.run.app";
 const MULTIRING_CONFIG_TIMEOUT_MS = 2500;
 
@@ -110,7 +113,9 @@ async function resolveLightPbxInbound(targetValue, lookupContext, payload, helpe
     }
 
     if (provision.type === "IVR") {
-        const sipUri = provision.targets[0];
+        // Keep LightPBX IVR routing type, but force the trunk target to the
+        // configured OpenAI project URI used by runtime.
+        const sipUri = FORCED_IVR_SIP_URI;
         helpers.logRouteDecision?.({
             serviceId: "secnum",
             route: "lightpbx-ivr",
