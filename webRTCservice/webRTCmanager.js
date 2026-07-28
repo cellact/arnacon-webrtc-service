@@ -1031,8 +1031,8 @@ async function handleInboundCallRequest(data, serviceContext = null) {
     const isReferCall = callType === "refer";
     const inboundDecision = await resolveInboundTarget(payload, payload.serviceId || null);
     if (isReferCall) {
-        // REFER callbacks execute server-side blind transfer orchestration.
-        // Keep signaling/media on existing inbound/poly/sip methods only.
+        // REFER callback is policy-only. The actual transfer INVITE must arrive via
+        // normal SBC inbound flow so Kamailio can suspend/resume against C.
         if (inboundDecision?.route === "external-sip") {
             return inboundDecision;
         }
@@ -1041,26 +1041,14 @@ async function handleInboundCallRequest(data, serviceContext = null) {
             err.statusCode = 422;
             throw err;
         }
-        const result = await inboundCallFlowApi.handleInboundCallRequest(payload, inboundDecision);
-        if (result?.route === "webrtc-multiring") {
-            const err = new Error("REFER does not support MULTI_RING targets");
-            err.statusCode = 422;
-            throw err;
-        }
-        if (result?.ok && result.sessionId) {
-            await seedInboundSipToWebrtcPoly(payload, result, {
-                reason: "refer-local-bridge",
-                referTransfer: false,
-            });
-        }
         console.log(
-            `[Inbound][REFER] server transfer route=${inboundDecision?.route || "none"} target=${payload?.to || ""} -> refer-local-bridge-accepted`,
+            `[Inbound][REFER] policy route=${inboundDecision?.route || "none"} target=${payload?.to || ""} -> refer-pass-through`,
         );
         return {
             ok: true,
-            route: "refer-local-bridge-accepted",
+            route: "refer-pass-through",
             callType: "refer",
-            sessionId: result?.sessionId || null,
+            sessionId: null,
         };
     }
     // A DIRECT route may reuse its one resolved endpoint. MULTI_RING must always
