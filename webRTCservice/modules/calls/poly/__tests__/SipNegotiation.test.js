@@ -58,7 +58,7 @@ test("answer registers + accepts the inbound (resumed SBC) INVITE", async () => 
     assert.equal(sip.calls.filter((c) => c.name === "openOutbound").length, 0, "answer must not place an outbound INVITE");
 });
 
-test("answer in REFER transfer mode originates outbound to referee (no openInbound wait)", async () => {
+test("answer in REFER transfer mode still accepts inbound SIP", async () => {
     const { leg, sip, session } = makeLeg({ phoneNumber: "972500" });
     session.referTransfer = {
         enabled: true,
@@ -68,14 +68,13 @@ test("answer in REFER transfer mode originates outbound to referee (no openInbou
     };
     leg.setState(LEG_STATES.CALLING, { from: "self" });
     await leg.answer({});
-    const outbound = sip.calls.find((c) => c.name === "openOutbound");
-    assert.ok(outbound, "REFER mode answer should place outbound INVITE to referee");
-    assert.equal(outbound.opts.target, "972557220060");
-    assert.equal(outbound.opts.from, "bob.secnum.global");
-    assert.equal(sip.calls.filter((c) => c.name === "openInbound").length, 0, "REFER mode answer must not call openInbound");
+    const inbound = sip.calls.find((c) => c.name === "openInbound");
+    assert.ok(inbound, "REFER mode answer should accept inbound SIP");
+    assert.equal(inbound.opts.phoneNumber, "972500");
+    assert.equal(sip.calls.filter((c) => c.name === "openOutbound").length, 0);
 });
 
-test("answer in REFER transfer mode prefers referPresentedFrom as outbound caller", async () => {
+test("answer in REFER transfer mode ignores outbound caller overrides", async () => {
     const { leg, sip, session } = makeLeg({ phoneNumber: "972500" });
     session.referTransfer = {
         enabled: true,
@@ -86,12 +85,11 @@ test("answer in REFER transfer mode prefers referPresentedFrom as outbound calle
     };
     leg.setState(LEG_STATES.CALLING, { from: "self" });
     await leg.answer({});
-    const outbound = sip.calls.find((c) => c.name === "openOutbound");
-    assert.ok(outbound);
-    assert.equal(outbound.opts.from, "972557012402");
+    assert.equal(sip.calls.filter((c) => c.name === "openOutbound").length, 0);
+    assert.equal(sip.calls.filter((c) => c.name === "openInbound").length, 1);
 });
 
-test("answer in REFER transfer mode falls back target to leg endpoint when referee is missing", async () => {
+test("answer in REFER transfer mode does not require referee endpoint", async () => {
     const { leg, sip, session } = makeLeg({ phoneNumber: "972500" });
     session.referTransfer = {
         enabled: true,
@@ -100,10 +98,10 @@ test("answer in REFER transfer mode falls back target to leg endpoint when refer
     };
     leg.setState(LEG_STATES.CALLING, { from: "self" });
     await leg.answer({});
-    const outbound = sip.calls.find((c) => c.name === "openOutbound");
-    assert.ok(outbound, "REFER mode answer should place outbound INVITE");
-    assert.equal(outbound.opts.target, "972500");
-    assert.equal(sip.calls.filter((c) => c.name === "openInbound").length, 0);
+    const inbound = sip.calls.find((c) => c.name === "openInbound");
+    assert.ok(inbound, "REFER mode answer should still accept inbound SIP");
+    assert.equal(inbound.opts.phoneNumber, "972500");
+    assert.equal(sip.calls.filter((c) => c.name === "openOutbound").length, 0);
 });
 
 test("same leg serves both directions across calls (no frozen role)", async () => {

@@ -1050,7 +1050,7 @@ async function handleInboundCallRequest(data, serviceContext = null) {
         if (result?.ok && result.sessionId) {
             await seedInboundSipToWebrtcPoly(payload, result, {
                 reason: "refer-local-bridge",
-                referTransfer: true,
+                referTransfer: false,
             });
         }
         console.log(

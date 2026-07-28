@@ -56,15 +56,8 @@ class SipNegotiation extends CallNegotiationPort {
     // CALLER (a PSTN call dialed in and our WebRTC side just answered it).
     async answer(ctx = {}) {
         if (this.session.sipConnection) return; // idempotent
-        const referTransfer = this.session.referTransfer;
-        if (referTransfer?.enabled) {
-            await this.sip.openOutbound(this.session.sessionId, {
-                target: referTransfer.refereeEndpoint || this.endpoint,
-                from: referTransfer.referPresentedFrom || this.session.sipFrom || this.session.toIdentity || null,
-                sipDirective: this.session.sipDirective || null,
-            });
-            return;
-        }
+        // REFER must still be accepted via the existing inbound SIP path so we
+        // do not create a fresh dialog/call-id that appears as a second call.
         await this.sip.openInbound(this.session.sessionId, {
             phoneNumber: this.phoneNumber || ctx.phoneNumber || null,
         });
