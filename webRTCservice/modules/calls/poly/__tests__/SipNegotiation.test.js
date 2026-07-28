@@ -104,6 +104,23 @@ test("answer in REFER transfer mode does not require referee endpoint", async ()
     assert.equal(sip.calls.filter((c) => c.name === "openOutbound").length, 0);
 });
 
+test("answer in REFER controller mode skips SIP openInbound/outbound", async () => {
+    const { leg, sip, session } = makeLeg({ phoneNumber: "972500" });
+    const observed = [];
+    session.referTransfer = {
+        enabled: true,
+        mode: "controller",
+        onSipAnswer: async (ctx) => observed.push(ctx),
+        transferId: "refer-controller-1",
+    };
+    leg.setState(LEG_STATES.CALLING, { from: "self" });
+    await leg.answer({});
+    assert.equal(sip.calls.filter((c) => c.name === "openInbound").length, 0);
+    assert.equal(sip.calls.filter((c) => c.name === "openOutbound").length, 0);
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0].sessionId, "972500|bob");
+});
+
 test("same leg serves both directions across calls (no frozen role)", async () => {
     // Call 1: this side is the callee -> ring -> outbound INVITE.
     const { leg, sip, session } = makeLeg({ phoneNumber: "972500" });

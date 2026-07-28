@@ -56,6 +56,17 @@ class SipNegotiation extends CallNegotiationPort {
     // CALLER (a PSTN call dialed in and our WebRTC side just answered it).
     async answer(ctx = {}) {
         if (this.session.sipConnection) return; // idempotent
+        const referTransfer = this.session.referTransfer;
+        if (referTransfer?.enabled && referTransfer.mode === "controller") {
+            // REFER transfer controller keeps A's signaling dialog untouched and
+            // handles bridge switching out-of-band; this SIP leg must not wait
+            // for a suspended INVITE that does not exist in REFER orchestration.
+            await referTransfer.onSipAnswer?.({
+                sessionId: this.session.sessionId,
+                endpoint: this.endpoint,
+            });
+            return;
+        }
         // REFER must still be accepted via the existing inbound SIP path so we
         // do not create a fresh dialog/call-id that appears as a second call.
         await this.sip.openInbound(this.session.sessionId, {

@@ -365,6 +365,8 @@ const INTERNAL_CALLBACK_PROTOCOL =
         .toLowerCase() === "http"
         ? "http"
         : "https";
+const REFER_TRANSFER_STATUS_URL = String(process.env.REFER_TRANSFER_STATUS_URL || "https://127.0.0.1:8443/refer-transfer-status").trim();
+const REFER_TRANSFER_TIMEOUT_MS = Number(process.env.REFER_TRANSFER_TIMEOUT_MS || 45000);
 const OPENAI_SIP_CONFIG = {
     kamailioHost: process.env.OPENAI_SIP_KAMAILIO_HOST || config.kamailioWssHost || config.domain,
     kamailioPort: Number(process.env.OPENAI_SIP_KAMAILIO_PORT || 5060),
@@ -413,6 +415,7 @@ const sessions = sessionStore.sessions;
 const sessionsByUser = sessionStore.sessionsByUser; // stableKey(from, to) → sessionId
 const pendingBridges = sessionStore.pendingBridges; // callee wallet (lowercase) → { callerSessionId, resolve, reject, timer }
 const pendingInboundCalls = sessionStore.pendingInboundCalls; // callee wallet (lowercase) → { fromNumber, toNumber, callId, timer }
+const referTransferStates = new Map(); // transferId -> controller state
 const callRegistry = new CallRegistry({ logger: console });
 const participantFactory = new ParticipantFactory({
     parseAddress: (...args) => parseAddress(...args),
@@ -1025,6 +1028,130 @@ async function seedInboundSipToWebrtcPoly(payload, result, { reason = "inbound-f
     }
 }
 
+function buildReferTransferId(payload = {}, result = {}) {
+    const explicit = String(payload.transferId || "").trim();
+    if (explicit) return explicit;
+    const callId = String(payload.callId || result.callId || "").trim() || "no-callid";
+    const cseq = String(payload.referEventId || payload.referCseq || "").trim() || "0";
+    return `refer:${callId}:${cseq}:${Date.now()}`;
+}
+
+async function notifyReferTransferController(state, stage, extras = {}) {
+    if (!state) return;
+    const payload = {
+        transferId: state.transferId,
+        stage,
+        referDialog: state.referDialog || null,
+        aDialog: state.aDialog || null,
+        cDialog: state.cDialog || null,
+        media: {
+            aParticipantLabel: state.aParticipantLabel || null,
+            cParticipantLabel: state.cParticipantLabel || null,
+            iceConnected: stage === "c_media_ready",
+            dtlsConnected: stage === "c_media_ready",
+        },
+        ...extras,
+    };
+    state.stage = stage;
+    state.lastUpdateAt = Date.now();
+    console.log(`[REFER][${state.transferId}] stage=${stage}`);
+    if (!REFER_TRANSFER_STATUS_URL) return;
+    try {
+        const resp = await fetch(REFER_TRANSFER_STATUS_URL, {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                "x-transfer-id": state.transferId,
+                "x-transfer-stage": stage,
+            },
+            body: JSON.stringify(payload),
+        });
+        if (!resp.ok) {
+            const body = await resp.text().catch(() => "");
+            console.warn(`[REFER][${state.transferId}] status callback failed ${resp.status} ${body}`);
+        }
+    } catch (err) {
+        console.warn(`[REFER][${state.transferId}] status callback error: ${err.message}`);
+    }
+}
+
+function clearReferTransferState(transferId) {
+    const state = referTransferStates.get(transferId);
+    if (!state) return;
+    if (state.timeout) clearTimeout(state.timeout);
+    const session = state.sessionId ? sessions.get(state.sessionId) : null;
+    if (session?.referTransfer?.transferId === transferId) {
+        session.referTransfer = null;
+    }
+    referTransferStates.delete(transferId);
+}
+
+async function failReferTransfer(state, reason) {
+    if (!state) return;
+    await notifyReferTransferController(state, "failed", { reason });
+    if (state.sessionId) {
+        try {
+            destroySession(state.sessionId);
+        } catch (_) {}
+    }
+    clearReferTransferState(state.transferId);
+}
+
+async function initReferTransferSession(payload, result, inboundDecision) {
+    if (!result?.ok || !result.sessionId) return null;
+    const session = sessions.get(result.sessionId);
+    if (!session) return null;
+    const transferId = buildReferTransferId(payload, result);
+    const referDialog = {
+        callId: String(payload.referDialogCallId || payload.callId || "").trim() || null,
+        fromTag: String(payload.referFromTag || "").trim() || null,
+        toTag: String(payload.referToTag || "").trim() || null,
+        eventId: String(payload.referEventId || payload.referCseq || "").trim() || null,
+    };
+    const state = {
+        transferId,
+        sessionId: result.sessionId,
+        referDialog,
+        aDialog: {
+            callId: String(payload.callId || "").trim() || null,
+            localTag: String(payload.referToTag || "").trim() || null,
+            remoteTag: String(payload.referFromTag || "").trim() || null,
+        },
+        cDialog: {
+            callId: null,
+            localTag: null,
+            remoteTag: null,
+        },
+        route: inboundDecision?.route || "webrtc",
+        target: String(payload.to || "").trim() || null,
+        from: String(payload.from || "").trim() || null,
+        stage: "accepted",
+        createdAt: Date.now(),
+        lastUpdateAt: Date.now(),
+        aParticipantLabel: String(payload.from || "").trim() || null,
+        cParticipantLabel: String(result.ensName || session.toIdentity || payload.to || "").trim() || null,
+    };
+    const timeout = Number.isFinite(REFER_TRANSFER_TIMEOUT_MS) && REFER_TRANSFER_TIMEOUT_MS > 0
+        ? REFER_TRANSFER_TIMEOUT_MS
+        : 45000;
+    state.timeout = setTimeout(() => {
+        failReferTransfer(state, "c-media-timeout").catch((err) => {
+            console.warn(`[REFER][${state.transferId}] timeout failure handling error: ${err.message}`);
+        });
+    }, timeout);
+    session.referTransfer = {
+        enabled: true,
+        mode: "controller",
+        transferId,
+        referTarget: payload.to,
+        referCallId: payload.callId || null,
+        referPresentedFrom: payload.referPresentedFrom || null,
+    };
+    referTransferStates.set(transferId, state);
+    await notifyReferTransferController(state, "trying");
+    return state;
+}
+
 async function handleInboundCallRequest(data, serviceContext = null) {
     const payload = serviceContext?.serviceId ? { ...data, serviceId: serviceContext.serviceId } : data;
     const callType = String(payload?.callType || "").toLowerCase();
@@ -1047,11 +1174,9 @@ async function handleInboundCallRequest(data, serviceContext = null) {
             err.statusCode = 422;
             throw err;
         }
-        if (result?.ok && result.sessionId) {
-            await seedInboundSipToWebrtcPoly(payload, result, {
-                reason: "refer-local-bridge",
-                referTransfer: true,
-            });
+        const referState = await initReferTransferSession(payload, result, inboundDecision);
+        if (referState) {
+            await notifyReferTransferController(referState, "ringing");
         }
         console.log(
             `[Inbound][REFER] server transfer route=${inboundDecision?.route || "none"} target=${payload?.to || ""} -> refer-local-bridge-accepted`,
@@ -1061,6 +1186,7 @@ async function handleInboundCallRequest(data, serviceContext = null) {
             route: "refer-local-bridge-accepted",
             callType: "refer",
             sessionId: result?.sessionId || null,
+            transferId: referState?.transferId || null,
         };
     }
     // A DIRECT route may reuse its one resolved endpoint. MULTI_RING must always
@@ -1948,6 +2074,32 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
 
 // HTTP /notify "answer" (callee picked up: secnum<->secnum leg or inbound callee).
 async function onVerifiedNotifyAnswer(sessionId, offer, session) {
+    const referTransfer = session?.referTransfer;
+    if (referTransfer?.enabled && referTransfer.mode === "controller") {
+        const state = referTransferStates.get(referTransfer.transferId);
+        if (!state) {
+            return { handled: true, ok: true, sessionId, type: "answer", transfer: "missing-state" };
+        }
+        state.cDialog = {
+            callId: String(offer?.callId || offer?.sessionId || sessionId || "").trim() || null,
+            localTag: null,
+            remoteTag: null,
+        };
+        await notifyReferTransferController(state, "c_signaling_connected");
+        await notifyReferTransferController(state, "c_media_ready", {
+            callNonce: offer?.callNonce || null,
+        });
+        await notifyReferTransferController(state, "switch_committed");
+        clearReferTransferState(state.transferId);
+        return {
+            handled: true,
+            ok: true,
+            sessionId,
+            type: "answer",
+            transferId: state.transferId,
+            transferStage: "switch_committed",
+        };
+    }
     const resolved = pairResolutionForOffer(offer);
     if (!resolved?.poly || !resolved?.ref) return { handled: false };
     await enforceSingleCallBeforeAnswer(resolved.poly, resolved.ref);
@@ -1965,6 +2117,12 @@ async function onVerifiedNotifyAnswer(sessionId, offer, session) {
 
 // HTTP /notify "reject".
 async function onHttpReject(sessionId, offer) {
+    const directSession = sessions.get(sessionId);
+    if (directSession?.referTransfer?.enabled && directSession.referTransfer.mode === "controller") {
+        const state = referTransferStates.get(directSession.referTransfer.transferId);
+        await failReferTransfer(state, "c-rejected");
+        return { ok: true, type: "reject", sessionId, transferId: state?.transferId || null };
+    }
     const resolved = pairResolutionForOffer(offer);
     if (!resolved?.poly || !resolved?.ref) {
         const err = "unresolved-pair-for-http-reject";
@@ -1982,6 +2140,12 @@ async function onHttpReject(sessionId, offer) {
 
 // HTTP /notify "cancel".
 async function onHttpCancel(sessionId, offer) {
+    const directSession = sessions.get(sessionId);
+    if (directSession?.referTransfer?.enabled && directSession.referTransfer.mode === "controller") {
+        const state = referTransferStates.get(directSession.referTransfer.transferId);
+        await failReferTransfer(state, "c-cancelled");
+        return { ok: true, type: "cancel", sessionId, transferId: state?.transferId || null };
+    }
     const resolved = pairResolutionForOffer(offer);
     if (!resolved?.poly || !resolved?.ref) {
         const err = "unresolved-pair-for-http-cancel";
@@ -2029,6 +2193,10 @@ function isSessionInCall(session) {
 async function onTransportClosed(sessionId, event = {}) {
     if (multiringCoordinator.handleTransportClosed(event).handled) return;
     const session = sessions.get(sessionId);
+    if (session?.referTransfer?.enabled && session.referTransfer.mode === "controller") {
+        const state = referTransferStates.get(session.referTransfer.transferId);
+        await failReferTransfer(state, "transport-closed-during-transfer");
+    }
     const transportBinding = resolveSessionByPeerConnection(session, event.pc);
     // A 2nd call reuses the same sessionId on a fresh transport. The old call's PC
     // can fire `closed` after the new session is already bound under this id. If the
