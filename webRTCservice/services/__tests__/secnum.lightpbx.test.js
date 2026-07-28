@@ -7,7 +7,7 @@ const LABEL = "972557012401";
 const TARGET = `${"b".repeat(64)}.email.global`;
 const SECOND_TARGET = `${"c".repeat(64)}.email.global`;
 const WALLET = "0x5555555555555555555555555555555555555555";
-const IVR_TARGET = "sip:proj_j7t7dkhHYbeh6komMrB6xWnc@sip.api.openai.com;transport=tls";
+const IVR_TARGET = "sip:proj_7yVgTSBvJC4MpWvg257qY6kk@sip.api.openai.com;transport=tls";
 
 function buildHelpers({
     lightPbxRoute = null,

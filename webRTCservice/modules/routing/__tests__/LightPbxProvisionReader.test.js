@@ -15,7 +15,7 @@ const LABEL = "972557012401";
 const IDENTITY = `${LABEL}.secnumtest.global`;
 const TARGET = `${"a".repeat(64)}.email.global`;
 const SECOND_TARGET = `${"b".repeat(64)}.email.global`;
-const IVR_TARGET = "sip:proj_j7t7dkhHYbeh6komMrB6xWnc@sip.api.openai.com;transport=tls";
+const IVR_TARGET = "sip:proj_7yVgTSBvJC4MpWvg257qY6kk@sip.api.openai.com;transport=tls";
 
 function provision(overrides = {}) {
     const base = {

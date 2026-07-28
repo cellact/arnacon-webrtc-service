@@ -5,7 +5,7 @@ const { createInboundCallFlow } = require("../InboundCallFlow");
 
 const TARGET = `${"c".repeat(64)}.email.global`;
 const WALLET = "0x6666666666666666666666666666666666666666";
-const IVR_TARGET = "sip:proj_j7t7dkhHYbeh6komMrB6xWnc@sip.api.openai.com;transport=tls";
+const IVR_TARGET = "sip:proj_7yVgTSBvJC4MpWvg257qY6kk@sip.api.openai.com;transport=tls";
 
 function buildFlow(resolveInboundTarget, startMultiring = null) {
     const sessions = [];

@@ -1026,21 +1026,37 @@ async function handleInboundCallRequest(data, serviceContext = null) {
     const isReferCall = callType === "refer";
     const inboundDecision = await resolveInboundTarget(payload, payload.serviceId || null);
     if (isReferCall) {
-        // REFER callbacks use /inbound-call as policy lookup only. For non-external
-        // routes we pass-through at SIP layer (blind transfer semantics).
+        // REFER callbacks execute server-side blind transfer orchestration.
+        // Keep signaling/media on existing inbound/poly/sip methods only.
         if (inboundDecision?.route === "external-sip") {
             return inboundDecision;
         }
-        if (inboundDecision?.route === "reject") {
-            console.log(
-                `[Inbound][REFER] policy rejected target=${payload?.to || ""} (${inboundDecision.reason || "unknown"}) -> pass-through`,
-            );
-        } else {
-            console.log(
-                `[Inbound][REFER] policy route=${inboundDecision?.route || "none"} target=${payload?.to || ""} -> pass-through`,
-            );
+        if (inboundDecision?.route === "webrtc-multiring") {
+            const err = new Error("REFER does not support MULTI_RING targets");
+            err.statusCode = 422;
+            throw err;
         }
-        return { ok: true, route: "refer-pass-through", callType: "refer" };
+        const result = await inboundCallFlowApi.handleInboundCallRequest(payload, inboundDecision);
+        if (result?.route === "webrtc-multiring") {
+            const err = new Error("REFER does not support MULTI_RING targets");
+            err.statusCode = 422;
+            throw err;
+        }
+        if (result?.ok && result.sessionId) {
+            await seedInboundSipToWebrtcPoly(payload, result, {
+                reason: "refer-local-bridge",
+                referTransfer: true,
+            });
+        }
+        console.log(
+            `[Inbound][REFER] server transfer route=${inboundDecision?.route || "none"} target=${payload?.to || ""} -> refer-local-bridge-accepted`,
+        );
+        return {
+            ok: true,
+            route: "refer-local-bridge-accepted",
+            callType: "refer",
+            sessionId: result?.sessionId || null,
+        };
     }
     // A DIRECT route may reuse its one resolved endpoint. MULTI_RING must always
     // fan out from the current LightPBX target set; reusing one historical pair
