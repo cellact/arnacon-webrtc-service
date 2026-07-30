@@ -8,6 +8,14 @@ const { LEG_EVENTS, LEG_INTENTS } = require("../ports");
 const { LEG_STATES } = require("../states");
 const { assertIntentLegal } = require("../LegStateBehavior");
 
+function getSipFullRetryAttempts() {
+    return Math.max(0, Number(process.env.SIP_FULL_RETRY_ATTEMPTS || 2));
+}
+
+function getSipFullRetryDelayMs() {
+    return Math.max(0, Number(process.env.SIP_FULL_RETRY_DELAY_MS || 400));
+}
+
 class SipLeg extends SessionLeg {
     constructor({ id, endpoint, negotiation, logger = console } = {}) {
         super({ id, kind: "sip", endpoint, negotiation, logger });
@@ -41,10 +49,38 @@ class SipLeg extends SessionLeg {
     async _invite(ctx = {}) {
         if (this.state === LEG_STATES.RINGING || this.state === LEG_STATES.IN_CALL) return;
         this.setState(LEG_STATES.RINGING, { reason: "sip-invite", from: ctx.from ?? null });
-        await this._tx(() => this.negotiation.ring({ leg: this, ...ctx }));
-        if (this.state === LEG_STATES.RINGING) {
-            this.setState(LEG_STATES.IN_CALL, { reason: "sip-answered", from: ctx.from ?? null });
+        const totalAttempts = getSipFullRetryAttempts() + 1;
+        const retryDelayMs = getSipFullRetryDelayMs();
+        let lastErr = null;
+        for (let attempt = 1; attempt <= totalAttempts; attempt++) {
+            try {
+                await this._tx(() => this.negotiation.ring({ leg: this, ...ctx }));
+                if (this.state === LEG_STATES.RINGING) {
+                    this.setState(LEG_STATES.IN_CALL, { reason: "sip-answered", from: ctx.from ?? null });
+                }
+                return;
+            } catch (err) {
+                lastErr = err;
+                const canRetry = err?.code === "SIP_PC2_NOT_CONNECTED" && attempt < totalAttempts;
+                if (!canRetry) break;
+                this.logger.warn(
+                    `[${this.id}] SIP full re-invite retry ${attempt}/${totalAttempts - 1} after media transport failure`
+                );
+                if (this.state === LEG_STATES.RINGING) {
+                    this.setState(LEG_STATES.DISCONNECTED, { reason: "sip-invite-retry-reset", from: ctx.from ?? null });
+                    this.setState(LEG_STATES.RINGING, { reason: "sip-invite-retry", from: ctx.from ?? null });
+                }
+                if (retryDelayMs > 0) {
+                    await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+                }
+            }
         }
+
+        // Keep SIP failed invites from being treated as answered calls.
+        if (this.state === LEG_STATES.RINGING) {
+            this.setState(LEG_STATES.DISCONNECTED, { reason: "sip-invite-failed", from: ctx.from ?? null });
+        }
+        throw lastErr || new Error("sip-invite-failed");
     }
 
     async handleIngress(event = {}) {

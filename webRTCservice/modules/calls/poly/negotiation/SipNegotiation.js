@@ -82,7 +82,18 @@ class SipNegotiation extends CallNegotiationPort {
             await openOutbound();
             pc2Ready = await this._waitForPc2Connected(2500, 100);
             if (!pc2Ready) {
-                this.logger.warn(`[${this.id}] SIP leg PC2 still not connected after warm retry`);
+                const state = String(this.session?.sipPeerConnection?.connectionState || "unknown");
+                this.logger.error(
+                    `[${this.id}] SIP leg PC2 still not connected after warm retry (state=${state})`
+                );
+                try {
+                    await this.sip.close(this.session.sessionId, { reason: "sip-pc2-not-connected-after-retry" });
+                } catch (closeErr) {
+                    this.logger.warn(`[${this.id}] SIP leg post-retry close failed: ${closeErr.message}`);
+                }
+                const err = new Error(`sip-pc2-not-connected-after-retry:${state}`);
+                err.code = "SIP_PC2_NOT_CONNECTED";
+                throw err;
             }
         }
     }

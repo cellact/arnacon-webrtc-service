@@ -21,7 +21,12 @@ function fakeSipPort() {
 
 function makeLeg({ phoneNumber = null } = {}) {
     const sip = fakeSipPort();
-    const session = { sessionId: "972500|bob", callerEns: "972500", toIdentity: "bob.secnum.global" };
+    const session = {
+        sessionId: "972500|bob",
+        callerEns: "972500",
+        toIdentity: "bob.secnum.global",
+        sipPeerConnection: { connectionState: "connected" },
+    };
     const negotiation = new SipNegotiation({ id: "972500", endpoint: "972500", session, phoneNumber, sip, logger: silentLogger });
     const leg = new SipLeg({ id: "972500", endpoint: "972500", negotiation, logger: silentLogger });
     return { leg, sip, negotiation, session };
@@ -144,4 +149,27 @@ test("DTMF / HOLD ingress route to the sip aux handler without changing call sta
     assert.equal(leg.state, LEG_STATES.IN_CALL);
     assert.ok(sip.calls.find((c) => c.name === "dtmf" && c.digit === "5"));
     assert.ok(sip.calls.find((c) => c.name === "hold" && c.held === true));
+});
+
+test("ring hard-fails when PC2 never reaches connected after warm retry", async () => {
+    const prevAttempts = process.env.SIP_FULL_RETRY_ATTEMPTS;
+    const prevDelay = process.env.SIP_FULL_RETRY_DELAY_MS;
+    process.env.SIP_FULL_RETRY_ATTEMPTS = "0";
+    process.env.SIP_FULL_RETRY_DELAY_MS = "0";
+    const { leg, session, sip } = makeLeg();
+    session.sipPeerConnection.connectionState = "connecting";
+    leg.setState(LEG_STATES.CONNECTED, { from: "self" });
+    try {
+        await assert.rejects(
+            leg.ring({ from: "alice.secnum.global" }),
+            /sip-pc2-not-connected-after-retry/
+        );
+        assert.equal(leg.state, LEG_STATES.DISCONNECTED);
+        assert.equal(sip.calls.filter((c) => c.name === "openOutbound").length, 2);
+    } finally {
+        if (prevAttempts === undefined) delete process.env.SIP_FULL_RETRY_ATTEMPTS;
+        else process.env.SIP_FULL_RETRY_ATTEMPTS = prevAttempts;
+        if (prevDelay === undefined) delete process.env.SIP_FULL_RETRY_DELAY_MS;
+        else process.env.SIP_FULL_RETRY_DELAY_MS = prevDelay;
+    }
 });
