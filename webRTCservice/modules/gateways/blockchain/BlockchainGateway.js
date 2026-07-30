@@ -16,6 +16,10 @@ class BlockchainGateway {
         return this.blockchainApi.resolveEnsTextRecord(...args);
     }
 
+    resolveWalletByWeb2Identity(...args) {
+        return this.blockchainApi.resolveWalletByWeb2Identity(...args);
+    }
+
     verifyInitialOfferSignature(...args) {
         return this.blockchainApi.verifyInitialOfferSignature(...args);
     }

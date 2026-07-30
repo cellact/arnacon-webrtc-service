@@ -9,9 +9,37 @@ function createNotificationApi({
     logger = console,
     fetchImpl = fetch,
 }) {
+    function redactHeadersJson(headersJson) {
+        if (!headersJson || headersJson === "{}") return headersJson || "{}";
+        try {
+            const parsed = JSON.parse(headersJson);
+            const redacted = {};
+            for (const [k, v] of Object.entries(parsed)) {
+                const key = String(k || "").toLowerCase();
+                if (key.includes("authorization") || key.includes("x-api-key") || key.includes("token")) {
+                    redacted[k] = "***redacted***";
+                } else {
+                    redacted[k] = v;
+                }
+            }
+            return JSON.stringify(redacted);
+        } catch (_) {
+            return headersJson;
+        }
+    }
+
     async function resolveNotificationPlan(callerEns, calleeEns, message, notificationType) {
         const config = await blockchainApi.resolveCallerServiceProviderContract(callerEns);
         if (!config) throw new Error(`No service provider contract found for caller: ${callerEns}`);
+        logger.log("[Notification] provider config", {
+            callerEns,
+            calleeEns,
+            notificationType,
+            notificationRegistryAddress: config.notificationRegistryAddress || null,
+            networkName: config.networkName || null,
+            rpcUrl: config.rpcUrl || null,
+            source: config.isDefault ? "hardcoded" : "legacy-discovery",
+        });
         const provider = new ethers.providers.JsonRpcProvider(config.rpcUrl);
         const contract = new ethers.Contract(
             config.notificationRegistryAddress,
@@ -31,6 +59,20 @@ function createNotificationApi({
         const [steps] = contract.interface.decodeFunctionResult("getSignalingPlan", raw);
         if (!steps || steps.length === 0) {
             throw new Error("No signaling plan returned");
+        }
+        for (let i = 0; i < steps.length; i++) {
+            const step = steps[i];
+            logger.log("[Notification] fetched plan step", {
+                step: i + 1,
+                method: step.method || null,
+                url: step.url || null,
+                fallbackUrl: step.fallbackUrl || null,
+                contentType: step.contentType || null,
+                responseExtractField: step.responseExtractField || null,
+                placeholderKey: step.placeholderKey || null,
+                headers: redactHeadersJson(step.headers || "{}"),
+                body: step.body || "",
+            });
         }
         return steps;
     }
@@ -65,6 +107,17 @@ function createNotificationApi({
             const placeholderKey = step.placeholderKey;
 
             logger.log(`[Notification] Step ${i + 1}/${steps.length}: ${method}`);
+            logger.log("[Notification] Step evaluated", {
+                step: i + 1,
+                method,
+                url,
+                fallbackUrl,
+                contentType,
+                extractField: extractField || null,
+                placeholderKey: placeholderKey || null,
+                headers: redactHeadersJson(headers || "{}"),
+                body: body || "",
+            });
 
             if (method === "CLIENT_GENERATE") {
                 const value = handleClientGenerate(body);
@@ -157,6 +210,11 @@ function createNotificationApi({
 
                 logger.log(`[Notification] Step ${i + 1} extracted '${extractField}' -> ${placeholderKey}`);
                 if (placeholderKey) placeholders[placeholderKey] = extracted;
+                logger.log("[Notification] Placeholder updated", {
+                    step: i + 1,
+                    placeholderKey,
+                    placeholderValue: String(extracted),
+                });
             } else {
                 finalStep = { url, method, contentType, body, headers, fallbackUrl };
                 logger.log(`[Notification] Step ${i + 1} final HTTP stored: ${method} ${url}`);

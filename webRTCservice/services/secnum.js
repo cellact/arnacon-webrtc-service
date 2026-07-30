@@ -4,6 +4,7 @@ const IVR_WAITING_AUDIO_FILE = "waiting.mp3";
 const FORCED_IVR_SIP_URI =
     process.env.SECNUM_FORCED_IVR_SIP_URI ||
     "sip:proj_7yVgTSBvJC4MpWvg257qY6kk@sip.api.openai.com;transport=tls";
+const HARDCODED_OPENAI_INBOUND_DIDS = new Set(["972557012403"]);
 const MULTIRING_CONFIG_BASE_URL = "https://lightpbx-save-config-343948402138.europe-west1.run.app";
 const MULTIRING_CONFIG_TIMEOUT_MS = 2500;
 
@@ -31,7 +32,22 @@ function resolveInboundValue(payload, helpers) {
     return helpers.normalizePhone(firstLabel);
 }
 
-async function resolveEnsWallet(helpers, ensName) {
+function deriveWeb2Identity(value, helpers) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const firstLabel = raw.includes(".") ? raw.split(".")[0] : raw;
+    const normalized = helpers.normalizePhone(firstLabel).replace(/\D/g, "");
+    return /^\d+$/.test(normalized) ? normalized : "";
+}
+
+async function resolveEnsWallet(helpers, ensName, options = {}) {
+    const web2identity = String(options.web2identity || deriveWeb2Identity(ensName, helpers)).trim();
+    if (web2identity && typeof helpers.lookupWalletByWeb2Identity === "function") {
+        const mapped = await helpers.lookupWalletByWeb2Identity(web2identity);
+        if (mapped && mapped !== helpers.zeroAddress) {
+            return mapped;
+        }
+    }
     const addr = await helpers.lookupEnsAddress(ensName);
     if (addr && addr !== helpers.zeroAddress) {
         return addr;
@@ -136,7 +152,7 @@ async function resolveLightPbxInbound(targetValue, lookupContext, payload, helpe
 
     if (provision.type === "DIRECT") {
         const ensName = provision.targets[0];
-        const wallet = await resolveEnsWallet(helpers, ensName);
+        const wallet = await resolveEnsWallet(helpers, ensName, { web2identity: targetValue });
         if (!wallet) {
             helpers.logRouteDecision?.({
                 serviceId: "secnum",
@@ -176,7 +192,7 @@ async function resolveLightPbxInbound(targetValue, lookupContext, payload, helpe
 
     const resolvedTargets = await Promise.all(provision.targets.map(async (ensName) => ({
         ensName,
-        wallet: await resolveEnsWallet(helpers, ensName),
+        wallet: await resolveEnsWallet(helpers, ensName, { web2identity: deriveWeb2Identity(ensName, helpers) }),
     })));
     const targets = resolvedTargets.filter((target) => target.wallet);
     for (const target of resolvedTargets.filter((item) => !item.wallet)) {
@@ -308,7 +324,7 @@ async function buildConfiguredMultiRing(parsedTo, helpers) {
         const ensName = multiringTargetToEnsName(ringTarget, helpers, targetDomain);
         if (!ensName || seenEnsNames.has(ensName)) continue;
         seenEnsNames.add(ensName);
-        const wallet = await resolveEnsWallet(helpers, ensName);
+        const wallet = await resolveEnsWallet(helpers, ensName, { web2identity: targetValue });
         if (!wallet) continue;
         targets.push({ wallet, ensName });
     }
@@ -332,6 +348,21 @@ async function resolveInboundTarget(ctx) {
         return {
             route: "reject",
             reason: `No WebRTC user for (target empty, raw to='${String(payload?.to || "")}')`,
+        };
+    }
+    if (HARDCODED_OPENAI_INBOUND_DIDS.has(targetValue)) {
+        helpers.logRouteDecision?.({
+            serviceId: "secnum",
+            route: "hardcoded-openai-inbound",
+            targetValue,
+            callId: payload?.callId || null,
+            sipUri: FORCED_IVR_SIP_URI,
+        });
+        return {
+            route: "external-sip",
+            sipUri: FORCED_IVR_SIP_URI,
+            targetValue,
+            routingSource: "hardcoded-openai-inbound",
         };
     }
     const lightPbxLookup = lightPbxLookupContext(targetValue, payload);
@@ -358,7 +389,7 @@ async function resolveInboundTarget(ctx) {
             toDomain: inboundDomain || null,
             ensName,
         });
-        const wallet = await resolveEnsWallet(helpers, ensName);
+        const wallet = await resolveEnsWallet(helpers, ensName, { web2identity: targetValue });
         if (wallet) {
             helpers.logRouteDecision?.({
                 serviceId: "secnum",
@@ -395,7 +426,7 @@ async function resolveNumberAsOwnServiceTarget(parsedTo, helpers) {
             targetValue,
             ensName,
         });
-        const wallet = await resolveEnsWallet(helpers, ensName);
+        const wallet = await resolveEnsWallet(helpers, ensName, { web2identity: targetValue });
         helpers.logRouteDecision?.({
             serviceId: "secnum",
             route: wallet ? "number-to-own-webrtc-found" : "number-to-own-webrtc-miss",
@@ -454,7 +485,9 @@ async function resolveDestination(ctx) {
     if (parsedTo.type === "ens") {
         const ownDomains = getDomains(helpers);
         if (ownDomains.includes(parsedTo.domain || "")) {
-            const wallet = await resolveEnsWallet(helpers, parsedTo.full);
+            const wallet = await resolveEnsWallet(helpers, parsedTo.full, {
+                web2identity: deriveWeb2Identity(parsedTo.full, helpers),
+            });
             if (wallet) {
                 return { route: "webrtc", wallet, ensName: parsedTo.full };
             }

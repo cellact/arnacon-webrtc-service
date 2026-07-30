@@ -87,6 +87,7 @@ class ServiceContextFactory {
             lookupEnsOwner: (...args) => this.blockchainApi.resolveEnsToOwner(...args),
             lookupEnsAddress: (...args) => this.blockchainApi.resolveEnsToAddress(...args),
             lookupEnsTextRecord: (...args) => this.blockchainApi.resolveEnsTextRecord(...args),
+            lookupWalletByWeb2Identity: (...args) => this.blockchainApi.resolveWalletByWeb2Identity(...args),
             lookupNftOwnedNumber: (...args) => this.blockchainApi.nftGetOwnedNumber(...args),
             lookupBusinessNumber: (...args) => this.callRouterApi.roflFindBusinessNumber(...args),
             lookupBusinessNumberCascade: (...args) => this.callRouterApi.roflCascadingBusinessLookup(...args),

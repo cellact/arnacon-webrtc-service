@@ -1,3 +1,5 @@
+const fs = require("fs");
+const path = require("path");
 const { ethers } = require("ethers");
 
 function createBlockchainApi({
@@ -56,6 +58,48 @@ function createBlockchainApi({
         ROFL_LOGIC_CONFIG.callerIdPoolAddress ||
         NFT_CALLER_ID_POOL_ADDRESS;
     const ROFL_PKEY = process.env.ROFL_LOGIC_PKEY || process.env.PKEY || "";
+    const IDENTITY_MAPPING_CONFIG = config.identityMapping || {};
+    const DEFAULT_NOTIFICATION_PROVIDER_ADDRESS = "0xaf0eB7721935dAD1Dd5680cFA565696811eE601A";
+    const GCP_MAPPING_TOKEN_FILE = String(
+        process.env.GCP_MAPPING_TOKEN_FILE ||
+        process.env.ARNACON_GCP_MAPPING_TOKEN_FILE ||
+        IDENTITY_MAPPING_CONFIG.tokenFile ||
+        "",
+    ).trim();
+    const GCP_MAPPING_TOKEN_FILE_RESOLVED = GCP_MAPPING_TOKEN_FILE
+        ? path.resolve(GCP_MAPPING_TOKEN_FILE)
+        : "";
+    const GCP_ANS_MAPPING_URL = String(
+        process.env.GCP_ANS_MAPPING_URL ||
+        process.env.ARNACON_GCP_ANS_MAPPING_URL ||
+        IDENTITY_MAPPING_CONFIG.ansMappingUrl ||
+        "",
+    ).trim();
+    const GCP_WEB3_IDENTITY_MAPPING_URL = String(
+        process.env.GCP_WEB3_IDENTITY_MAPPING_URL ||
+        process.env.ARNACON_GCP_WEB3_IDENTITY_MAPPING_URL ||
+        IDENTITY_MAPPING_CONFIG.web3IdentityMappingUrl ||
+        "",
+    ).trim();
+    const GCP_MAPPING_REQUEST_TIMEOUT_MS = Number(
+        process.env.GCP_MAPPING_TIMEOUT_MS ||
+        process.env.ARNACON_GCP_MAPPING_TIMEOUT_MS ||
+        IDENTITY_MAPPING_CONFIG.timeoutMs ||
+        2500,
+    );
+    const SECNUM_DOMAINS = new Set(["secnum.global", "secnumtest.global"]);
+    const NOTIFICATION_PROVIDER_ADDRESS = normalizeContractAddress(
+        process.env.NOTIFICATION_PROVIDER_ADDRESS ||
+        process.env.SECNUM_NOTIFICATION_PROVIDER_ADDRESS ||
+        config.notificationProviderAddress ||
+        config.notificationProvider?.address ||
+        DEFAULT_NOTIFICATION_PROVIDER_ADDRESS,
+    );
+    const NOTIFICATION_PROVIDER_APPLY_ALL = String(
+        process.env.NOTIFICATION_PROVIDER_APPLY_ALL ||
+        config.notificationProviderApplyAll ||
+        "false",
+    ).toLowerCase() === "true";
 
     const ENS_REGISTRY_ABI = [
         "function owner(bytes32 node) view returns (address)",
@@ -100,6 +144,24 @@ function createBlockchainApi({
     let roflCallerIdIndex = 0;
     let roflAddress = null;
     let roflOwnerResolved = false;
+    let mappingConfigLogged = false;
+    let mappingTokenCachePath = "";
+    let mappingTokenCacheMtimeMs = 0;
+    let mappingTokenCacheValue = "";
+
+    function logMappingConfig() {
+        if (mappingConfigLogged) return;
+        mappingConfigLogged = true;
+        logger.log("[IdentityMapping] config", {
+            configured: Boolean(GCP_MAPPING_TOKEN_FILE_RESOLVED && GCP_ANS_MAPPING_URL),
+            tokenFile: GCP_MAPPING_TOKEN_FILE_RESOLVED || null,
+            ansMappingUrl: GCP_ANS_MAPPING_URL || null,
+            web3IdentityMappingUrl: GCP_WEB3_IDENTITY_MAPPING_URL || null,
+            timeoutMs: Number.isFinite(GCP_MAPPING_REQUEST_TIMEOUT_MS) && GCP_MAPPING_REQUEST_TIMEOUT_MS > 0
+                ? GCP_MAPPING_REQUEST_TIMEOUT_MS
+                : 2500,
+        });
+    }
 
     function getPolygonProvider() {
         if (!polygonProvider) polygonProvider = new ethers.providers.JsonRpcProvider(POLYGON_RPC);
@@ -217,6 +279,170 @@ function createBlockchainApi({
 
     function isEthAddress(str) {
         return /^0x[0-9a-fA-F]{40}$/.test(str);
+    }
+
+    function maskToken(token) {
+        if (!token) return "";
+        const trimmed = String(token).trim();
+        if (trimmed.length <= 12) return "***";
+        return `${trimmed.slice(0, 6)}...${trimmed.slice(-4)}`;
+    }
+
+    function normalizePhoneLabel(value) {
+        const raw = String(value || "").trim();
+        if (!raw) return "";
+        const normalized = raw.replace(/^\+/, "").replace(/\D/g, "");
+        return /^\d+$/.test(normalized) ? normalized : "";
+    }
+
+    function deriveWeb2Identity(identity) {
+        let value = String(identity || "").trim();
+        if (!value) return "";
+        if (/^sip:/i.test(value)) value = value.slice(4);
+        value = value.split(";")[0];
+        value = value.split("@")[0];
+        if (value.includes(".")) value = value.split(".")[0];
+        return normalizePhoneLabel(value);
+    }
+
+    function readMappingBearerToken() {
+        logMappingConfig();
+        if (!GCP_MAPPING_TOKEN_FILE_RESOLVED) return "";
+        try {
+            const stats = fs.statSync(GCP_MAPPING_TOKEN_FILE_RESOLVED);
+            if (
+                mappingTokenCachePath === GCP_MAPPING_TOKEN_FILE_RESOLVED
+                && mappingTokenCacheMtimeMs === stats.mtimeMs
+                && mappingTokenCacheValue
+            ) {
+                return mappingTokenCacheValue;
+            }
+            const token = String(fs.readFileSync(GCP_MAPPING_TOKEN_FILE_RESOLVED, "utf8") || "").trim();
+            mappingTokenCachePath = GCP_MAPPING_TOKEN_FILE_RESOLVED;
+            mappingTokenCacheMtimeMs = stats.mtimeMs;
+            mappingTokenCacheValue = token;
+            logger.log("[IdentityMapping] bearer token loaded", {
+                tokenFile: GCP_MAPPING_TOKEN_FILE_RESOLVED,
+                tokenMask: maskToken(token),
+            });
+            return token;
+        } catch (err) {
+            logger.warn(`[IdentityMapping] failed reading token file '${GCP_MAPPING_TOKEN_FILE_RESOLVED}': ${err.message}`);
+            return "";
+        }
+    }
+
+    async function fetchJsonWithBearer(baseUrl, queryParams, contextLabel) {
+        const token = readMappingBearerToken();
+        if (!baseUrl || !token) {
+            logger.log("[IdentityMapping] request skipped (missing config)", {
+                context: contextLabel,
+                hasUrl: Boolean(baseUrl),
+                hasToken: Boolean(token),
+            });
+            return null;
+        }
+        const timeoutMs = Number.isFinite(GCP_MAPPING_REQUEST_TIMEOUT_MS) && GCP_MAPPING_REQUEST_TIMEOUT_MS > 0
+            ? GCP_MAPPING_REQUEST_TIMEOUT_MS
+            : 2500;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const url = new URL(baseUrl);
+            for (const [key, value] of Object.entries(queryParams || {})) {
+                if (value !== undefined && value !== null && String(value).trim() !== "") {
+                    url.searchParams.set(key, String(value).trim());
+                }
+            }
+            logger.log("[IdentityMapping] calling endpoint", {
+                context: contextLabel,
+                url: url.toString(),
+            });
+            const resp = await fetch(url.toString(), {
+                method: "GET",
+                headers: { Authorization: `Bearer ${token}` },
+                signal: controller.signal,
+            });
+            if (!resp.ok) {
+                const body = await resp.text().catch(() => "");
+                logger.warn(`[IdentityMapping] ${contextLabel} http ${resp.status}: ${body}`);
+                return null;
+            }
+            const payload = await resp.json().catch(() => null);
+            const keys = payload && typeof payload === "object" ? Object.keys(payload) : [];
+            logger.log("[IdentityMapping] response shape", {
+                context: contextLabel,
+                keys,
+                hasWeb2Identity: Boolean(payload?.web2identity),
+                hasWeb3Identity: Boolean(payload?.web3identity),
+                hasWallet: Boolean(payload?.wallet),
+            });
+            return payload && typeof payload === "object" ? payload : null;
+        } catch (err) {
+            logger.warn(`[IdentityMapping] ${contextLabel} request error: ${err.message}`);
+            return null;
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    function checksumWalletOrNull(wallet) {
+        const raw = String(wallet || "").trim();
+        if (!raw) return null;
+        if (!isEthAddress(raw)) return null;
+        return ethers.utils.getAddress(raw);
+    }
+
+    async function resolveWalletByWeb2Identity(web2identity) {
+        const normalized = normalizePhoneLabel(web2identity);
+        if (!normalized) return null;
+        logMappingConfig();
+
+        const ansPayload = await fetchJsonWithBearer(
+            GCP_ANS_MAPPING_URL,
+            { web2identity: normalized },
+            `ans-mapping:${normalized}`,
+        );
+        const ansWallet = checksumWalletOrNull(ansPayload?.wallet);
+        if (ansWallet) {
+            logger.log("[IdentityMapping] wallet selected", {
+                web2identity: normalized,
+                walletSource: "gcp_ans_wallet",
+                wallet: ansWallet,
+            });
+            return ansWallet;
+        }
+
+        const web3identity = String(ansPayload?.web3identity || "").trim();
+        if (!web3identity) {
+            logger.log("[IdentityMapping] fallback reason", {
+                web2identity: normalized,
+                reason: "missing_web3identity_or_wallet",
+            });
+            return null;
+        }
+
+        const web3Payload = await fetchJsonWithBearer(
+            GCP_WEB3_IDENTITY_MAPPING_URL,
+            { web3identity },
+            `web3-identity-mapping:${web3identity}`,
+        );
+        const web3Wallet = checksumWalletOrNull(web3Payload?.wallet);
+        if (web3Wallet) {
+            logger.log("[IdentityMapping] wallet selected", {
+                web2identity: normalized,
+                web3identity,
+                walletSource: "gcp_web3_wallet",
+                wallet: web3Wallet,
+            });
+            return web3Wallet;
+        }
+        logger.log("[IdentityMapping] fallback reason", {
+            web2identity: normalized,
+            web3identity,
+            reason: "missing_wallet",
+        });
+        return null;
     }
 
     // Some clients (Android SDK envelope signing) double-prefix the hex sig as
@@ -371,6 +597,15 @@ function createBlockchainApi({
         if (isEthAddress(identity)) {
             return ethers.utils.getAddress(identity);
         }
+        const web2identity = deriveWeb2Identity(identity);
+        if (web2identity) {
+            const mappedWallet = await resolveWalletByWeb2Identity(web2identity);
+            if (mappedWallet) {
+                logger.log(`[Auth] signer source=gcp web2identity=${web2identity} wallet=${mappedWallet}`);
+                return mappedWallet;
+            }
+            logger.log(`[Auth] signer fallback=ens identity=${identity} web2identity=${web2identity}`);
+        }
         let wrappedOwner;
         try {
             wrappedOwner = await resolveWrappedOwner(identity);
@@ -441,6 +676,28 @@ function createBlockchainApi({
     async function resolveCallerServiceProviderContract(callerEns) {
         if (isEthAddress(callerEns)) return null;
         callerEns = normalizeEnsDomain(callerEns);
+        const normalizedCallerEns = String(callerEns || "").trim().toLowerCase();
+        const callerDomain = normalizedCallerEns.includes(".")
+            ? normalizedCallerEns.split(".").slice(1).join(".")
+            : "";
+        const useHardcodedProvider = Boolean(
+            NOTIFICATION_PROVIDER_ADDRESS
+            && (NOTIFICATION_PROVIDER_APPLY_ALL || SECNUM_DOMAINS.has(callerDomain)),
+        );
+        if (useHardcodedProvider) {
+            logger.log("[NotificationProvider] using hardcoded provider", {
+                callerEns: normalizedCallerEns || null,
+                callerDomain: callerDomain || null,
+                notificationRegistryAddress: NOTIFICATION_PROVIDER_ADDRESS,
+                source: "hardcoded",
+            });
+            return {
+                notificationRegistryAddress: NOTIFICATION_PROVIDER_ADDRESS,
+                networkName: "polygon",
+                rpcUrl: POLYGON_RPC,
+                isDefault: true,
+            };
+        }
         const provider = getPolygonProvider();
         const spr = new ethers.Contract(SERVICE_PROVIDER_REGISTRY_ADDRESS, SERVICE_PROVIDER_REGISTRY_ABI, provider);
         let serviceRegistryAddress;
@@ -576,6 +833,7 @@ function createBlockchainApi({
         resolveEnsToAddress,
         resolveEnsTextRecord,
         resolveWrappedOwner,
+        resolveWalletByWeb2Identity,
         verifyInitialOfferSignature,
         verifyParticipantSignature,
         verifyAnswerSignature,

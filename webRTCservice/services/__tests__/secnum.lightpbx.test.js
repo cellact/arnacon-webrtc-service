@@ -2,6 +2,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
 const secnum = require("../secnum");
+const { createBlockchainApi } = require("../../modules/gateways/blockchain/BlockchainApi");
 
 const LABEL = "972557012401";
 const TARGET = `${"b".repeat(64)}.email.global`;
@@ -14,11 +15,13 @@ function buildHelpers({
     lightPbxError = null,
     addresses = {},
     owners = {},
+    gcpWallets = {},
 } = {}) {
     const calls = {
         lightPbx: [],
         addresses: [],
         owners: [],
+        gcp: [],
         decisions: [],
     };
     return {
@@ -40,6 +43,10 @@ function buildHelpers({
             lookupEnsOwner: async (ensName) => {
                 calls.owners.push(ensName);
                 return owners[ensName] || null;
+            },
+            lookupWalletByWeb2Identity: async (web2identity) => {
+                calls.gcp.push(web2identity);
+                return gcpWallets[web2identity] || null;
             },
             logRouteDecision: (decision) => calls.decisions.push(decision),
         },
@@ -276,4 +283,94 @@ test("an unresolved DIRECT target is rejected without falling through to legacy 
     assert.deepEqual(calls.addresses, [TARGET]);
     assert.deepEqual(calls.owners, [TARGET]);
     assert.equal(calls.decisions.at(-1).route, "lightpbx-direct-target-unavailable");
+});
+
+test("inbound lookup uses GCP wallet first for numeric identity", async () => {
+    const numberIdentity = `${LABEL}.secnumtest.global`;
+    const gcpWallet = "0x1111111111111111111111111111111111111111";
+    const { helpers, calls } = buildHelpers({
+        lightPbxRoute: null,
+        gcpWallets: {
+            [LABEL]: gcpWallet,
+        },
+        addresses: {
+            [numberIdentity]: WALLET,
+        },
+    });
+    const result = await secnum.resolveInboundTarget({
+        payload: {
+            to: LABEL,
+            callId: "call-gcp-hit",
+        },
+        helpers,
+    });
+    assert.equal(result.route, "webrtc");
+    assert.equal(result.wallet, gcpWallet);
+    assert.deepEqual(calls.gcp, [LABEL]);
+    assert.deepEqual(calls.addresses, []);
+    assert.deepEqual(calls.owners, []);
+});
+
+test("inbound lookup falls back to ENS when GCP wallet missing", async () => {
+    const numberIdentity = `${LABEL}.secnumtest.global`;
+    const { helpers, calls } = buildHelpers({
+        lightPbxRoute: null,
+        gcpWallets: {},
+        addresses: {
+            [numberIdentity]: WALLET,
+        },
+    });
+    const result = await secnum.resolveInboundTarget({
+        payload: {
+            to: LABEL,
+            callId: "call-gcp-fallback",
+        },
+        helpers,
+    });
+    assert.equal(result.route, "webrtc");
+    assert.equal(result.wallet, WALLET);
+    assert.deepEqual(calls.gcp, [LABEL]);
+    assert.deepEqual(calls.addresses, [numberIdentity]);
+});
+
+function minimalBlockchainConfig() {
+    return {
+        polygon: {
+            rpc: "http://127.0.0.1:8545",
+            ENSRegistry: "0x0000000000000000000000000000000000000001",
+            NameWrapper: "0x0000000000000000000000000000000000000002",
+            ServiceProviderRegistry: "0x0000000000000000000000000000000000000003",
+        },
+        sapphire: { rpc: "http://127.0.0.1:8546" },
+        sapphireTestnet: {
+            rpc: "http://127.0.0.1:8547",
+            NFTCallerIdPool: "0x0000000000000000000000000000000000000004",
+        },
+        roflLogic: {},
+    };
+}
+
+test("notification provider uses hardcoded default for secnum domains", async () => {
+    delete process.env.NOTIFICATION_PROVIDER_ADDRESS;
+    delete process.env.SECNUM_NOTIFICATION_PROVIDER_ADDRESS;
+    const api = createBlockchainApi({
+        config: minimalBlockchainConfig(),
+        createHttpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }),
+        logger: { log() {}, warn() {}, error() {} },
+    });
+    const cfg = await api.resolveCallerServiceProviderContract("972557012402.secnumtest.global");
+    assert.equal(cfg.notificationRegistryAddress, "0xaf0eB7721935dAD1Dd5680cFA565696811eE601A");
+    assert.equal(cfg.isDefault, true);
+});
+
+test("notification provider address override is honored", async () => {
+    process.env.NOTIFICATION_PROVIDER_ADDRESS = "0x2222222222222222222222222222222222222222";
+    const api = createBlockchainApi({
+        config: minimalBlockchainConfig(),
+        createHttpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }),
+        logger: { log() {}, warn() {}, error() {} },
+    });
+    const cfg = await api.resolveCallerServiceProviderContract("972557012402.secnum.global");
+    assert.equal(cfg.notificationRegistryAddress, "0x2222222222222222222222222222222222222222");
+    delete process.env.NOTIFICATION_PROVIDER_ADDRESS;
 });

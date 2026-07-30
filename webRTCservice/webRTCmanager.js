@@ -324,6 +324,9 @@ const config = {
     sapphire: pickRuntimeConfig("sapphire", {}),
     sapphireTestnet: pickRuntimeConfig("sapphireTestnet", {}),
     roflLogic: pickRuntimeConfig("roflLogic", {}),
+    identityMapping: pickRuntimeConfig("identityMapping", {}),
+    notificationProviderAddress: pickRuntimeConfig("notificationProviderAddress", ""),
+    notificationProviderApplyAll: pickRuntimeConfig("notificationProviderApplyAll", false),
 };
 const serviceRuntimes = loadedServices;
 const selectedServiceId = process.env.SERVICE_ID || null;
@@ -1049,8 +1052,9 @@ async function notifyReferTransferController(state, stage, extras = {}) {
         media: {
             aParticipantLabel: state.aParticipantLabel || null,
             cParticipantLabel: state.cParticipantLabel || null,
-            iceConnected: stage === "c_media_ready",
-            dtlsConnected: stage === "c_media_ready",
+            // Optimistic transfer mode: treat signaling answer as enough to commit.
+            iceConnected: stage === "c_media_ready" || stage === "switch_committed",
+            dtlsConnected: stage === "c_media_ready" || stage === "switch_committed",
         },
         ...extras,
     };
@@ -2090,9 +2094,7 @@ async function onVerifiedNotifyAnswer(sessionId, offer, session) {
             remoteTag: null,
         };
         await notifyReferTransferController(state, "c_signaling_connected");
-        await notifyReferTransferController(state, "c_media_ready", {
-            callNonce: offer?.callNonce || null,
-        });
+        // Optimistic cutover: commit on signaling answer and accept brief silence risk.
         await notifyReferTransferController(state, "switch_committed");
         clearReferTransferState(state.transferId);
         return {
@@ -2129,9 +2131,10 @@ async function onHttpReject(sessionId, offer) {
     }
     const resolved = pairResolutionForOffer(offer);
     if (!resolved?.poly || !resolved?.ref) {
+        // Transfer controller may already have committed/cleared state when late reject arrives.
         const err = "unresolved-pair-for-http-reject";
-        console.error(`[${sessionId || "no-session"}] ${err}`);
-        return { ok: false, error: err, type: "reject", sessionId };
+        console.warn(`[${sessionId || "no-session"}] ${err} (ignored late/duplicate reject)`);
+        return { ok: true, ignored: true, type: "reject", sessionId };
     }
     try {
         await resolved.poly.onIngress(resolved.ref, polyIngress.toLegEvent("reject", {}, {}));
