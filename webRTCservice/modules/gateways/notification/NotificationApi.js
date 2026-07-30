@@ -196,7 +196,7 @@ function createNotificationApi({
         const placeholders = {
             ...(options.initialPlaceholders || {}),
         };
-        let finalStep = null;
+        let lastHttpResult = null;
         let i = 0;
 
         while (i < steps.length) {
@@ -296,6 +296,10 @@ function createNotificationApi({
             if (extractField) {
                 logger.log(`[Notification] Step ${i + 1} intermediate HTTP: ${method} ${url}`);
                 let result = await executeHttpRequest(url, method, contentType, body, headers);
+                logger.log(
+                    `[Notification] Step ${i + 1} intermediate result ` +
+                    `success=${result.success} status=${result.statusCode}`
+                );
 
                 if (!result.success && fallbackUrl) {
                     logger.log(`[Notification] Step ${i + 1} primary failed (${result.statusCode}), trying fallback: ${fallbackUrl}`);
@@ -321,36 +325,44 @@ function createNotificationApi({
                     placeholderValue: String(extracted),
                 });
             } else {
-                finalStep = { url, method, contentType, body, headers, fallbackUrl };
-                logger.log(`[Notification] Step ${i + 1} final HTTP stored: ${method} ${url}`);
+                logger.log(`[Notification] Step ${i + 1} final HTTP executing: ${method} ${url}`);
+                let result = await executeHttpRequest(url, method, contentType, body, headers);
+                logger.log(
+                    `[Notification] Step ${i + 1} final HTTP result ` +
+                    `success=${result.success} status=${result.statusCode}`
+                );
+
+                if (!result.success && fallbackUrl) {
+                    logger.log(
+                        `[Notification] Step ${i + 1} primary URL failed status=${result.statusCode} ` +
+                        `body=${result.responseBody || ""}, trying fallback: ${fallbackUrl}`
+                    );
+                    result = await executeHttpRequest(fallbackUrl, method, contentType, body, headers);
+                    logger.log(
+                        `[Notification] Step ${i + 1} fallback result success=${result.success} ` +
+                        `status=${result.statusCode} body=${result.responseBody || ""}`
+                    );
+                }
+
+                if (!result.success) {
+                    return {
+                        success: false,
+                        statusCode: result.statusCode,
+                        error: `HTTP step ${i + 1} failed (HTTP ${result.statusCode})`,
+                        responseBody: result.responseBody || null,
+                    };
+                }
+
+                lastHttpResult = result;
             }
             i++;
         }
 
-        if (!finalStep) {
+        if (!lastHttpResult) {
             return { success: false, statusCode: -1, error: "No final HTTP step found in plan" };
         }
 
-        logger.log(`[Notification] Executing final HTTP step: ${finalStep.method} ${finalStep.url}`);
-        let result = await executeHttpRequest(
-            finalStep.url, finalStep.method, finalStep.contentType, finalStep.body, finalStep.headers,
-        );
-
-        if (!result.success && finalStep.fallbackUrl) {
-            logger.log(
-                `[Notification] Final step primary URL failed status=${result.statusCode} ` +
-                `body=${result.responseBody || ""}, trying fallback`
-            );
-            result = await executeHttpRequest(
-                finalStep.fallbackUrl, finalStep.method, finalStep.contentType, finalStep.body, finalStep.headers,
-            );
-            logger.log(
-                `[Notification] Final step fallback result success=${result.success} ` +
-                `status=${result.statusCode} body=${result.responseBody || ""}`
-            );
-        }
-
-        return result;
+        return lastHttpResult;
     }
 
     async function handleClientEthSign(dataToSign) {
