@@ -58,18 +58,29 @@ function createBlockchainApi({
         NFT_CALLER_ID_POOL_ADDRESS;
     const ROFL_PKEY = process.env.ROFL_LOGIC_PKEY || process.env.PKEY || "";
     const IDENTITY_MAPPING_CONFIG = config.identityMapping || {};
+    const DEFAULT_GCP_SERVICE_ACCOUNT_JSON_FILE = "/etc/webrtcservice/secrets/kamailio-gcp-mapping-sa.json";
+    const DEFAULT_GCP_ANS_MAPPING_URL =
+        "https://europe-west1-arnacon-staging-production.cloudfunctions.net/ans-mapping";
+    const DEFAULT_GCP_WEB3_IDENTITY_MAPPING_URL =
+        "https://europe-west1-arnacon-staging-production.cloudfunctions.net/web3-identity-mapping";
     const DEFAULT_NOTIFICATION_PROVIDER_ADDRESS = "0xf648a26677aa51e62fFEaE40B2c7C8E26e0f464d";
+    const EFFECTIVE_IDENTITY_MAPPING_CONFIG = {
+        ...IDENTITY_MAPPING_CONFIG,
+        serviceAccountJsonFile:
+            IDENTITY_MAPPING_CONFIG.serviceAccountJsonFile ||
+            DEFAULT_GCP_SERVICE_ACCOUNT_JSON_FILE,
+    };
     const GCP_ANS_MAPPING_URL = String(
         process.env.GCP_ANS_MAPPING_URL ||
         process.env.ARNACON_GCP_ANS_MAPPING_URL ||
         IDENTITY_MAPPING_CONFIG.ansMappingUrl ||
-        "",
+        DEFAULT_GCP_ANS_MAPPING_URL,
     ).trim();
     const GCP_WEB3_IDENTITY_MAPPING_URL = String(
         process.env.GCP_WEB3_IDENTITY_MAPPING_URL ||
         process.env.ARNACON_GCP_WEB3_IDENTITY_MAPPING_URL ||
         IDENTITY_MAPPING_CONFIG.web3IdentityMappingUrl ||
-        "",
+        DEFAULT_GCP_WEB3_IDENTITY_MAPPING_URL,
     ).trim();
     const GCP_MAPPING_REQUEST_TIMEOUT_MS = Number(
         process.env.GCP_MAPPING_TIMEOUT_MS ||
@@ -78,7 +89,7 @@ function createBlockchainApi({
         2500,
     );
     const identityMappingAuthService = createIdentityMappingAuthService({
-        identityMappingConfig: IDENTITY_MAPPING_CONFIG,
+        identityMappingConfig: EFFECTIVE_IDENTITY_MAPPING_CONFIG,
         logger,
         timeoutMs: GCP_MAPPING_REQUEST_TIMEOUT_MS,
     });
