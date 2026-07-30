@@ -104,7 +104,7 @@ function createBlockchainApi({
     const NOTIFICATION_PROVIDER_APPLY_ALL = String(
         process.env.NOTIFICATION_PROVIDER_APPLY_ALL ||
         config.notificationProviderApplyAll ||
-        "false",
+        "true",
     ).toLowerCase() === "true";
 
     const ENS_REGISTRY_ABI = [
