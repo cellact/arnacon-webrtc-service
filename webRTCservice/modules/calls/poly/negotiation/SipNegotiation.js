@@ -32,6 +32,20 @@ class SipNegotiation extends CallNegotiationPort {
         this.logger = logger;
     }
 
+    _sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async _waitForPc2Connected(timeoutMs = 2500, pollMs = 100) {
+        const startedAt = Date.now();
+        while ((Date.now() - startedAt) < timeoutMs) {
+            const state = String(this.session?.sipPeerConnection?.connectionState || "").toLowerCase();
+            if (state === "connected") return true;
+            await this._sleep(pollMs);
+        }
+        return false;
+    }
+
     async connect() {
         // SIP registration/INVITE happens on ring()/answer(); nothing to pre-establish.
     }
@@ -43,12 +57,34 @@ class SipNegotiation extends CallNegotiationPort {
     // no stored "outbound vs inbound" to check, the intent itself is the decision.
     async ring(ctx = {}) {
         if (this.session.sipConnection) return; // already up -> idempotent
-        await this.sip.openOutbound(this.session.sessionId, {
-            target: this.endpoint,
-            // Prefer the resolved SBC caller-id over the raw peer ref.
-            from: this.session.sipFrom || ctx.from || null,
-            sipDirective: this.session.sipDirective || null,
-        });
+        const openOutbound = async () => {
+            await this.sip.openOutbound(this.session.sessionId, {
+                target: this.endpoint,
+                // Prefer the resolved SBC caller-id over the raw peer ref.
+                from: this.session.sipFrom || ctx.from || null,
+                sipDirective: this.session.sipDirective || null,
+            });
+        };
+
+        await openOutbound();
+
+        // Cold-start race guard: we sometimes get SIP "Established" but PC2 never
+        // reaches a usable connected state on the first invite. The immediate next
+        // invite usually succeeds, so do one automatic warm retry in-band.
+        let pc2Ready = await this._waitForPc2Connected(2500, 100);
+        if (!pc2Ready) {
+            this.logger.warn(`[${this.id}] SIP leg PC2 did not reach connected; retrying outbound SIP leg once`);
+            try {
+                await this.sip.close(this.session.sessionId);
+            } catch (err) {
+                this.logger.warn(`[${this.id}] SIP leg warm-retry close failed: ${err.message}`);
+            }
+            await openOutbound();
+            pc2Ready = await this._waitForPc2Connected(2500, 100);
+            if (!pc2Ready) {
+                this.logger.warn(`[${this.id}] SIP leg PC2 still not connected after warm retry`);
+            }
+        }
     }
 
     // The peer picked up => accept: register as the callee number and accept the
