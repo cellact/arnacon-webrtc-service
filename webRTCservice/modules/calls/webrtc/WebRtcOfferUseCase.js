@@ -52,7 +52,10 @@ function createOfferFlow({
 
     function assertAllowedInitialOfferFrom(from, sessionId, serviceId = null) {
         const parsedFrom = parseAddress(normalizeAddress(from || ""), serviceId);
-        const isAllowed = parsedFrom.type === "ens" || parsedFrom.type === "email";
+        const fromLabel = identityLabel(String(from || "").toLowerCase());
+        const isNumericLabel = /^\d+$/.test(fromLabel);
+        const isSecnumNumeric = serviceId === "secnum" && isNumericLabel;
+        const isAllowed = parsedFrom.type === "ens" || parsedFrom.type === "email" || isSecnumNumeric;
         if (!isAllowed) {
             throw createHttpError(403, `Unsupported from format for initial offer: ${from}`);
         }
