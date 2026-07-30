@@ -1,6 +1,5 @@
-const fs = require("fs");
-const path = require("path");
 const { ethers } = require("ethers");
+const { createIdentityMappingAuthService } = require("../../../services/identityMappingAuthService");
 
 function createBlockchainApi({
     config,
@@ -59,16 +58,7 @@ function createBlockchainApi({
         NFT_CALLER_ID_POOL_ADDRESS;
     const ROFL_PKEY = process.env.ROFL_LOGIC_PKEY || process.env.PKEY || "";
     const IDENTITY_MAPPING_CONFIG = config.identityMapping || {};
-    const DEFAULT_NOTIFICATION_PROVIDER_ADDRESS = "0xaf0eB7721935dAD1Dd5680cFA565696811eE601A";
-    const GCP_MAPPING_TOKEN_FILE = String(
-        process.env.GCP_MAPPING_TOKEN_FILE ||
-        process.env.ARNACON_GCP_MAPPING_TOKEN_FILE ||
-        IDENTITY_MAPPING_CONFIG.tokenFile ||
-        "",
-    ).trim();
-    const GCP_MAPPING_TOKEN_FILE_RESOLVED = GCP_MAPPING_TOKEN_FILE
-        ? path.resolve(GCP_MAPPING_TOKEN_FILE)
-        : "";
+    const DEFAULT_NOTIFICATION_PROVIDER_ADDRESS = "0xf648a26677aa51e62fFEaE40B2c7C8E26e0f464d";
     const GCP_ANS_MAPPING_URL = String(
         process.env.GCP_ANS_MAPPING_URL ||
         process.env.ARNACON_GCP_ANS_MAPPING_URL ||
@@ -87,6 +77,11 @@ function createBlockchainApi({
         IDENTITY_MAPPING_CONFIG.timeoutMs ||
         2500,
     );
+    const identityMappingAuthService = createIdentityMappingAuthService({
+        identityMappingConfig: IDENTITY_MAPPING_CONFIG,
+        logger,
+        timeoutMs: GCP_MAPPING_REQUEST_TIMEOUT_MS,
+    });
     const SECNUM_DOMAINS = new Set(["secnum.global", "secnumtest.global"]);
     const NOTIFICATION_PROVIDER_ADDRESS = normalizeContractAddress(
         process.env.NOTIFICATION_PROVIDER_ADDRESS ||
@@ -145,16 +140,18 @@ function createBlockchainApi({
     let roflAddress = null;
     let roflOwnerResolved = false;
     let mappingConfigLogged = false;
-    let mappingTokenCachePath = "";
-    let mappingTokenCacheMtimeMs = 0;
-    let mappingTokenCacheValue = "";
 
     function logMappingConfig() {
         if (mappingConfigLogged) return;
         mappingConfigLogged = true;
+        const authSnapshot = identityMappingAuthService.getConfigSnapshot();
         logger.log("[IdentityMapping] config", {
-            configured: Boolean(GCP_MAPPING_TOKEN_FILE_RESOLVED && GCP_ANS_MAPPING_URL),
-            tokenFile: GCP_MAPPING_TOKEN_FILE_RESOLVED || null,
+            configured: Boolean((authSnapshot.hasServiceAccount || authSnapshot.hasTokenFile) && GCP_ANS_MAPPING_URL),
+            authMode: authSnapshot.authMode,
+            tokenFile: authSnapshot.tokenFile,
+            serviceAccountJsonFile: authSnapshot.serviceAccountJsonFile,
+            idTokenAudience: authSnapshot.idTokenAudience,
+            oauthTokenUrl: authSnapshot.oauthTokenUrl,
             ansMappingUrl: GCP_ANS_MAPPING_URL || null,
             web3IdentityMappingUrl: GCP_WEB3_IDENTITY_MAPPING_URL || null,
             timeoutMs: Number.isFinite(GCP_MAPPING_REQUEST_TIMEOUT_MS) && GCP_MAPPING_REQUEST_TIMEOUT_MS > 0
@@ -281,13 +278,6 @@ function createBlockchainApi({
         return /^0x[0-9a-fA-F]{40}$/.test(str);
     }
 
-    function maskToken(token) {
-        if (!token) return "";
-        const trimmed = String(token).trim();
-        if (trimmed.length <= 12) return "***";
-        return `${trimmed.slice(0, 6)}...${trimmed.slice(-4)}`;
-    }
-
     function normalizePhoneLabel(value) {
         const raw = String(value || "").trim();
         if (!raw) return "";
@@ -305,35 +295,9 @@ function createBlockchainApi({
         return normalizePhoneLabel(value);
     }
 
-    function readMappingBearerToken() {
-        logMappingConfig();
-        if (!GCP_MAPPING_TOKEN_FILE_RESOLVED) return "";
-        try {
-            const stats = fs.statSync(GCP_MAPPING_TOKEN_FILE_RESOLVED);
-            if (
-                mappingTokenCachePath === GCP_MAPPING_TOKEN_FILE_RESOLVED
-                && mappingTokenCacheMtimeMs === stats.mtimeMs
-                && mappingTokenCacheValue
-            ) {
-                return mappingTokenCacheValue;
-            }
-            const token = String(fs.readFileSync(GCP_MAPPING_TOKEN_FILE_RESOLVED, "utf8") || "").trim();
-            mappingTokenCachePath = GCP_MAPPING_TOKEN_FILE_RESOLVED;
-            mappingTokenCacheMtimeMs = stats.mtimeMs;
-            mappingTokenCacheValue = token;
-            logger.log("[IdentityMapping] bearer token loaded", {
-                tokenFile: GCP_MAPPING_TOKEN_FILE_RESOLVED,
-                tokenMask: maskToken(token),
-            });
-            return token;
-        } catch (err) {
-            logger.warn(`[IdentityMapping] failed reading token file '${GCP_MAPPING_TOKEN_FILE_RESOLVED}': ${err.message}`);
-            return "";
-        }
-    }
-
     async function fetchJsonWithBearer(baseUrl, queryParams, contextLabel) {
-        const token = readMappingBearerToken();
+        logMappingConfig();
+        const token = await identityMappingAuthService.getBearerToken(baseUrl, contextLabel);
         if (!baseUrl || !token) {
             logger.log("[IdentityMapping] request skipped (missing config)", {
                 context: contextLabel,

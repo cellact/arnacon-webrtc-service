@@ -28,12 +28,94 @@ function createNotificationApi({
         }
     }
 
-    async function resolveNotificationPlan(callerEns, calleeEns, message, notificationType) {
+    function isEthAddress(value) {
+        return /^0x[0-9a-fA-F]{40}$/.test(String(value || "").trim());
+    }
+
+    function checksumWalletOrNull(value) {
+        try {
+            if (!isEthAddress(value)) return null;
+            return ethers.utils.getAddress(String(value).trim());
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function normalizePhoneLabel(value) {
+        const raw = String(value || "").trim();
+        if (!raw) return "";
+        const normalized = raw.replace(/^\+/, "").replace(/\D/g, "");
+        return /^\d+$/.test(normalized) ? normalized : "";
+    }
+
+    function deriveWeb2Identity(identity) {
+        let value = String(identity || "").trim();
+        if (!value) return "";
+        if (/^sip:/i.test(value)) value = value.slice(4);
+        value = value.split(";")[0];
+        value = value.split("@")[0];
+        if (value.includes(".")) value = value.split(".")[0];
+        return normalizePhoneLabel(value);
+    }
+
+    async function resolveTargetWallet(calleeEns, options = {}) {
+        const providedWallet = checksumWalletOrNull(options.targetWallet);
+        if (providedWallet) {
+            logger.log("[Notification] target wallet source", { source: "provided", wallet: providedWallet });
+            return providedWallet;
+        }
+
+        if (typeof blockchainApi.resolveWalletByWeb2Identity === "function") {
+            const web2identity = String(options.web2identity || deriveWeb2Identity(calleeEns)).trim();
+            if (web2identity) {
+                const mapped = checksumWalletOrNull(await blockchainApi.resolveWalletByWeb2Identity(web2identity));
+                if (mapped) {
+                    logger.log("[Notification] target wallet source", {
+                        source: "gcp",
+                        calleeEns,
+                        web2identity,
+                        wallet: mapped,
+                    });
+                    return mapped;
+                }
+                logger.log("[Notification] target wallet miss", {
+                    source: "gcp",
+                    calleeEns,
+                    web2identity,
+                });
+            }
+        }
+
+        if (typeof blockchainApi.resolveEnsToAddress === "function" && calleeEns) {
+            try {
+                const ensWallet = checksumWalletOrNull(await blockchainApi.resolveEnsToAddress(calleeEns));
+                if (ensWallet) {
+                    logger.log("[Notification] target wallet source", {
+                        source: "ens-fallback",
+                        calleeEns,
+                        wallet: ensWallet,
+                    });
+                    return ensWallet;
+                }
+            } catch (err) {
+                logger.warn(`[Notification] ENS fallback lookup failed for ${calleeEns}: ${err.message}`);
+            }
+        }
+
+        return null;
+    }
+
+    async function resolveNotificationPlanContext(callerEns, calleeEns, message, notificationType, options = {}) {
         const config = await blockchainApi.resolveCallerServiceProviderContract(callerEns);
         if (!config) throw new Error(`No service provider contract found for caller: ${callerEns}`);
+        const targetWallet = await resolveTargetWallet(calleeEns, options);
+        if (!targetWallet) {
+            throw new Error(`No target wallet resolved for notification callee: ${calleeEns}`);
+        }
         logger.log("[Notification] provider config", {
             callerEns,
             calleeEns,
+            targetWallet,
             notificationType,
             notificationRegistryAddress: config.notificationRegistryAddress || null,
             networkName: config.networkName || null,
@@ -47,8 +129,8 @@ function createNotificationApi({
             provider,
         );
 
-        const callData = contract.interface.encodeFunctionData("getSignalingPlan", [
-            callerEns, calleeEns, message, notificationType,
+        const callData = contract.interface.encodeFunctionData("getApplicationTokenPlan", [
+            callerEns, targetWallet, message, notificationType,
         ]);
         const raw = await provider.call({
             to: config.notificationRegistryAddress,
@@ -56,7 +138,7 @@ function createNotificationApi({
             from: ethers.constants.AddressZero,
         });
 
-        const [steps] = contract.interface.decodeFunctionResult("getSignalingPlan", raw);
+        const [steps] = contract.interface.decodeFunctionResult("getApplicationTokenPlan", raw);
         if (!steps || steps.length === 0) {
             throw new Error("No signaling plan returned");
         }
@@ -74,23 +156,46 @@ function createNotificationApi({
                 body: step.body || "",
             });
         }
+        return { steps, targetWallet };
+    }
+
+    async function resolveNotificationPlan(callerEns, calleeEns, message, notificationType, options = {}) {
+        const { steps } = await resolveNotificationPlanContext(
+            callerEns,
+            calleeEns,
+            message,
+            notificationType,
+            options,
+        );
         return steps;
     }
 
-    async function executeNotificationPlan(steps) {
-        return executePlan(steps);
+    async function executeNotificationPlan(steps, options = {}) {
+        return executePlan(steps, options);
     }
 
-    async function sendNotification(callerEns, calleeEns, message, notificationType = notiTypeCall) {
+    async function sendNotification(callerEns, calleeEns, message, notificationType = notiTypeCall, options = {}) {
         logger.log(`[Notification] Sending from=${callerEns} to=${calleeEns}, type=${notificationType}`);
-        const steps = await resolveNotificationPlan(callerEns, calleeEns, message, notificationType);
-        const result = await executeNotificationPlan(steps);
+        const { steps, targetWallet } = await resolveNotificationPlanContext(
+            callerEns,
+            calleeEns,
+            message,
+            notificationType,
+            options,
+        );
+        const result = await executeNotificationPlan(steps, {
+            initialPlaceholders: {
+                "{{TARGET_ADDR}}": targetWallet,
+            },
+        });
         if (!result.success) throw new Error(`Plan-based execution failed (HTTP ${result.statusCode})`);
         return result;
     }
 
-    async function executePlan(steps) {
-        const placeholders = {};
+    async function executePlan(steps, options = {}) {
+        const placeholders = {
+            ...(options.initialPlaceholders || {}),
+        };
         let finalStep = null;
         let i = 0;
 

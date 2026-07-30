@@ -117,7 +117,10 @@ class ServiceContextFactory {
                         helpers: this.helpers(serviceRuntime),
                     });
                 }
-                return this.sendNotification(input.callerEns, input.calleeEns, message, input.notificationType);
+                return this.sendNotification(input.callerEns, input.calleeEns, message, input.notificationType, {
+                    targetWallet: input.targetWallet,
+                    web2identity: input.web2identity,
+                });
             },
             forwardInviteToKamailio: async (input) => this.openSipSession(input.sessionId, input.sipFrom, input.sipTo),
             openInboundSipLeg: async (input) => this.openInboundSipSession(input.sessionId, input.phoneNumber),

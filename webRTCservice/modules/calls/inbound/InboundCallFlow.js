@@ -133,7 +133,9 @@ function createInboundCallFlow({
             callNonce,
             isCall: true,
         }));
-        session.lastNotificationResult = await sendNotification(calleeEns, calleeEns, offerPayload, notiTypeCall);
+        session.lastNotificationResult = await sendNotification(calleeEns, calleeEns, offerPayload, notiTypeCall, {
+            targetWallet: destination.wallet,
+        });
         return { ok: true, wallet: destination.wallet, ensName: destination.ensName, sessionId };
     }
 

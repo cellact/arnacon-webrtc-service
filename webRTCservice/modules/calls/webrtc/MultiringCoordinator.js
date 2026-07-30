@@ -237,6 +237,7 @@ class MultiringCoordinator {
                 created.calleeEns,
                 created.callPayload,
                 this.notiTypeCall,
+                { targetWallet: destination.wallet },
             );
             this.logger.log("[multiring] candidate invited", {
                 call: group.id,

@@ -324,7 +324,7 @@ async function buildConfiguredMultiRing(parsedTo, helpers) {
         const ensName = multiringTargetToEnsName(ringTarget, helpers, targetDomain);
         if (!ensName || seenEnsNames.has(ensName)) continue;
         seenEnsNames.add(ensName);
-        const wallet = await resolveEnsWallet(helpers, ensName, { web2identity: targetValue });
+        const wallet = await resolveEnsWallet(helpers, ensName, { web2identity: endpoint });
         if (!wallet) continue;
         targets.push({ wallet, ensName });
     }
@@ -450,6 +450,11 @@ async function resolveNumberAsOwnServiceTarget(parsedTo, helpers) {
         targetValue,
         candidates,
     });
+    helpers.logRouteDecision?.({
+        serviceId: "secnum",
+        route: "number-to-sbc-fallback",
+        targetValue,
+    });
     return null;
 }
 
@@ -479,6 +484,11 @@ async function resolveDestination(ctx) {
     if (multiRing) return multiRing;
 
     if (parsedTo.type === "raw" || parsedTo.type === "unknown") {
+        helpers.logRouteDecision?.({
+            serviceId: "secnum",
+            route: "raw-destination-sbc-fallback",
+            targetValue: helpers.normalizePhone(parsedTo.value),
+        });
         return { route: "sbc", number: helpers.normalizePhone(parsedTo.value) };
     }
 

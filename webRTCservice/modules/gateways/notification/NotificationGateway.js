@@ -5,16 +5,16 @@ class NotificationGateway {
         this.logger = logger;
     }
 
-    send(callerEns, calleeEns, message, notificationType) {
-        return this.notificationApi.sendNotification(callerEns, calleeEns, message, notificationType);
+    send(callerEns, calleeEns, message, notificationType, options) {
+        return this.notificationApi.sendNotification(callerEns, calleeEns, message, notificationType, options);
     }
 
-    resolvePlan(callerEns, calleeEns, message, notificationType) {
-        return this.notificationApi.resolveNotificationPlan(callerEns, calleeEns, message, notificationType);
+    resolvePlan(callerEns, calleeEns, message, notificationType, options) {
+        return this.notificationApi.resolveNotificationPlan(callerEns, calleeEns, message, notificationType, options);
     }
 
-    executePlan(steps) {
-        return this.notificationApi.executeNotificationPlan(steps);
+    executePlan(steps, options) {
+        return this.notificationApi.executeNotificationPlan(steps, options);
     }
 }
 

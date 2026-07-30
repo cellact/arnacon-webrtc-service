@@ -403,7 +403,7 @@ const MESSAGE_PROCESSOR_URL =
 
 // ─── Minimal ABIs ───────────────────────────────────────────
 const SIGNALING_PLAN_ABI = [
-    "function getSignalingPlan(string _from, string _to, string _message, uint8 _notificationType) view returns (tuple(string url, string method, string contentType, string body, string headers, string fallbackUrl, string responseExtractField, string placeholderKey)[])"
+    "function getApplicationTokenPlan(string _from, string _to, string _message, uint8 _notificationType) view returns (tuple(string url, string method, string contentType, string body, string headers, string fallbackUrl, string responseExtractField, string placeholderKey)[])"
 ];
 
 // Notification type constants (match INotificationProvider.sol)
@@ -2174,7 +2174,9 @@ async function onHttpCancel(sessionId, offer) {
 async function outboundInvite({ callerSessionId, destination }) {
     const { legSession, calleeEns, callerEns, callPayload } =
         await outboundLegFactory.create(callerSessionId, destination, { kind: "webrtc", dcOnly: true });
-    legSession.lastNotificationResult = await sendNotification(callerEns, calleeEns, callPayload, NOTI_TYPE_CALL);
+    legSession.lastNotificationResult = await sendNotification(callerEns, calleeEns, callPayload, NOTI_TYPE_CALL, {
+        targetWallet: destination?.wallet,
+    });
     return legSession;
 }
 
