@@ -19,7 +19,6 @@ class SipLeg extends MediaLeg {
         this.session = session;
         this.peerConnection = peerConnection;
         this.sourceNotified = false;
-        this.trackUnsubscribe = null;
         this.lastTrackRtpAt = 0;
         this.routerFallbackPackets = 0;
         this.trackPackets = 0;
@@ -59,12 +58,10 @@ class SipLeg extends MediaLeg {
 
     onRtp(handler) {
         const disposers = [];
+        const subscribed = new Set();
         const subscribeTrack = (track) => {
-            if (!track || track.kind !== "audio" || !track.onReceiveRtp?.subscribe) return;
-            if (this.trackUnsubscribe) {
-                try { this.trackUnsubscribe(); } catch (_) {}
-                this.trackUnsubscribe = null;
-            }
+            if (!track || track.kind !== "audio" || !track.onReceiveRtp?.subscribe || subscribed.has(track)) return;
+            subscribed.add(track);
             this.logger.log(`[${this.id}] SIP leg subscribing receiver track ssrc=${track.ssrc ?? "unknown"}`);
             const sub = track.onReceiveRtp.subscribe((packet) => {
                 if (!this.active) return;
@@ -74,13 +71,12 @@ class SipLeg extends MediaLeg {
                 if (!Number.isFinite(this.payloadType)) this.payloadType = Number(packet?.header?.payloadType);
                 handler(packet);
             });
-            this.trackUnsubscribe = sub?.unSubscribe || null;
-            if (this.trackUnsubscribe) disposers.push(this.trackUnsubscribe);
+            const unsubscribe = sub?.unSubscribe || null;
+            if (unsubscribe) disposers.push(unsubscribe);
         };
 
         for (const track of this.getReceiverAudioTracks()) {
             subscribeTrack(track);
-            break;
         }
         const onTrackSub = this.peerConnection?.onTrack?.subscribe?.((track) => {
             if (track.kind === "audio") subscribeTrack(track);
@@ -110,7 +106,6 @@ class SipLeg extends MediaLeg {
             for (const fn of disposers.splice(0)) {
                 try { fn(); } catch (_) {}
             }
-            this.trackUnsubscribe = null;
             this.logger.log(
                 `[${this.id}] SIP leg RTP input detached trackPackets=${this.trackPackets} fallbackPackets=${this.routerFallbackPackets}`,
             );
