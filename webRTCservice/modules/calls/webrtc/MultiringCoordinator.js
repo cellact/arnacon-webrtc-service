@@ -233,8 +233,8 @@ class MultiringCoordinator {
             // for both notification identities. The real PSTN caller remains in
             // the signed call payload built by WebRtcOutboundLegFactory.
             legSession.lastNotificationResult = await this.sendNotification(
-                created.calleeEns,
-                created.calleeEns,
+                created.calleeNotifyIdentity || created.calleeEns,
+                created.calleeNotifyIdentity || created.calleeEns,
                 created.callPayload,
                 this.notiTypeCall,
                 { targetWallet: destination.wallet },

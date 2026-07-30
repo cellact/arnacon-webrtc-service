@@ -86,16 +86,9 @@ class WebRtcOutboundLegFactory {
         const calleeEns = destination.ensName || calleeWallet;
         const callerEns = callerSession.callerEns;
         const callerNumberLabel = getCallerNumberLabel(callerEns);
-        // Build the wire sessionId in the RECIPIENT's (callee's) own convention:
-        // every client keys a session as sort(ownFullEns, peerBareNumber) -- it
-        // stores ITSELF as the full ENS and the peer as the bare number. So the
-        // callee must receive sort(calleeEns, callerNumberLabel), NOT a bare|bare
-        // key. Otherwise the incoming session is stored as "488|490" while the
-        // callee's own next outgoing call computes "488.ens|490" -> keys never match
-        // -> the parked session isn't reused and a fresh PC is built every time.
-        // Server-internal matching is unaffected: PolySessionRegistry.pairKey strips
-        // the ENS to bare on both sides regardless of the wire string.
-        const signalingSessionId = [calleeEns, callerNumberLabel].sort().join("|");
+        const calleeNumberLabel = getCallerNumberLabel(destination?.targetValue || calleeEns || calleeWallet);
+        const wireCalleeIdentity = calleeNumberLabel || calleeEns;
+        const signalingSessionId = [wireCalleeIdentity, callerNumberLabel].sort().join("|");
         const walletKey = String(calleeWallet || "").toLowerCase();
         if (!calleeWallet || !calleeEns) {
             throw new Error("WebRTC destination missing callee wallet/ENS");
@@ -180,7 +173,7 @@ class WebRtcOutboundLegFactory {
 
         const callPayload = serializeNotifyPayload(buildOfferPayload({
             from: callerNumberLabel,
-            to: calleeEns,
+            to: wireCalleeIdentity,
             sessionId: signalingSessionId,
             sdp: offerSdp,
             candidates: candidatesToEmbed,
@@ -195,7 +188,7 @@ class WebRtcOutboundLegFactory {
         }));
         this.logger.log(
             `[${callerSessionId}] outbound WebRTC invite payload from=${callerNumberLabel} ` +
-            `to=${calleeEns} sessionId=${signalingSessionId}`
+            `to=${wireCalleeIdentity} sessionId=${signalingSessionId}`
         );
 
         return {
@@ -204,6 +197,7 @@ class WebRtcOutboundLegFactory {
             legSessionId: options.kind === "multi" ? walletKey : callerSessionId,
             walletKey,
             calleeEns,
+            calleeNotifyIdentity: wireCalleeIdentity,
             callerEns,
             callPayload,
         };

@@ -2172,11 +2172,17 @@ async function onHttpCancel(sessionId, offer) {
 // dcOnly: the FCM session offer carries only the data channel (audio is added
 // later by the poly ring), mirroring the caller's DC-only HTTP handshake.
 async function outboundInvite({ callerSessionId, destination }) {
-    const { legSession, calleeEns, callerEns, callPayload } =
+    const { legSession, calleeEns, calleeNotifyIdentity, callerEns, callPayload } =
         await outboundLegFactory.create(callerSessionId, destination, { kind: "webrtc", dcOnly: true });
-    legSession.lastNotificationResult = await sendNotification(callerEns, calleeEns, callPayload, NOTI_TYPE_CALL, {
+    legSession.lastNotificationResult = await sendNotification(
+        callerEns,
+        calleeNotifyIdentity || calleeEns,
+        callPayload,
+        NOTI_TYPE_CALL,
+        {
         targetWallet: destination?.wallet,
-    });
+        },
+    );
     return legSession;
 }
 
