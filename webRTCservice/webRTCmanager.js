@@ -135,6 +135,7 @@ const { createSessionStore } = require("./modules/runtime/SessionStore");
 const { createCallRouter } = require("./modules/routing/CallRouterApi");
 const { createBlockchainApi } = require("./modules/gateways/blockchain/BlockchainApi");
 const { BlockchainGateway } = require("./modules/gateways/blockchain/BlockchainGateway");
+const { createIdentityMappingAuthService } = require("./services/identityMappingAuthService");
 const { createNotificationApi } = require("./modules/gateways/notification/NotificationApi");
 const { NotificationGateway } = require("./modules/gateways/notification/NotificationGateway");
 const { createHandlers } = require("./modules/server/HttpHandlers");
@@ -367,6 +368,10 @@ function sanitizeLogString(input) {
     output = output.replace(/(\bfrom=)([^\s,]+)/gi, (_, prefix, value) => `${prefix}${hashPrivacyValue(value)}`);
     output = output.replace(/(\bto=)([^\s,]+)/gi, (_, prefix, value) => `${prefix}${hashPrivacyValue(value)}`);
     output = output.replace(
+        /(\b[ab]=(?:webrtc|sip):)([^\s,]+)/gi,
+        (_, prefix, value) => `${prefix}${hashPrivacyValue(value)}`,
+    );
+    output = output.replace(
         /("(from|to|label|caller|callee|author|recipient|origin|targetValue|ensName|sessionId|web2identity|web3identity)"\s*:\s*")([^"]*)(")/gi,
         (_, p1, _key, value, p4) => `${p1}${hashPrivacyValue(value)}${p4}`,
     );
@@ -542,6 +547,12 @@ const mediaGraphFactory = new MediaGraphFactory({
 const minuteCounterApi = createMinuteCounter({
     filePath: config.minuteCounterPath,
     logger: console,
+});
+const callMonitorAuthService = createIdentityMappingAuthService({
+    identityMappingConfig: config.identityMapping || {},
+    logger: console,
+    timeoutMs: 2500,
+    fetchImpl: fetch,
 });
 const minuteCounterPolicy = new MinuteCounterPolicy({
     getServiceRuntime: (...args) => getServiceRuntime(...args),
@@ -787,25 +798,20 @@ function getCallMonitorConfig(serviceId = null) {
     const raw = runtime?.serviceConstants?.callMonitor || {};
     const enabled = raw.enabled === true;
     const monitorUrl = String(raw.monitorUrl || "").trim();
-    const bearerTokenEnv = String(raw.bearerTokenEnv || "").trim();
     const timeoutMs = Math.max(200, Number(raw.requestTimeoutMs || 1500));
     const retryCount = Math.max(0, Number(raw.retryCount || 0));
-    const bearerToken = bearerTokenEnv ? String(process.env[bearerTokenEnv] || "") : "";
     const serviceKey = runtime?.id || serviceId || "unknown-service";
 
-    if (enabled && (!monitorUrl || !bearerToken)) {
+    if (enabled && !monitorUrl) {
         if (!callMonitorConfigWarnings.has(serviceKey)) {
             callMonitorConfigWarnings.add(serviceKey);
-            console.warn(
-                `[CallMonitor] disabled for ${serviceKey}: missing ${!monitorUrl ? "monitorUrl" : "bearer token"}`,
-            );
+            console.warn(`[CallMonitor] disabled for ${serviceKey}: missing monitorUrl`);
         }
         return { enabled: false, serviceId: serviceKey };
     }
     return {
         enabled,
         monitorUrl,
-        bearerToken,
         timeoutMs,
         retryCount,
         serviceId: serviceKey,
@@ -837,6 +843,13 @@ function dispatchMonitorEventNonBlocking(serviceId, event) {
     const cfg = getCallMonitorConfig(serviceId);
     if (!cfg.enabled) return;
     const postOnce = async () => {
+        const token = await callMonitorAuthService.getBearerToken(
+            cfg.monitorUrl,
+            `sip-call-monitor:${cfg.serviceId}`,
+        );
+        if (!token) {
+            throw new Error("missing_monitor_id_token");
+        }
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), cfg.timeoutMs);
         try {
@@ -844,7 +857,7 @@ function dispatchMonitorEventNonBlocking(serviceId, event) {
                 method: "POST",
                 headers: {
                     "content-type": "application/json",
-                    authorization: `Bearer ${cfg.bearerToken}`,
+                    authorization: `Bearer ${token}`,
                 },
                 body: JSON.stringify(event),
                 signal: controller.signal,

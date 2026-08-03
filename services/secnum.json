@@ -21,9 +21,8 @@
         "enabled": true
       },
       "callMonitor": {
-        "enabled": false,
-        "monitorUrl": "",
-        "bearerTokenEnv": "SIP_CALL_MONITOR_BEARER_TOKEN",
+        "enabled": true,
+        "monitorUrl": "https://sip-call-monitor-ingest-zmu4vmardq-ew.a.run.app",
         "requestTimeoutMs": 1500,
         "retryCount": 0
       },
@@ -55,9 +54,8 @@
         "enabled": true
       },
       "callMonitor": {
-        "enabled": false,
-        "monitorUrl": "",
-        "bearerTokenEnv": "SIP_CALL_MONITOR_BEARER_TOKEN",
+        "enabled": true,
+        "monitorUrl": "https://sip-call-monitor-ingest-zmu4vmardq-ew.a.run.app",
         "requestTimeoutMs": 1500,
         "retryCount": 0
       },
