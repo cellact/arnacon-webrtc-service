@@ -1,3 +1,5 @@
+const crypto = require("crypto");
+
 function createSipClient({
     UserAgent,
     Registerer,
@@ -53,6 +55,12 @@ function createSipClient({
         return description;
     }
 
+    function hashIdentityForLog(value) {
+        const str = String(value || "").trim();
+        if (!str) return str;
+        return crypto.createHash("sha256").update(str).digest("hex");
+    }
+
     function sipIdentityUri(value) {
         const normalized = String(value || "").trim();
         if (!normalized) return null;
@@ -82,7 +90,10 @@ function createSipClient({
         const session = sessionStore.get(sessionId);
         if (!session) throw new Error("Session not found");
 
-        logger.log(`[${sessionId}] Opening SIP session to Kamailio for ${calleeIdentity}`);
+        logger.log(
+            `[${sessionId}] Opening SIP session to Kamailio from ${hashIdentityForLog(callerEns)} ` +
+            `to ${hashIdentityForLog(calleeIdentity)}`,
+        );
         const transportOptions = {
             server: kamailioWssUrl,
             webSocketConstruction: (url, protocols) => new WsWebSocket(url, protocols),
@@ -92,7 +103,7 @@ function createSipClient({
             (sipDirective?.identity?.fromUser ? `sip:${sipDirective.identity.fromUser}@${kamailioDomain}` : null) ||
             `sip:${callerEns}@${kamailioDomain}`;
         const sipUri = UserAgent.makeURI(fromUri);
-        if (!sipUri) throw new Error(`Invalid From URI for SIP session: ${fromUri}`);
+        if (!sipUri) throw new Error("Invalid From URI for SIP session");
         const userAgent = new UserAgent({
             uri: sipUri,
             transportOptions,
@@ -105,7 +116,7 @@ function createSipClient({
 
         const toUri = sipDirective?.identity?.toUri || `sip:${calleeIdentity}@${kamailioDomain}`;
         const targetUri = UserAgent.makeURI(toUri);
-        if (!targetUri) throw new Error(`Invalid To URI for SIP session: ${toUri}`);
+        if (!targetUri) throw new Error("Invalid To URI for SIP session");
         const extraHeaders = [];
         const assertedIdentity = sipIdentityUri(sipDirective?.callerId);
         if (sipDirective?.identity?.paiUri) {
@@ -213,7 +224,9 @@ function createSipClient({
             session.sipLocalAudioTrack = null;
         }
 
-        logger.log(`[${sessionId}] Opening inbound SIP session — registering as ${phoneNumber}`);
+        logger.log(
+            `[${sessionId}] Opening inbound SIP session — registering as ${hashIdentityForLog(phoneNumber)}`,
+        );
         const transportOptions = {
             server: kamailioWssUrl,
             webSocketConstruction: (url, protocols) => new WsWebSocket(url, protocols),
@@ -248,7 +261,9 @@ function createSipClient({
         await userAgent.start();
         const registerer = new Registerer(userAgent, { expires: registerExpires });
         await registerer.register();
-        logger.log(`[${sessionId}] SIP REGISTER as ${phoneNumber} successful — waiting for resumed INVITE`);
+        logger.log(
+            `[${sessionId}] SIP REGISTER as ${hashIdentityForLog(phoneNumber)} successful — waiting for resumed INVITE`,
+        );
 
         const invitation = await invitePromise;
         await new Promise((resolve, reject) => {
