@@ -40,23 +40,28 @@ function deriveWeb2Identity(value, helpers) {
     return /^\d+$/.test(normalized) ? normalized : "";
 }
 
-async function resolveEnsWallet(helpers, ensName, options = {}) {
+async function resolveEnsWalletWithSource(helpers, ensName, options = {}) {
     const web2identity = String(options.web2identity || deriveWeb2Identity(ensName, helpers)).trim();
     if (web2identity && typeof helpers.lookupWalletByWeb2Identity === "function") {
         const mapped = await helpers.lookupWalletByWeb2Identity(web2identity);
         if (mapped && mapped !== helpers.zeroAddress) {
-            return mapped;
+            return { wallet: mapped, source: "identity-mapping" };
         }
     }
     const addr = await helpers.lookupEnsAddress(ensName);
     if (addr && addr !== helpers.zeroAddress) {
-        return addr;
+        return { wallet: addr, source: "ens-address" };
     }
     const owner = await helpers.lookupEnsOwner(ensName);
     if (owner && owner !== helpers.zeroAddress) {
-        return owner;
+        return { wallet: owner, source: "ens-owner" };
     }
-    return null;
+    return { wallet: null, source: null };
+}
+
+async function resolveEnsWallet(helpers, ensName, options = {}) {
+    const resolved = await resolveEnsWalletWithSource(helpers, ensName, options);
+    return resolved.wallet;
 }
 
 function buildExactEnsCandidates(value, domains) {
@@ -427,7 +432,8 @@ async function resolveNumberAsOwnServiceTarget(parsedTo, helpers) {
             targetValue,
             ensName,
         });
-        const wallet = await resolveEnsWallet(helpers, ensName, { web2identity: targetValue });
+        const resolved = await resolveEnsWalletWithSource(helpers, ensName, { web2identity: targetValue });
+        const wallet = resolved.wallet;
         helpers.logRouteDecision?.({
             serviceId: "secnum",
             route: wallet ? "number-to-own-webrtc-found" : "number-to-own-webrtc-miss",
@@ -442,7 +448,16 @@ async function resolveNumberAsOwnServiceTarget(parsedTo, helpers) {
                 targetValue,
                 ensName,
             });
-            return { route: "webrtc", wallet, ensName, targetValue };
+            return {
+                route: "webrtc",
+                wallet,
+                ensName,
+                targetValue,
+                walletSource: resolved.source || null,
+                notifyIdentity: resolved.source && resolved.source.startsWith("ens")
+                    ? ensName
+                    : targetValue,
+            };
         }
     }
     helpers.logRouteDecision?.({
@@ -497,11 +512,20 @@ async function resolveDestination(ctx) {
     if (parsedTo.type === "ens") {
         const ownDomains = getDomains(helpers);
         if (ownDomains.includes(parsedTo.domain || "")) {
-            const wallet = await resolveEnsWallet(helpers, parsedTo.full, {
+            const resolved = await resolveEnsWalletWithSource(helpers, parsedTo.full, {
                 web2identity: deriveWeb2Identity(parsedTo.full, helpers),
             });
+            const wallet = resolved.wallet;
             if (wallet) {
-                return { route: "webrtc", wallet, ensName: parsedTo.full };
+                return {
+                    route: "webrtc",
+                    wallet,
+                    ensName: parsedTo.full,
+                    walletSource: resolved.source || null,
+                    notifyIdentity: resolved.source && resolved.source.startsWith("ens")
+                        ? parsedTo.full
+                        : (deriveWeb2Identity(parsedTo.full, helpers) || parsedTo.full),
+                };
             }
         }
         return { route: "sbc", number: helpers.normalizePhone(parsedTo.value) };

@@ -87,8 +87,10 @@ class WebRtcOutboundLegFactory {
         const callerEns = callerSession.callerEns;
         const callerNumberLabel = getCallerNumberLabel(callerEns);
         const calleeNumberLabel = getCallerNumberLabel(destination?.targetValue || calleeEns || calleeWallet);
-        const wireCalleeIdentity = calleeNumberLabel || calleeEns;
-        const signalingSessionId = [wireCalleeIdentity, callerNumberLabel].sort().join("|");
+        const preferredNotifyIdentity = String(destination?.notifyIdentity || "").trim();
+        const wireCalleeIdentity = preferredNotifyIdentity || calleeNumberLabel || calleeEns;
+        const signalingIdentity = calleeNumberLabel || calleeEns;
+        const signalingSessionId = [signalingIdentity, callerNumberLabel].sort().join("|");
         const walletKey = String(calleeWallet || "").toLowerCase();
         if (!calleeWallet || !calleeEns) {
             throw new Error("WebRTC destination missing callee wallet/ENS");
