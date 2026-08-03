@@ -308,6 +308,97 @@ const selectedServiceConstantsForConfig =
     Object.values(loadedServices)[0]?.serviceConstants ||
     {};
 
+const LOG_PRIVACY_DEFAULT_ENABLED = selectedServiceConstantsForConfig?.logPrivacy?.enabled === true;
+const PRIVACY_LOG_KEYS = new Set([
+    "from",
+    "to",
+    "label",
+    "caller",
+    "callee",
+    "author",
+    "recipient",
+    "origin",
+    "targetvalue",
+    "ensname",
+    "web2identity",
+    "web3identity",
+    "sessionid",
+]);
+
+function hashPrivacyValue(value) {
+    const str = String(value ?? "").trim();
+    if (!str) return str;
+    return crypto.createHash("sha256").update(str).digest("hex");
+}
+
+function looksSensitiveToken(value) {
+    const str = String(value || "").trim().toLowerCase();
+    if (!str) return false;
+    if (str.includes(".global") || str.includes("@")) return true;
+    if (/^[*+]?\d{4,}$/.test(str)) return true;
+    if (/^[*+]?\d[\d|*+.-]{3,}$/.test(str) && str.includes("|")) return true;
+    return false;
+}
+
+function sanitizeLogObject(value) {
+    if (value === null || value === undefined) return value;
+    if (Array.isArray(value)) return value.map((item) => sanitizeLogObject(item));
+    if (typeof value !== "object") return value;
+    const out = {};
+    for (const [key, entry] of Object.entries(value)) {
+        const normalized = String(key || "").toLowerCase();
+        if (PRIVACY_LOG_KEYS.has(normalized) && entry !== null && entry !== undefined && entry !== "") {
+            out[key] = hashPrivacyValue(entry);
+            continue;
+        }
+        out[key] = sanitizeLogObject(entry);
+    }
+    return out;
+}
+
+function sanitizeLogString(input) {
+    let output = String(input || "");
+    output = output.replace(/\[([^\]]+)\]/g, (full, token) => {
+        if (!looksSensitiveToken(token)) return full;
+        return `[${hashPrivacyValue(token)}]`;
+    });
+    output = output.replace(/(\bFrom:\s*)([^\s,]+)/gi, (_, prefix, value) => `${prefix}${hashPrivacyValue(value)}`);
+    output = output.replace(/(\bfor\s+)([*+]?\d[\d|*+.-]{3,})/gi, (_, prefix, value) => `${prefix}${hashPrivacyValue(value)}`);
+    output = output.replace(/(\bfrom=)([^\s,]+)/gi, (_, prefix, value) => `${prefix}${hashPrivacyValue(value)}`);
+    output = output.replace(/(\bto=)([^\s,]+)/gi, (_, prefix, value) => `${prefix}${hashPrivacyValue(value)}`);
+    output = output.replace(
+        /("(from|to|label|caller|callee|author|recipient|origin|targetValue|ensName|sessionId|web2identity|web3identity)"\s*:\s*")([^"]*)(")/gi,
+        (_, p1, _key, value, p4) => `${p1}${hashPrivacyValue(value)}${p4}`,
+    );
+    return output;
+}
+
+function installPrivacyConsoleFilter(enabled) {
+    if (!enabled) return;
+    if (console.__privacyFilterInstalled) return;
+    const methods = ["log", "warn", "error", "info", "debug"];
+    for (const method of methods) {
+        const original = console[method];
+        if (typeof original !== "function") continue;
+        console[method] = (...args) => {
+            const maskedArgs = args.map((arg) => {
+                if (typeof arg === "string") return sanitizeLogString(arg);
+                if (arg && typeof arg === "object") return sanitizeLogObject(arg);
+                return arg;
+            });
+            return original.apply(console, maskedArgs);
+        };
+    }
+    Object.defineProperty(console, "__privacyFilterInstalled", {
+        value: true,
+        enumerable: false,
+        configurable: false,
+        writable: false,
+    });
+}
+
+installPrivacyConsoleFilter(LOG_PRIVACY_DEFAULT_ENABLED);
+
 function pickRuntimeConfig(key, fallback = undefined) {
     if (globalEnvConfig[key] !== undefined) return globalEnvConfig[key];
     if (commonConfig[key] !== undefined) return commonConfig[key];
