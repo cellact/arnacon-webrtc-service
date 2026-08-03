@@ -17,6 +17,16 @@
           "privateKeyEnv": "ARNACON_SDK_PRIVATE_KEY"
         }
       },
+      "logPrivacy": {
+        "enabled": false
+      },
+      "callMonitor": {
+        "enabled": false,
+        "monitorUrl": "",
+        "bearerTokenEnv": "SIP_CALL_MONITOR_BEARER_TOKEN",
+        "requestTimeoutMs": 1500,
+        "retryCount": 0
+      },
       "notificationProviderAddress": "0xf648a26677aa51e62fFEaE40B2c7C8E26e0f464d"
     }
   },
@@ -40,6 +50,16 @@
           "rpcUrl": "https://polygon-bor-rpc.publicnode.com",
           "privateKeyEnv": "ARNACON_SDK_PRIVATE_KEY"
         }
+      },
+      "logPrivacy": {
+        "enabled": false
+      },
+      "callMonitor": {
+        "enabled": false,
+        "monitorUrl": "",
+        "bearerTokenEnv": "SIP_CALL_MONITOR_BEARER_TOKEN",
+        "requestTimeoutMs": 1500,
+        "retryCount": 0
       },
       "notificationProviderAddress": "0xf648a26677aa51e62fFEaE40B2c7C8E26e0f464d"
     }

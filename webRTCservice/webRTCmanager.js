@@ -167,7 +167,7 @@ const { ParticipantFactory } = require("./modules/participants/ParticipantFactor
 const { createPolyCore } = require("./modules/calls/poly/createPolyCore");
 const { WebRtcOutboundLegFactory } = require("./modules/calls/webrtc/WebRtcOutboundLegFactory");
 const { LEG_EVENTS, makeLegEvent } = require("./modules/calls/poly/ports");
-const { LEG_STATES, canBeRung, isActiveCall } = require("./modules/calls/poly/states");
+const { LEG_STATES, canBeRung, isActiveCall, hasLiveTransport } = require("./modules/calls/poly/states");
 const { isInactiveOffer } = require("./modules/calls/poly/negotiation/sdp");
 const { routeToCodecPolicy } = require("./modules/media/negotiation/CodecPolicy");
 const { narrowAudioOfferForCodecPolicy } = require("./modules/media/negotiation/SdpCodecNegotiator");
@@ -433,6 +433,7 @@ const sessionsByUser = sessionStore.sessionsByUser; // stableKey(from, to) → s
 const pendingBridges = sessionStore.pendingBridges; // callee wallet (lowercase) → { callerSessionId, resolve, reject, timer }
 const pendingInboundCalls = sessionStore.pendingInboundCalls; // callee wallet (lowercase) → { fromNumber, toNumber, callId, timer }
 const referTransferStates = new Map(); // transferId -> controller state
+const callMonitorConfigWarnings = new Set(); // serviceId -> warned
 const callRegistry = new CallRegistry({ logger: console });
 const participantFactory = new ParticipantFactory({
     parseAddress: (...args) => parseAddress(...args),
@@ -670,6 +671,158 @@ const sendNotification = (...args) => notificationGateway.send(...args);
 
 function normalizePhone(value) {
     return minuteCounterPolicy.normalizePhone(value);
+}
+
+function hashIdentity(value) {
+    const str = String(value ?? "").trim();
+    if (!str) return "";
+    return crypto.createHash("sha256").update(str).digest("hex");
+}
+
+function isLogPrivacyEnabledForService(serviceId = null) {
+    const runtime = getServiceRuntime(serviceId);
+    return runtime?.serviceConstants?.logPrivacy?.enabled === true;
+}
+
+function sanitizeIdentityForLog(serviceId, value) {
+    const str = String(value ?? "").trim();
+    if (!str) return str;
+    if (!isLogPrivacyEnabledForService(serviceId)) return str;
+    return hashIdentity(str);
+}
+
+function getCallMonitorConfig(serviceId = null) {
+    const runtime = getServiceRuntime(serviceId);
+    const raw = runtime?.serviceConstants?.callMonitor || {};
+    const enabled = raw.enabled === true;
+    const monitorUrl = String(raw.monitorUrl || "").trim();
+    const bearerTokenEnv = String(raw.bearerTokenEnv || "").trim();
+    const timeoutMs = Math.max(200, Number(raw.requestTimeoutMs || 1500));
+    const retryCount = Math.max(0, Number(raw.retryCount || 0));
+    const bearerToken = bearerTokenEnv ? String(process.env[bearerTokenEnv] || "") : "";
+    const serviceKey = runtime?.id || serviceId || "unknown-service";
+
+    if (enabled && (!monitorUrl || !bearerToken)) {
+        if (!callMonitorConfigWarnings.has(serviceKey)) {
+            callMonitorConfigWarnings.add(serviceKey);
+            console.warn(
+                `[CallMonitor] disabled for ${serviceKey}: missing ${!monitorUrl ? "monitorUrl" : "bearer token"}`,
+            );
+        }
+        return { enabled: false, serviceId: serviceKey };
+    }
+    return {
+        enabled,
+        monitorUrl,
+        bearerToken,
+        timeoutMs,
+        retryCount,
+        serviceId: serviceKey,
+    };
+}
+
+function classifyRouteKind(poly) {
+    const aKind = String(poly?.legs?.a?.kind || "").toLowerCase();
+    const bKind = String(poly?.legs?.b?.kind || "").toLowerCase();
+    if (aKind === "webrtc" && bKind === "webrtc") return "webrtc_to_webrtc";
+    if (aKind === "webrtc" && bKind === "sip") return "webrtc_to_sbc";
+    if (aKind === "sip" && bKind === "webrtc") return "sbc_to_webrtc";
+    if (!aKind || !bKind) return "unknown";
+    return `${aKind}_to_${bKind}`;
+}
+
+function computePreConnectedSides(poly) {
+    return {
+        aKind: poly?.legs?.a?.kind || null,
+        bKind: poly?.legs?.b?.kind || null,
+        aState: poly?.legs?.a?.state || null,
+        bState: poly?.legs?.b?.state || null,
+        aConnected: hasLiveTransport(poly?.legs?.a?.state),
+        bConnected: hasLiveTransport(poly?.legs?.b?.state),
+    };
+}
+
+function dispatchMonitorEventNonBlocking(serviceId, event) {
+    const cfg = getCallMonitorConfig(serviceId);
+    if (!cfg.enabled) return;
+    const postOnce = async () => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), cfg.timeoutMs);
+        try {
+            const response = await fetch(cfg.monitorUrl, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    authorization: `Bearer ${cfg.bearerToken}`,
+                },
+                body: JSON.stringify(event),
+                signal: controller.signal,
+            });
+            if (response.ok) return true;
+            const body = await response.text().catch(() => "");
+            throw new Error(`HTTP ${response.status} ${body}`.trim());
+        } finally {
+            clearTimeout(timeout);
+        }
+    };
+    Promise.resolve().then(async () => {
+        for (let attempt = 0; attempt <= cfg.retryCount; attempt += 1) {
+            try {
+                await postOnce();
+                return;
+            } catch (err) {
+                if (attempt >= cfg.retryCount) {
+                    console.warn(`[CallMonitor] monitor_send_failed service=${cfg.serviceId} reason=${err.message}`);
+                    return;
+                }
+                await new Promise((resolve) => setTimeout(resolve, Math.min(200 * (attempt + 1), 500)));
+            }
+        }
+    }).catch(() => {});
+}
+
+function startMonitoredAttempt({ session, poly, serviceId = null, fromIdentity = null, toIdentity = null }) {
+    if (!session || !poly) return;
+    const preConnected = computePreConnectedSides(poly);
+    session._callMonitorAttempt = {
+        serviceId: serviceId || session.serviceId || null,
+        from: String(fromIdentity || session.callerEns || poly?.legs?.a?.endpoint || "").trim(),
+        to: String(toIdentity || session.toIdentity || poly?.legs?.b?.endpoint || "").trim(),
+        routeKind: classifyRouteKind(poly),
+        preConnected,
+        startedAt: Date.now(),
+        connectedAt: null,
+        outcomeEmitted: false,
+    };
+    console.log(
+        `[CallMonitor] preconnected service=${session._callMonitorAttempt.serviceId || "unknown"} route=${session._callMonitorAttempt.routeKind} ` +
+        `aConnected=${preConnected.aConnected} bConnected=${preConnected.bConnected}`,
+    );
+}
+
+function emitCallMonitorOutcome(session, outcome, endedAt = Date.now(), reason = null) {
+    const attempt = session?._callMonitorAttempt;
+    if (!attempt || attempt.outcomeEmitted) return;
+    attempt.outcomeEmitted = true;
+    const durationMs = Math.max(
+        0,
+        endedAt - (attempt.connectedAt || attempt.startedAt || endedAt),
+    );
+    const payload = {
+        serviceId: attempt.serviceId || session?.serviceId || null,
+        eventType: "call_end",
+        outcome,
+        reason: reason || null,
+        fromHash: hashIdentity(attempt.from),
+        toHash: hashIdentity(attempt.to),
+        routeKind: attempt.routeKind || "unknown",
+        durationMs,
+        startedAt: attempt.startedAt || null,
+        connectedAt: attempt.connectedAt || null,
+        endedAt,
+        preConnected: attempt.preConnected || null,
+    };
+    dispatchMonitorEventNonBlocking(payload.serviceId, payload);
 }
 
 function getServiceHelpers(serviceRuntime) {
@@ -987,7 +1140,25 @@ async function tryInboundReuse(payload, destination = null) {
     hostSession.inboundCall = { fromNumber: payload.from, toNumber: payload.to, callId: payload.callId };
     if (sipLeg.negotiation) sipLeg.negotiation.phoneNumber = payload.to;
 
-    console.log(`[${hostSession.sessionId}] inbound reuse: ringing connected callee ${calleeLabel} over existing DC (caller ${callerLabel})`);
+    startMonitoredAttempt({
+        session: hostSession,
+        poly,
+        serviceId: hostSession.serviceId || null,
+        fromIdentity: payload?.from || hostSession.callerEns,
+        toIdentity: resolvedCallee,
+    });
+    attachCallLifecycleHooks({
+        session: hostSession,
+        callerSessionId: hostSession.sessionId,
+        poly,
+        serviceId: hostSession.serviceId || null,
+        minuteSettings: null,
+        minuteIdentity: null,
+    });
+    console.log(
+        `[${hostSession.sessionId}] inbound reuse: ringing connected callee ${sanitizeIdentityForLog(hostSession.serviceId, calleeLabel)} ` +
+        `over existing DC (caller ${sanitizeIdentityForLog(hostSession.serviceId, callerLabel)})`,
+    );
     try {
         // Seed the PSTN INVITE as the sip caller's OFFER -> CALLING. Reconcile then
         // sees sip CALLING + webrtc CONNECTED -> ring(webrtc) over its DC; on pickup
@@ -1037,6 +1208,21 @@ async function seedInboundSipToWebrtcPoly(payload, result, { reason = "inbound-f
                 destination: { ensName: calleeEns },
             },
             target: "a",
+        });
+        startMonitoredAttempt({
+            session,
+            poly,
+            serviceId: session.serviceId || null,
+            fromIdentity: callerNumber,
+            toIdentity: calleeEns,
+        });
+        attachCallLifecycleHooks({
+            session,
+            callerSessionId: session.sessionId,
+            poly,
+            serviceId: session.serviceId || null,
+            minuteSettings: null,
+            minuteIdentity: null,
         });
         await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER));
     } catch (err) {
@@ -1262,6 +1448,21 @@ async function handoffMultiringWinner(claim, message) {
         },
         target: "b",
     });
+    startMonitoredAttempt({
+        session: hostSession,
+        poly,
+        serviceId: hostSession.serviceId || null,
+        fromIdentity: callerNumber,
+        toIdentity: calleeEns,
+    });
+    attachCallLifecycleHooks({
+        session: hostSession,
+        callerSessionId: hostSession.sessionId,
+        poly,
+        serviceId: hostSession.serviceId || null,
+        minuteSettings: null,
+        minuteIdentity: null,
+    });
 
     // The candidate's authenticated HTTP answer already negotiated its media and
     // its DC is the channel carrying this verified pickup. Adopt that ready
@@ -1413,9 +1614,13 @@ function pairResolutionForOffer(offer) {
 async function onExistingPairOffer({ sessionId, offer, session, pairKey } = {}) {
     const resolved = pairResolutionForOffer(offer);
     if (!resolved?.poly || !resolved?.ref) {
+        const runtimeServiceId = session?.serviceId || null;
         console.warn(
             `[${sessionId || "no-session"}] existing-pair offer unresolved for ${pairKey || "unknown-pair"}`,
-            { from: offer?.from || null, to: offer?.to || null },
+            {
+                from: sanitizeIdentityForLog(runtimeServiceId, offer?.from || null),
+                to: sanitizeIdentityForLog(runtimeServiceId, offer?.to || null),
+            },
         );
         return { handled: false };
     }
@@ -1435,7 +1640,7 @@ async function onExistingPairOffer({ sessionId, offer, session, pairKey } = {}) 
             `[${sessionId || "no-session"}] existing-pair offer rejected: source transport not owned`,
             {
                 pairKey: pairKey || "unknown-pair",
-                from: offer?.from || null,
+                from: sanitizeIdentityForLog(session?.serviceId || null, offer?.from || null),
                 channelRole,
             },
         );
@@ -1450,7 +1655,7 @@ async function onExistingPairOffer({ sessionId, offer, session, pairKey } = {}) 
             `[${sessionId || "no-session"}] existing-pair offer rejected: source data channel is closed`,
             {
                 pairKey: pairKey || "unknown-pair",
-                from: offer?.from || null,
+                from: sanitizeIdentityForLog(session?.serviceId || null, offer?.from || null),
                 channelRole,
                 signalingSessionId: offer?.sessionId || null,
             },
@@ -1736,21 +1941,20 @@ function checkSbcMinuteBudget({ session, callerSessionId, parsedFrom, serviceId 
 // for the SIP proxy to enforce (SIPhon no longer carries that header). At answer
 // we arm a timer that BYEs both legs when the caller's remaining balance for THIS
 // call runs out, and we bill via the start/finish hooks. No-op without policy.
-function applySbcMinuteCap({ session, callerSessionId, poly, settings, identity }) {
-    if (!minuteCounterApi || !settings?.limitSeconds) return;
-
+function buildSbcMinuteHooks({ session, callerSessionId, poly, settings, identity }) {
+    if (!minuteCounterApi || !settings?.limitSeconds) {
+        return {
+            onCallStart: null,
+            onCallEnd: null,
+        };
+    }
     const clearCutoff = () => {
         if (session._minuteCutoffTimer) {
             clearTimeout(session._minuteCutoffTimer);
             session._minuteCutoffTimer = null;
         }
     };
-
-    // Bill only the answered conversation: PolySession fires onCallStart when both
-    // legs reach IN_CALL and onCallEnd when they leave it -- so the counter starts
-    // at answer and stops on ANY end (hangup either side, failure, transport drop),
-    // independent of poly disposal/reuse. finish() is idempotent.
-    poly.setCallActivityHooks({
+    return {
         onCallStart: () => {
             minuteCounterApi.start(session, {
                 serviceId: settings.serviceId,
@@ -1790,6 +1994,48 @@ function applySbcMinuteCap({ session, callerSessionId, poly, settings, identity 
             clearCutoff();
             minuteCounterApi.finish(session);
         },
+    };
+}
+
+function attachCallLifecycleHooks({
+    session,
+    callerSessionId,
+    poly,
+    serviceId = null,
+    minuteSettings = null,
+    minuteIdentity = null,
+}) {
+    if (!session || !poly) return;
+    const minuteHooks = buildSbcMinuteHooks({
+        session,
+        callerSessionId,
+        poly,
+        settings: minuteSettings,
+        identity: minuteIdentity,
+    });
+    poly.setCallActivityHooks({
+        onCallStart: () => {
+            if (!session._callMonitorAttempt) {
+                startMonitoredAttempt({
+                    session,
+                    poly,
+                    serviceId,
+                    fromIdentity: session.callerEns,
+                    toIdentity: session.toIdentity,
+                });
+            }
+            if (session._callMonitorAttempt && !session._callMonitorAttempt.connectedAt) {
+                session._callMonitorAttempt.connectedAt = Date.now();
+            }
+            minuteHooks.onCallStart?.();
+        },
+        onCallEnd: () => {
+            try {
+                minuteHooks.onCallEnd?.();
+            } finally {
+                emitCallMonitorOutcome(session, "success", Date.now(), "hangup");
+            }
+        },
     });
 }
 
@@ -1805,6 +2051,17 @@ async function onDcRing(callerSessionId, payload) {
     const destination = await resolveDestination(parsedTo, parsedFrom, serviceId);
 
     if (!destination || destination.route === "reject") {
+        session._callMonitorAttempt = {
+            serviceId,
+            from: String(session.callerEns || "").trim(),
+            to: String(payload?.to || session.toIdentity || "").trim(),
+            routeKind: "unknown",
+            preConnected: null,
+            startedAt: Date.now(),
+            connectedAt: null,
+            outcomeEmitted: false,
+        };
+        emitCallMonitorOutcome(session, "failed", Date.now(), "reject-route");
         sendEndCallSignal(callerSessionId, "reject-route");
         return;
     }
@@ -1866,9 +2123,21 @@ async function onDcRing(callerSessionId, payload) {
 
     callPairResolver.bindSessionPairRef(session, a.endpoint, b.endpoint);
     const { poly } = polyRegistry.resolve({ a, b, target: "a" });
-    if (b.kind === "sip") {
-        applySbcMinuteCap({ session, callerSessionId, poly, settings: minuteCounterSettings, identity: minuteCounterIdentity });
-    }
+    startMonitoredAttempt({
+        session,
+        poly,
+        serviceId,
+        fromIdentity: session.callerEns,
+        toIdentity: b.endpoint,
+    });
+    attachCallLifecycleHooks({
+        session,
+        callerSessionId,
+        poly,
+        serviceId,
+        minuteSettings: b.kind === "sip" ? minuteCounterSettings : null,
+        minuteIdentity: b.kind === "sip" ? minuteCounterIdentity : null,
+    });
     // Caller transport is already up (HTTP handshake). The SIP leg has no transport
     // to negotiate (openOutbound happens on ring), so mark it usable too. A webrtc
     // callee, by contrast, starts disconnected: reconcile will connect() it (FCM
@@ -2154,6 +2423,9 @@ async function onHttpReject(sessionId, offer) {
         console.error(`[${sessionId}] poly http-reject failed: ${err.message}`);
         return { ok: false, error: "poly-http-reject-failed", type: "reject", sessionId };
     }
+    if (directSession?._callMonitorAttempt && !directSession._callMonitorAttempt.connectedAt) {
+        emitCallMonitorOutcome(directSession, "failed", Date.now(), "reject");
+    }
     return { ok: true, type: "reject", sessionId };
 }
 
@@ -2176,6 +2448,9 @@ async function onHttpCancel(sessionId, offer) {
     } catch (err) {
         console.error(`[${sessionId}] poly http-cancel failed: ${err.message}`);
         return { ok: false, error: "poly-http-cancel-failed", type: "cancel", sessionId };
+    }
+    if (directSession?._callMonitorAttempt && !directSession._callMonitorAttempt.connectedAt) {
+        emitCallMonitorOutcome(directSession, "failed", Date.now(), "cancel");
     }
     return { ok: true, type: "cancel", sessionId };
 }
@@ -2327,6 +2602,11 @@ function createSession(sessionId, callerEns, toIdentity) {
 
 function destroySession(sessionId, notify = false) {
     const session = sessions.get(sessionId);
+    if (session?._callMonitorAttempt && !session._callMonitorAttempt.outcomeEmitted) {
+        const teardownReason = session.lifecycle?.teardown?.reason || "session-destroyed";
+        const outcome = session._callMonitorAttempt.connectedAt ? "success" : "failed";
+        emitCallMonitorOutcome(session, outcome, Date.now(), teardownReason);
+    }
     const result = sessionStore.destroySession(sessionId, {
         notify,
         sendDataChannelMessage,
