@@ -18,7 +18,7 @@
         }
       },
       "logPrivacy": {
-        "enabled": false
+        "enabled": true
       },
       "callMonitor": {
         "enabled": false,
@@ -52,7 +52,7 @@
         }
       },
       "logPrivacy": {
-        "enabled": false
+        "enabled": true
       },
       "callMonitor": {
         "enabled": false,
