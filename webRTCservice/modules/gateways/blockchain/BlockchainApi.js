@@ -1,4 +1,5 @@
 const { ethers } = require("ethers");
+const ArnaconSDK = require("arnacon-sdk");
 const { createIdentityMappingAuthService } = require("../../../services/identityMappingAuthService");
 
 function createBlockchainApi({
@@ -6,6 +7,7 @@ function createBlockchainApi({
     providerPolicy = null,
     createHttpError,
     logger = console,
+    arnaconSdkFactory = (sdkConfig) => new ArnaconSDK(sdkConfig),
 }) {
     const POLYGON_RPC = config.polygon.rpc;
     const ENS_REGISTRY_ADDRESS = config.polygon.ENSRegistry;
@@ -61,9 +63,42 @@ function createBlockchainApi({
     const DEFAULT_GCP_SERVICE_ACCOUNT_JSON_FILE = "/etc/webrtcservice/secrets/kamailio-gcp-mapping-sa.json";
     const DEFAULT_GCP_ANS_MAPPING_URL =
         "https://europe-west1-arnacon-staging-production.cloudfunctions.net/ans-mapping";
-    const DEFAULT_GCP_WEB3_IDENTITY_MAPPING_URL =
-        "https://europe-west1-arnacon-staging-production.cloudfunctions.net/web3-identity-mapping";
+    const DEFAULT_ARNACON_SDK_NETWORK = "polygon";
+    const DEFAULT_ARNACON_SDK_CHAIN_ID_BY_NETWORK = {
+        sepolia: 11155111,
+        polygon: 137,
+    };
+    const DEFAULT_ARNACON_SDK_RPC_BY_NETWORK = {
+        sepolia: "https://ethereum-sepolia-rpc.publicnode.com",
+        polygon: POLYGON_RPC,
+    };
     const DEFAULT_NOTIFICATION_PROVIDER_ADDRESS = "0xf648a26677aa51e62fFEaE40B2c7C8E26e0f464d";
+    const IDENTITY_MAPPING_ARNACON_SDK_CONFIG = IDENTITY_MAPPING_CONFIG.arnaconSdk || {};
+    const ARNACON_SDK_NETWORK = String(
+        process.env.ARNACON_SDK_NETWORK ||
+        IDENTITY_MAPPING_ARNACON_SDK_CONFIG.network ||
+        DEFAULT_ARNACON_SDK_NETWORK,
+    ).trim().toLowerCase();
+    const ARNACON_SDK_CHAIN_ID = Number(
+        process.env.ARNACON_SDK_CHAIN_ID ||
+        IDENTITY_MAPPING_ARNACON_SDK_CONFIG.chainId ||
+        DEFAULT_ARNACON_SDK_CHAIN_ID_BY_NETWORK[ARNACON_SDK_NETWORK] ||
+        DEFAULT_ARNACON_SDK_CHAIN_ID_BY_NETWORK.polygon,
+    );
+    const ARNACON_SDK_RPC = String(
+        process.env.ARNACON_SDK_RPC_URL ||
+        IDENTITY_MAPPING_ARNACON_SDK_CONFIG.rpcUrl ||
+        DEFAULT_ARNACON_SDK_RPC_BY_NETWORK[ARNACON_SDK_NETWORK] ||
+        DEFAULT_ARNACON_SDK_RPC_BY_NETWORK.polygon,
+    ).trim();
+    const ARNACON_SDK_PRIVATE_KEY_ENV = String(
+        IDENTITY_MAPPING_ARNACON_SDK_CONFIG.privateKeyEnv || "ARNACON_SDK_PRIVATE_KEY",
+    ).trim();
+    const ARNACON_SDK_PRIVATE_KEY = String(
+        process.env.ARNACON_SDK_PRIVATE_KEY ||
+        (ARNACON_SDK_PRIVATE_KEY_ENV ? process.env[ARNACON_SDK_PRIVATE_KEY_ENV] : "") ||
+        "",
+    ).trim();
     const EFFECTIVE_IDENTITY_MAPPING_CONFIG = {
         ...IDENTITY_MAPPING_CONFIG,
         serviceAccountJsonFile:
@@ -76,11 +111,11 @@ function createBlockchainApi({
         IDENTITY_MAPPING_CONFIG.ansMappingUrl ||
         DEFAULT_GCP_ANS_MAPPING_URL,
     ).trim();
-    const GCP_WEB3_IDENTITY_MAPPING_URL = String(
+    const DEPRECATED_GCP_WEB3_IDENTITY_MAPPING_URL = String(
         process.env.GCP_WEB3_IDENTITY_MAPPING_URL ||
         process.env.ARNACON_GCP_WEB3_IDENTITY_MAPPING_URL ||
         IDENTITY_MAPPING_CONFIG.web3IdentityMappingUrl ||
-        DEFAULT_GCP_WEB3_IDENTITY_MAPPING_URL,
+        "",
     ).trim();
     const GCP_MAPPING_REQUEST_TIMEOUT_MS = Number(
         process.env.GCP_MAPPING_TIMEOUT_MS ||
@@ -151,6 +186,8 @@ function createBlockchainApi({
     let roflAddress = null;
     let roflOwnerResolved = false;
     let mappingConfigLogged = false;
+    let arnaconSdk = null;
+    let arnaconSdkInitAttempted = false;
 
     function logMappingConfig() {
         if (mappingConfigLogged) return;
@@ -164,11 +201,41 @@ function createBlockchainApi({
             idTokenAudience: authSnapshot.idTokenAudience,
             oauthTokenUrl: authSnapshot.oauthTokenUrl,
             ansMappingUrl: GCP_ANS_MAPPING_URL || null,
-            web3IdentityMappingUrl: GCP_WEB3_IDENTITY_MAPPING_URL || null,
+            deprecatedWeb3IdentityMappingUrl: DEPRECATED_GCP_WEB3_IDENTITY_MAPPING_URL || null,
+            web3IdentityMappingDeprecated: Boolean(DEPRECATED_GCP_WEB3_IDENTITY_MAPPING_URL),
+            arnaconSdkNetwork: ARNACON_SDK_NETWORK || null,
+            arnaconSdkChainId: Number.isFinite(ARNACON_SDK_CHAIN_ID) ? ARNACON_SDK_CHAIN_ID : null,
+            arnaconSdkRpcUrl: ARNACON_SDK_RPC || null,
+            arnaconSdkPrivateKey: ARNACON_SDK_PRIVATE_KEY ? "<provided>" : "<empty>",
             timeoutMs: Number.isFinite(GCP_MAPPING_REQUEST_TIMEOUT_MS) && GCP_MAPPING_REQUEST_TIMEOUT_MS > 0
                 ? GCP_MAPPING_REQUEST_TIMEOUT_MS
                 : 2500,
         });
+    }
+
+    function getArnaconSdk() {
+        if (arnaconSdk) return arnaconSdk;
+        if (arnaconSdkInitAttempted) return null;
+        arnaconSdkInitAttempted = true;
+        if (!ARNACON_SDK_RPC || !Number.isFinite(ARNACON_SDK_CHAIN_ID)) {
+            logger.warn("[IdentityMapping] arnacon-sdk config invalid, skipping sdk owner lookup", {
+                hasRpc: Boolean(ARNACON_SDK_RPC),
+                chainId: Number.isFinite(ARNACON_SDK_CHAIN_ID) ? ARNACON_SDK_CHAIN_ID : null,
+            });
+            return null;
+        }
+        try {
+            arnaconSdk = arnaconSdkFactory({
+                privateKey: ARNACON_SDK_PRIVATE_KEY,
+                chainId: ARNACON_SDK_CHAIN_ID,
+                rpcUrl: ARNACON_SDK_RPC,
+            });
+            return arnaconSdk;
+        } catch (err) {
+            logger.warn(`[IdentityMapping] failed to initialize arnacon-sdk: ${err.message}`);
+            arnaconSdk = null;
+            return null;
+        }
     }
 
     function getPolygonProvider() {
@@ -365,7 +432,15 @@ function createBlockchainApi({
         const raw = String(wallet || "").trim();
         if (!raw) return null;
         if (!isEthAddress(raw)) return null;
-        return ethers.utils.getAddress(raw);
+        const checksum = ethers.utils.getAddress(raw);
+        if (checksum === ethers.constants.AddressZero) return null;
+        return checksum;
+    }
+
+    function buildOwnerLookupName(web3identity) {
+        const raw = String(web3identity || "").trim().toLowerCase();
+        if (!raw) return "";
+        return raw.endsWith(".arnacon.global") ? raw : `${raw}.arnacon.global`;
     }
 
     async function resolveWalletByWeb2Identity(web2identity) {
@@ -380,42 +455,60 @@ function createBlockchainApi({
         );
         const ansWallet = checksumWalletOrNull(ansPayload?.wallet);
         if (ansWallet) {
-            logger.log("[IdentityMapping] wallet selected", {
+            logger.log("[IdentityMapping] ans wallet ignored (chain-authoritative mode)", {
                 web2identity: normalized,
-                walletSource: "gcp_ans_wallet",
                 wallet: ansWallet,
             });
-            return ansWallet;
         }
 
         const web3identity = String(ansPayload?.web3identity || "").trim();
         if (!web3identity) {
             logger.log("[IdentityMapping] fallback reason", {
                 web2identity: normalized,
-                reason: "missing_web3identity_or_wallet",
+                reason: "missing_web3identity",
             });
             return null;
         }
-
-        const web3Payload = await fetchJsonWithBearer(
-            GCP_WEB3_IDENTITY_MAPPING_URL,
-            { web3identity },
-            `web3-identity-mapping:${web3identity}`,
-        );
-        const web3Wallet = checksumWalletOrNull(web3Payload?.wallet);
-        if (web3Wallet) {
+        const ownerLookupName = buildOwnerLookupName(web3identity);
+        const sdk = getArnaconSdk();
+        if (!sdk || typeof sdk.getOwner !== "function") {
+            logger.log("[IdentityMapping] fallback reason", {
+                web2identity: normalized,
+                web3identity,
+                ownerLookupName,
+                reason: "sdk_unavailable",
+            });
+            return null;
+        }
+        let sdkOwner;
+        try {
+            logger.log("[IdentityMapping] sdk owner lookup", {
+                web2identity: normalized,
+                ownerLookupName,
+                network: ARNACON_SDK_NETWORK,
+                chainId: ARNACON_SDK_CHAIN_ID,
+            });
+            sdkOwner = await sdk.getOwner(ownerLookupName);
+        } catch (err) {
+            logger.warn(`[IdentityMapping] sdk owner lookup failed for ${ownerLookupName}: ${err.message}`);
+            return null;
+        }
+        const ownerWallet = checksumWalletOrNull(sdkOwner);
+        if (ownerWallet) {
             logger.log("[IdentityMapping] wallet selected", {
                 web2identity: normalized,
                 web3identity,
-                walletSource: "gcp_web3_wallet",
-                wallet: web3Wallet,
+                ownerLookupName,
+                walletSource: "sdk_owner_wallet",
+                wallet: ownerWallet,
             });
-            return web3Wallet;
+            return ownerWallet;
         }
         logger.log("[IdentityMapping] fallback reason", {
             web2identity: normalized,
             web3identity,
-            reason: "missing_wallet",
+            ownerLookupName,
+            reason: "sdk_owner_missing",
         });
         return null;
     }

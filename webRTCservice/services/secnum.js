@@ -365,14 +365,15 @@ async function resolveInboundTarget(ctx) {
             routingSource: "hardcoded-openai-inbound",
         };
     }
-    const lightPbxLookup = lightPbxLookupContext(targetValue, payload);
-    const lightPbxTarget = await resolveLightPbxInbound(
-        targetValue,
-        lightPbxLookup,
-        payload,
-        helpers,
-    );
-    if (lightPbxTarget) return lightPbxTarget;
+    // PBX staging disable: intentionally bypass LightPBX lookup path for now.
+    // const lightPbxLookup = lightPbxLookupContext(targetValue, payload);
+    // const lightPbxTarget = await resolveLightPbxInbound(
+    //     targetValue,
+    //     lightPbxLookup,
+    //     payload,
+    //     helpers,
+    // );
+    // if (lightPbxTarget) return lightPbxTarget;
 
     const inboundDomain = String(payload?.toDomain || "").trim().toLowerCase();
     const allowedDomains = new Set(getDomains(helpers));
@@ -480,8 +481,9 @@ async function resolveDestination(ctx) {
         if (ownNumberTarget) return ownNumberTarget;
     }
 
-    const multiRing = await buildConfiguredMultiRing(parsedTo, helpers);
-    if (multiRing) return multiRing;
+    // PBX staging disable: bypass configured LightPBX multiring lookup path.
+    // const multiRing = await buildConfiguredMultiRing(parsedTo, helpers);
+    // if (multiRing) return multiRing;
 
     if (parsedTo.type === "raw" || parsedTo.type === "unknown") {
         helpers.logRouteDecision?.({

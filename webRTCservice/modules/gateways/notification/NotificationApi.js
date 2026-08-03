@@ -71,7 +71,7 @@ function createNotificationApi({
                 const mapped = checksumWalletOrNull(await blockchainApi.resolveWalletByWeb2Identity(web2identity));
                 if (mapped) {
                     logger.log("[Notification] target wallet source", {
-                        source: "gcp",
+                        source: "gcp+sdk",
                         calleeEns,
                         web2identity,
                         wallet: mapped,
@@ -79,7 +79,7 @@ function createNotificationApi({
                     return mapped;
                 }
                 logger.log("[Notification] target wallet miss", {
-                    source: "gcp",
+                    source: "gcp+sdk",
                     calleeEns,
                     web2identity,
                 });

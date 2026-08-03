@@ -6,7 +6,18 @@
       "domains": ["secnumtest.global", "secnum.global"],
       "trustedIngressIps": ["51.85.90.127"],
       "outboundSbcAddress": "185.62.121.10",
-      "minuteLimitSeconds": 600
+      "minuteLimitSeconds": 90000,
+      "identityMapping": {
+        "ansMappingUrl": "https://europe-west1-arnacon-staging-production.cloudfunctions.net/ans-mapping",
+        "serviceAccountJsonFile": "/etc/webrtcservice/secrets/kamailio-gcp-mapping-sa.json",
+        "arnaconSdk": {
+          "network": "sepolia",
+          "chainId": 11155111,
+          "rpcUrl": "https://ethereum-sepolia-rpc.publicnode.com",
+          "privateKeyEnv": "ARNACON_SDK_PRIVATE_KEY"
+        }
+      },
+      "notificationProviderAddress": "0xf648a26677aa51e62fFEaE40B2c7C8E26e0f464d"
     }
   },
   "production": {
@@ -19,7 +30,18 @@
       ],
       "trustedIngressIps": ["51.85.90.127"],
       "outboundSbcAddress": "185.62.121.10",
-      "minuteLimitSeconds": 600
+      "minuteLimitSeconds": 90000,
+      "identityMapping": {
+        "ansMappingUrl": "https://europe-west1-arnacon-staging-production.cloudfunctions.net/ans-mapping",
+        "serviceAccountJsonFile": "/etc/webrtcservice/secrets/kamailio-gcp-mapping-sa.json",
+        "arnaconSdk": {
+          "network": "polygon",
+          "chainId": 137,
+          "rpcUrl": "https://polygon-bor-rpc.publicnode.com",
+          "privateKeyEnv": "ARNACON_SDK_PRIVATE_KEY"
+        }
+      },
+      "notificationProviderAddress": "0xf648a26677aa51e62fFEaE40B2c7C8E26e0f464d"
     }
   }
 }

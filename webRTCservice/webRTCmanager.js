@@ -302,6 +302,12 @@ for (const [serviceId, serviceEntry] of Object.entries(serviceRegistry)) {
     };
 }
 
+const selectedServiceIdForConfig = process.env.SERVICE_ID || null;
+const selectedServiceConstantsForConfig =
+    (selectedServiceIdForConfig && loadedServices[selectedServiceIdForConfig]?.serviceConstants) ||
+    Object.values(loadedServices)[0]?.serviceConstants ||
+    {};
+
 function pickRuntimeConfig(key, fallback = undefined) {
     if (globalEnvConfig[key] !== undefined) return globalEnvConfig[key];
     if (commonConfig[key] !== undefined) return commonConfig[key];
@@ -324,8 +330,14 @@ const config = {
     sapphire: pickRuntimeConfig("sapphire", {}),
     sapphireTestnet: pickRuntimeConfig("sapphireTestnet", {}),
     roflLogic: pickRuntimeConfig("roflLogic", {}),
-    identityMapping: pickRuntimeConfig("identityMapping", {}),
-    notificationProviderAddress: pickRuntimeConfig("notificationProviderAddress", ""),
+    identityMapping: pickRuntimeConfig(
+        "identityMapping",
+        selectedServiceConstantsForConfig.identityMapping || {},
+    ),
+    notificationProviderAddress: pickRuntimeConfig(
+        "notificationProviderAddress",
+        selectedServiceConstantsForConfig.notificationProviderAddress || "",
+    ),
     notificationProviderApplyAll: pickRuntimeConfig("notificationProviderApplyAll", false),
 };
 const serviceRuntimes = loadedServices;

@@ -1,5 +1,8 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 const secnum = require("../secnum");
 const { createBlockchainApi } = require("../../modules/gateways/blockchain/BlockchainApi");
@@ -359,7 +362,7 @@ test("notification provider uses hardcoded default for secnum domains", async ()
         logger: { log() {}, warn() {}, error() {} },
     });
     const cfg = await api.resolveCallerServiceProviderContract("972557012402.secnumtest.global");
-    assert.equal(cfg.notificationRegistryAddress, "0xaf0eB7721935dAD1Dd5680cFA565696811eE601A");
+    assert.equal(cfg.notificationRegistryAddress, "0xf648a26677aa51e62fFEaE40B2c7C8E26e0f464d");
     assert.equal(cfg.isDefault, true);
 });
 
@@ -373,4 +376,108 @@ test("notification provider address override is honored", async () => {
     const cfg = await api.resolveCallerServiceProviderContract("972557012402.secnum.global");
     assert.equal(cfg.notificationRegistryAddress, "0x2222222222222222222222222222222222222222");
     delete process.env.NOTIFICATION_PROVIDER_ADDRESS;
+});
+
+test("web2 wallet resolution ignores GCP wallet and uses sdk owner lookup", async () => {
+    const originalFetch = global.fetch;
+    const originalTokenFile = process.env.GCP_MAPPING_TOKEN_FILE;
+    const originalServiceAccount = process.env.GCP_SERVICE_ACCOUNT_JSON_FILE;
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "secnum-wallet-test-"));
+    const tokenPath = path.join(tempDir, "token.txt");
+    fs.writeFileSync(tokenPath, "test-token", "utf8");
+
+    const fetchCalls = [];
+    const sdkCalls = [];
+    global.fetch = async (url) => {
+        fetchCalls.push(String(url));
+        return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+                web2identity: "972557012421",
+                web3identity: "9b44bd2662a14a958feeb8c1f7f3967a",
+                wallet: "0x1111111111111111111111111111111111111111",
+            }),
+            text: async () => "",
+        };
+    };
+
+    process.env.GCP_MAPPING_TOKEN_FILE = tokenPath;
+    delete process.env.GCP_SERVICE_ACCOUNT_JSON_FILE;
+
+    try {
+        const api = createBlockchainApi({
+            config: minimalBlockchainConfig(),
+            createHttpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }),
+            logger: { log() {}, warn() {}, error() {} },
+            arnaconSdkFactory: (sdkConfig) => ({
+                getOwner: async (name) => {
+                    sdkCalls.push({ sdkConfig, name });
+                    return "0x2222222222222222222222222222222222222222";
+                },
+            }),
+        });
+        const wallet = await api.resolveWalletByWeb2Identity("972557012421");
+
+        assert.equal(wallet, "0x2222222222222222222222222222222222222222");
+        assert.equal(fetchCalls.length, 1);
+        assert.equal(sdkCalls.length, 1);
+        assert.equal(sdkCalls[0].name, "9b44bd2662a14a958feeb8c1f7f3967a.arnacon.global");
+    } finally {
+        global.fetch = originalFetch;
+        if (originalTokenFile === undefined) delete process.env.GCP_MAPPING_TOKEN_FILE;
+        else process.env.GCP_MAPPING_TOKEN_FILE = originalTokenFile;
+        if (originalServiceAccount === undefined) delete process.env.GCP_SERVICE_ACCOUNT_JSON_FILE;
+        else process.env.GCP_SERVICE_ACCOUNT_JSON_FILE = originalServiceAccount;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("web2 wallet resolution keeps .arnacon.global suffix and returns null when sdk owner is zero", async () => {
+    const originalFetch = global.fetch;
+    const originalTokenFile = process.env.GCP_MAPPING_TOKEN_FILE;
+    const originalServiceAccount = process.env.GCP_SERVICE_ACCOUNT_JSON_FILE;
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "secnum-wallet-test-"));
+    const tokenPath = path.join(tempDir, "token.txt");
+    fs.writeFileSync(tokenPath, "test-token", "utf8");
+
+    const sdkCalls = [];
+    global.fetch = async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+            web2identity: "972557012421",
+            web3identity: "9b44bd2662a14a958feeb8c1f7f3967a.arnacon.global",
+            wallet: "0x1111111111111111111111111111111111111111",
+        }),
+        text: async () => "",
+    });
+
+    process.env.GCP_MAPPING_TOKEN_FILE = tokenPath;
+    delete process.env.GCP_SERVICE_ACCOUNT_JSON_FILE;
+
+    try {
+        const api = createBlockchainApi({
+            config: minimalBlockchainConfig(),
+            createHttpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }),
+            logger: { log() {}, warn() {}, error() {} },
+            arnaconSdkFactory: () => ({
+                getOwner: async (name) => {
+                    sdkCalls.push(name);
+                    return "0x0000000000000000000000000000000000000000";
+                },
+            }),
+        });
+        const wallet = await api.resolveWalletByWeb2Identity("972557012421");
+
+        assert.equal(wallet, null);
+        assert.deepEqual(sdkCalls, ["9b44bd2662a14a958feeb8c1f7f3967a.arnacon.global"]);
+    } finally {
+        global.fetch = originalFetch;
+        if (originalTokenFile === undefined) delete process.env.GCP_MAPPING_TOKEN_FILE;
+        else process.env.GCP_MAPPING_TOKEN_FILE = originalTokenFile;
+        if (originalServiceAccount === undefined) delete process.env.GCP_SERVICE_ACCOUNT_JSON_FILE;
+        else process.env.GCP_SERVICE_ACCOUNT_JSON_FILE = originalServiceAccount;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
 });

@@ -18,7 +18,13 @@
     "webRTCservice/**/*",
     "services/**/*",
     "globalserviceconfig.json",
-    "demoAudio/**/*"
+    "demoAudio/**/*",
+    "!webRTCservice/**/.env*",
+    "!webRTCservice/**/*.token",
+    "!webRTCservice/**/secrets/**",
+    "!services/**/.env*",
+    "!services/**/*.token",
+    "!services/**/secrets/**"
   ],
   "scripts": {
     "test": "npm run test:routing && npm run test:poly",
