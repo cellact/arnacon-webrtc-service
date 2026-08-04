@@ -545,9 +545,22 @@ class WebRtcNegotiation extends CallNegotiationPort {
     // during the ring (so the caller only now negotiates audio / shows connected),
     // then ack. If there is no held answer (e.g. ICE-restart already answered),
     // just ack.
-    async answer() {
+    async answer(ctx = {}) {
         const callMeta = this._activeCallMeta();
-        if (this._pendingAnswerSdp) {
+        // Normal path: flush locally-held answer generated from our ring offer.
+        // Fallback path: if this leg has no pending local answer (e.g. caller leg
+        // in secnum<->secnum), forward the peer-provided answer from latest ingress
+        // so the caller still receives the SDP answer signal.
+        let answerSdp = this._pendingAnswerSdp;
+        let answerCandidates = [];
+        const ingressPayload = ctx?.event?.payload || null;
+        if (!answerSdp && ingressPayload?.sdp) {
+            answerSdp = ingressPayload.sdp;
+            if (Array.isArray(ingressPayload.candidates)) {
+                answerCandidates = ingressPayload.candidates;
+            }
+        }
+        if (answerSdp) {
             this.signaling.send({
                 msgType: "signaling",
                 callId: callMeta.callId,
@@ -556,7 +569,8 @@ class WebRtcNegotiation extends CallNegotiationPort {
                     from: identityLabel(this.session.callerEns),
                     to: this.session.toIdentity,
                     sessionId: this.session.sessionId,
-                    sdp: this._pendingAnswerSdp,
+                    sdp: answerSdp,
+                    candidates: answerCandidates,
                     callId: callMeta.callId,
                 },
             });
