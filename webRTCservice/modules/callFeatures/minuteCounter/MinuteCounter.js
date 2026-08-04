@@ -21,6 +21,12 @@ function createMinuteCounter({
         return Math.floor(parsed);
     }
 
+    function normalizeCustomSecondCap(customSecondCap) {
+        const parsed = Number(customSecondCap);
+        if (!Number.isFinite(parsed) || parsed <= 0) return null;
+        return Math.floor(parsed);
+    }
+
     function getLocalDateParts(date = new Date()) {
         const year = date.getFullYear();
         const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -89,6 +95,16 @@ function createMinuteCounter({
                 entry.totalSeconds = normalizedSeconds;
                 changed = true;
             }
+            if (Object.prototype.hasOwnProperty.call(entry, "customSecondCap")) {
+                const normalizedCustomCap = normalizeCustomSecondCap(entry.customSecondCap);
+                if (normalizedCustomCap === null) {
+                    delete entry.customSecondCap;
+                    changed = true;
+                } else if (entry.customSecondCap !== normalizedCustomCap) {
+                    entry.customSecondCap = normalizedCustomCap;
+                    changed = true;
+                }
+            }
             if (!entry.lastUpdated) {
                 entry.lastUpdated = today.date;
                 changed = true;
@@ -115,8 +131,22 @@ function createMinuteCounter({
         return Number(entry?.totalSeconds || 0);
     }
 
-    function assertCanStart({ serviceId, identity, limitSeconds }) {
+    function getEffectiveLimitSeconds({ serviceId, identity, limitSeconds }) {
         const normalizedLimit = normalizeLimitSeconds(limitSeconds);
+        if (!normalizedLimit) return null;
+        const normalizedServiceId = normalizeServiceId(serviceId);
+        const normalizedIdentity = normalizeIdentity(identity);
+        if (!normalizedServiceId || !normalizedIdentity) return normalizedLimit;
+
+        const totals = readTotals();
+        const { entry, changed } = getMonthlyEntry(totals, normalizedServiceId, normalizedIdentity);
+        if (changed) writeTotals(totals);
+        const customCap = normalizeCustomSecondCap(entry?.customSecondCap);
+        return customCap || normalizedLimit;
+    }
+
+    function assertCanStart({ serviceId, identity, limitSeconds }) {
+        const normalizedLimit = getEffectiveLimitSeconds({ serviceId, identity, limitSeconds });
         if (!resolvedFilePath || !normalizedLimit) return true;
 
         const usedSeconds = getUsedSeconds({ serviceId, identity });
@@ -165,6 +195,7 @@ function createMinuteCounter({
 
     return {
         getUsedSeconds,
+        getEffectiveLimitSeconds,
         assertCanStart,
         start,
         finish,
