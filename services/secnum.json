@@ -55,7 +55,7 @@
       },
       "callMonitor": {
         "enabled": true,
-        "monitorUrl": "",
+        "monitorUrl": "https://sip-call-monitor-ingest-26bbtnwo4q-ew.a.run.app",
         "requestTimeoutMs": 1500,
         "retryCount": 0
       },
