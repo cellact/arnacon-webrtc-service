@@ -41,7 +41,7 @@
       "outboundSbcAddress": "185.62.121.10",
       "minuteLimitSeconds": 90000,
       "identityMapping": {
-        "ansMappingUrl": "",
+        "ansMappingUrl": "https://europe-west1-arnacon-production-gcp.cloudfunctions.net/ans-mapping",
         "serviceAccountJsonFile": "/etc/webrtcservice/secrets/kamailio-gcp-mapping-sa.json",
         "arnaconSdk": {
           "network": "polygon",
