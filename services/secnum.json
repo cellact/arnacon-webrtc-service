@@ -59,7 +59,7 @@
         "requestTimeoutMs": 1500,
         "retryCount": 0
       },
-      "notificationProviderAddress": "0xf648a26677aa51e62fFEaE40B2c7C8E26e0f464d"
+      "notificationProviderAddress": ""
     }
   }
 }

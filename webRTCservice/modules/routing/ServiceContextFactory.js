@@ -137,6 +137,7 @@ class ServiceContextFactory {
             lookupEnsAddress: (...args) => this.blockchainApi.resolveEnsToAddress(...args),
             lookupEnsTextRecord: (...args) => this.blockchainApi.resolveEnsTextRecord(...args),
             lookupWalletByWeb2Identity: (...args) => this.blockchainApi.resolveWalletByWeb2Identity(...args),
+            identityInactiveErrorCode: this.blockchainApi.IDENTITY_INACTIVE_ERROR_CODE || "IDENTITY_INACTIVE",
             lookupNftOwnedNumber: (...args) => this.blockchainApi.nftGetOwnedNumber(...args),
             lookupBusinessNumber: (...args) => this.callRouterApi.roflFindBusinessNumber(...args),
             lookupBusinessNumberCascade: (...args) => this.callRouterApi.roflCascadingBusinessLookup(...args),

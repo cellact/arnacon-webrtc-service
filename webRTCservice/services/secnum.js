@@ -43,7 +43,7 @@ function deriveWeb2Identity(value, helpers) {
 async function resolveEnsWalletWithSource(helpers, ensName, options = {}) {
     const web2identity = String(options.web2identity || deriveWeb2Identity(ensName, helpers)).trim();
     if (web2identity && typeof helpers.lookupWalletByWeb2Identity === "function") {
-        const mapped = await helpers.lookupWalletByWeb2Identity(web2identity);
+        const mapped = await helpers.lookupWalletByWeb2Identity(web2identity, { enforceActive: true });
         if (mapped && mapped !== helpers.zeroAddress) {
             return { wallet: mapped, source: "identity-mapping" };
         }
@@ -57,6 +57,20 @@ async function resolveEnsWalletWithSource(helpers, ensName, options = {}) {
         return { wallet: owner, source: "ens-owner" };
     }
     return { wallet: null, source: null };
+}
+
+function isIdentityInactiveError(error, helpers) {
+    const code = error?.code || "";
+    const expected = helpers?.identityInactiveErrorCode || "IDENTITY_INACTIVE";
+    return code === expected;
+}
+
+function buildInactiveRoute(web2identity) {
+    return {
+        route: "reject",
+        statusCode: 403,
+        reason: `Inactive identity mapping for ${web2identity || "destination"}`,
+    };
 }
 
 async function resolveEnsWallet(helpers, ensName, options = {}) {
@@ -348,28 +362,29 @@ async function buildConfiguredMultiRing(parsedTo, helpers) {
 
 async function resolveInboundTarget(ctx) {
     const { payload, helpers } = ctx;
-    const targetValue = resolveInboundValue(payload, helpers);
-    if (!targetValue) {
-        return {
-            route: "reject",
-            reason: `No WebRTC user for (target empty, raw to='${String(payload?.to || "")}')`,
-        };
-    }
-    if (HARDCODED_OPENAI_INBOUND_DIDS.has(targetValue)) {
-        helpers.logRouteDecision?.({
-            serviceId: "secnum",
-            route: "hardcoded-openai-inbound",
-            targetValue,
-            callId: payload?.callId || null,
-            sipUri: FORCED_IVR_SIP_URI,
-        });
-        return {
-            route: "external-sip",
-            sipUri: FORCED_IVR_SIP_URI,
-            targetValue,
-            routingSource: "hardcoded-openai-inbound",
-        };
-    }
+    try {
+        const targetValue = resolveInboundValue(payload, helpers);
+        if (!targetValue) {
+            return {
+                route: "reject",
+                reason: `No WebRTC user for (target empty, raw to='${String(payload?.to || "")}')`,
+            };
+        }
+        if (HARDCODED_OPENAI_INBOUND_DIDS.has(targetValue)) {
+            helpers.logRouteDecision?.({
+                serviceId: "secnum",
+                route: "hardcoded-openai-inbound",
+                targetValue,
+                callId: payload?.callId || null,
+                sipUri: FORCED_IVR_SIP_URI,
+            });
+            return {
+                route: "external-sip",
+                sipUri: FORCED_IVR_SIP_URI,
+                targetValue,
+                routingSource: "hardcoded-openai-inbound",
+            };
+        }
     // PBX staging disable: intentionally bypass LightPBX lookup path for now.
     // const lightPbxLookup = lightPbxLookupContext(targetValue, payload);
     // const lightPbxTarget = await resolveLightPbxInbound(
@@ -380,43 +395,49 @@ async function resolveInboundTarget(ctx) {
     // );
     // if (lightPbxTarget) return lightPbxTarget;
 
-    const inboundDomain = String(payload?.toDomain || "").trim().toLowerCase();
-    const allowedDomains = new Set(getDomains(helpers));
-    const domains = Array.from(new Set([
-        allowedDomains.has(inboundDomain) ? inboundDomain : null,
-        ...getDomains(helpers),
-    ].filter(Boolean)));
-    const candidates = buildExactEnsCandidates(targetValue, domains);
-    for (const ensName of candidates) {
-        helpers.logRouteDecision?.({
-            serviceId: "secnum",
-            route: "inbound-webrtc-check",
-            targetValue,
-            toDomain: inboundDomain || null,
-            ensName,
-        });
-        const wallet = await resolveEnsWallet(helpers, ensName, { web2identity: targetValue });
-        if (wallet) {
+        const inboundDomain = String(payload?.toDomain || "").trim().toLowerCase();
+        const allowedDomains = new Set(getDomains(helpers));
+        const domains = Array.from(new Set([
+            allowedDomains.has(inboundDomain) ? inboundDomain : null,
+            ...getDomains(helpers),
+        ].filter(Boolean)));
+        const candidates = buildExactEnsCandidates(targetValue, domains);
+        for (const ensName of candidates) {
             helpers.logRouteDecision?.({
                 serviceId: "secnum",
-                route: "inbound-webrtc-found",
+                route: "inbound-webrtc-check",
                 targetValue,
                 toDomain: inboundDomain || null,
                 ensName,
-                wallet,
             });
-            return { route: "webrtc", wallet, ensName, targetValue };
+            const wallet = await resolveEnsWallet(helpers, ensName, { web2identity: targetValue });
+            if (wallet) {
+                helpers.logRouteDecision?.({
+                    serviceId: "secnum",
+                    route: "inbound-webrtc-found",
+                    targetValue,
+                    toDomain: inboundDomain || null,
+                    ensName,
+                    wallet,
+                });
+                return { route: "webrtc", wallet, ensName, targetValue };
+            }
+            helpers.logRouteDecision?.({
+                serviceId: "secnum",
+                route: "inbound-webrtc-miss",
+                targetValue,
+                toDomain: inboundDomain || null,
+                ensName,
+                wallet: null,
+            });
         }
-        helpers.logRouteDecision?.({
-            serviceId: "secnum",
-            route: "inbound-webrtc-miss",
-            targetValue,
-            toDomain: inboundDomain || null,
-            ensName,
-            wallet: null,
-        });
+        return { route: "reject", reason: `No WebRTC user for ${targetValue}` };
+    } catch (error) {
+        if (isIdentityInactiveError(error, helpers)) {
+            return buildInactiveRoute(error.web2identity || resolveInboundValue(payload, helpers));
+        }
+        throw error;
     }
-    return { route: "reject", reason: `No WebRTC user for ${targetValue}` };
 }
 
 async function resolveNumberAsOwnServiceTarget(parsedTo, helpers) {
@@ -476,62 +497,69 @@ async function resolveNumberAsOwnServiceTarget(parsedTo, helpers) {
 
 async function resolveDestination(ctx) {
     const { parsedTo, parsedFrom, helpers } = ctx;
-    if (!parsedTo) return { route: "reject", reason: "Missing destination" };
+    try {
+        if (!parsedTo) return { route: "reject", reason: "Missing destination" };
 
-    const normalizedTarget = helpers.normalizePhone(parsedTo.value || parsedTo.full || "");
-    if (normalizedTarget === "2006") {
-        return {
-            route: "ivr",
-            providerId: "secnum",
-            target: "2006",
-            waitingAudioFile: IVR_WAITING_AUDIO_FILE,
-        };
-    }
-    if (normalizedTarget === "2005") {
-        return { route: "openai-sip", number: "2005", target: "openai-realtime" };
-    }
+        const normalizedTarget = helpers.normalizePhone(parsedTo.value || parsedTo.full || "");
+        if (normalizedTarget === "2006") {
+            return {
+                route: "ivr",
+                providerId: "secnum",
+                target: "2006",
+                waitingAudioFile: IVR_WAITING_AUDIO_FILE,
+            };
+        }
+        if (normalizedTarget === "2005") {
+            return { route: "openai-sip", number: "2005", target: "openai-realtime" };
+        }
 
-    if (parsedTo.type === "raw" || parsedTo.type === "unknown") {
-        const ownNumberTarget = await resolveNumberAsOwnServiceTarget(parsedTo, helpers);
-        if (ownNumberTarget) return ownNumberTarget;
-    }
+        if (parsedTo.type === "raw" || parsedTo.type === "unknown") {
+            const ownNumberTarget = await resolveNumberAsOwnServiceTarget(parsedTo, helpers);
+            if (ownNumberTarget) return ownNumberTarget;
+        }
 
     // PBX staging disable: bypass configured LightPBX multiring lookup path.
     // const multiRing = await buildConfiguredMultiRing(parsedTo, helpers);
     // if (multiRing) return multiRing;
 
-    if (parsedTo.type === "raw" || parsedTo.type === "unknown") {
-        helpers.logRouteDecision?.({
-            serviceId: "secnum",
-            route: "raw-destination-sbc-fallback",
-            targetValue: helpers.normalizePhone(parsedTo.value),
-        });
-        return { route: "sbc", number: helpers.normalizePhone(parsedTo.value) };
-    }
-
-    if (parsedTo.type === "ens") {
-        const ownDomains = getDomains(helpers);
-        if (ownDomains.includes(parsedTo.domain || "")) {
-            const resolved = await resolveEnsWalletWithSource(helpers, parsedTo.full, {
-                web2identity: deriveWeb2Identity(parsedTo.full, helpers),
+        if (parsedTo.type === "raw" || parsedTo.type === "unknown") {
+            helpers.logRouteDecision?.({
+                serviceId: "secnum",
+                route: "raw-destination-sbc-fallback",
+                targetValue: helpers.normalizePhone(parsedTo.value),
             });
-            const wallet = resolved.wallet;
-            if (wallet) {
-                return {
-                    route: "webrtc",
-                    wallet,
-                    ensName: parsedTo.full,
-                    walletSource: resolved.source || null,
-                    notifyIdentity: resolved.source && resolved.source.startsWith("ens")
-                        ? parsedTo.full
-                        : (deriveWeb2Identity(parsedTo.full, helpers) || parsedTo.full),
-                };
-            }
+            return { route: "sbc", number: helpers.normalizePhone(parsedTo.value) };
         }
-        return { route: "sbc", number: helpers.normalizePhone(parsedTo.value) };
-    }
 
-    return { route: "reject", reason: `Unsupported destination type: ${parsedTo.type}` };
+        if (parsedTo.type === "ens") {
+            const ownDomains = getDomains(helpers);
+            if (ownDomains.includes(parsedTo.domain || "")) {
+                const resolved = await resolveEnsWalletWithSource(helpers, parsedTo.full, {
+                    web2identity: deriveWeb2Identity(parsedTo.full, helpers),
+                });
+                const wallet = resolved.wallet;
+                if (wallet) {
+                    return {
+                        route: "webrtc",
+                        wallet,
+                        ensName: parsedTo.full,
+                        walletSource: resolved.source || null,
+                        notifyIdentity: resolved.source && resolved.source.startsWith("ens")
+                            ? parsedTo.full
+                            : (deriveWeb2Identity(parsedTo.full, helpers) || parsedTo.full),
+                    };
+                }
+            }
+            return { route: "sbc", number: helpers.normalizePhone(parsedTo.value) };
+        }
+
+        return { route: "reject", reason: `Unsupported destination type: ${parsedTo.type}` };
+    } catch (error) {
+        if (isIdentityInactiveError(error, helpers)) {
+            return buildInactiveRoute(error.web2identity || deriveWeb2Identity(parsedTo?.full || parsedTo?.value || "", helpers));
+        }
+        throw error;
+    }
 }
 
 async function resolveCallerId(ctx) {

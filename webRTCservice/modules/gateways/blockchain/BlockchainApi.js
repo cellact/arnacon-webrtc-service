@@ -9,6 +9,7 @@ function createBlockchainApi({
     logger = console,
     arnaconSdkFactory = (sdkConfig) => new ArnaconSDK(sdkConfig),
 }) {
+    const IDENTITY_INACTIVE_ERROR_CODE = "IDENTITY_INACTIVE";
     const POLYGON_RPC = config.polygon.rpc;
     const ENS_REGISTRY_ADDRESS = config.polygon.ENSRegistry;
     const NAME_WRAPPER_ADDRESS = config.polygon.NameWrapper;
@@ -443,7 +444,16 @@ function createBlockchainApi({
         return raw.endsWith(".arnacon.global") ? raw : `${raw}.arnacon.global`;
     }
 
-    async function resolveWalletByWeb2Identity(web2identity) {
+    function buildIdentityInactiveError(web2identity, ansPayload = null) {
+        const err = new Error(`Identity mapping is inactive for ${web2identity}`);
+        err.code = IDENTITY_INACTIVE_ERROR_CODE;
+        err.web2identity = web2identity;
+        err.ansPayload = ansPayload;
+        return err;
+    }
+
+    async function resolveWalletByWeb2Identity(web2identity, options = {}) {
+        const { enforceActive = false } = options || {};
         const normalized = normalizePhoneLabel(web2identity);
         if (!normalized) return null;
         logMappingConfig();
@@ -453,6 +463,18 @@ function createBlockchainApi({
             { web2identity: normalized },
             `ans-mapping:${normalized}`,
         );
+        if (ansPayload && ansPayload.active === false) {
+            logger.log("[IdentityMapping] mapping inactive", {
+                web2identity: normalized,
+                active: ansPayload.active,
+                activated: ansPayload.activated ?? null,
+                expiresAt: ansPayload.expires_at || null,
+            });
+            if (enforceActive) {
+                throw buildIdentityInactiveError(normalized, ansPayload);
+            }
+            return null;
+        }
         const ansWallet = checksumWalletOrNull(ansPayload?.wallet);
         if (ansWallet) {
             logger.log("[IdentityMapping] ans wallet ignored (chain-authoritative mode)", {
@@ -667,7 +689,15 @@ function createBlockchainApi({
         }
         const web2identity = deriveWeb2Identity(identity);
         if (web2identity) {
-            const mappedWallet = await resolveWalletByWeb2Identity(web2identity);
+            let mappedWallet = null;
+            try {
+                mappedWallet = await resolveWalletByWeb2Identity(web2identity, { enforceActive: true });
+            } catch (err) {
+                if (err?.code === IDENTITY_INACTIVE_ERROR_CODE) {
+                    throw createHttpError(403, `Inactive identity mapping for ${web2identity}`);
+                }
+                throw err;
+            }
             if (mappedWallet) {
                 logger.log(`[Auth] signer source=gcp web2identity=${web2identity} wallet=${mappedWallet}`);
                 return mappedWallet;
@@ -909,6 +939,7 @@ function createBlockchainApi({
         nftGetOwnedNumber,
         roflFindBusinessNumber,
         roflAssignFromNumber,
+        IDENTITY_INACTIVE_ERROR_CODE,
         getRoflLogicInfo,
         getRpcForNetwork,
     };
