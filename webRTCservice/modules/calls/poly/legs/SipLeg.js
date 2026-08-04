@@ -9,11 +9,14 @@ const { LEG_STATES } = require("../states");
 const { assertIntentLegal } = require("../LegStateBehavior");
 
 function getSipFullRetryAttempts() {
-    return Math.max(0, Number(process.env.SIP_FULL_RETRY_ATTEMPTS || 2));
+    // Default 0: a retry re-sends a full INVITE, which the callee UA presents as
+    // a second incoming call. If the first INVITE cannot bring PC2 up, fail the
+    // call and surface the underlying cause instead of masking it with a re-ring.
+    return Math.max(0, Number(process.env.SIP_FULL_RETRY_ATTEMPTS || 0));
 }
 
 function getSipFullRetryDelayMs() {
-    return Math.max(0, Number(process.env.SIP_FULL_RETRY_DELAY_MS || 400));
+    return Math.max(0, Number(process.env.SIP_FULL_RETRY_DELAY_MS || 0));
 }
 
 class SipLeg extends SessionLeg {

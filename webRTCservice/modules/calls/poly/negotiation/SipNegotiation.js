@@ -32,27 +32,6 @@ class SipNegotiation extends CallNegotiationPort {
         this.logger = logger;
     }
 
-    _sleep(ms) {
-        return new Promise((resolve) => setTimeout(resolve, ms));
-    }
-
-    async _waitForPc2Connected(timeoutMs = 1200, pollMs = 100) {
-        const startedAt = Date.now();
-        while ((Date.now() - startedAt) < timeoutMs) {
-            const pc2 = this.session?.sipPeerConnection;
-            const state = String(pc2?.connectionState || "").toLowerCase();
-            const iceState = String(pc2?.iceConnectionState || "").toLowerCase();
-            if (
-                state === "connected" &&
-                (iceState === "connected" || iceState === "completed")
-            ) {
-                return true;
-            }
-            await this._sleep(pollMs);
-        }
-        return false;
-    }
-
     async connect() {
         // SIP registration/INVITE happens on ring()/answer(); nothing to pre-establish.
     }
@@ -74,26 +53,12 @@ class SipNegotiation extends CallNegotiationPort {
         };
 
         await openOutbound();
-
-        // Cold-start race guard: SIP can report "Established" before PC2 is
-        // actually usable. Readiness check lives here; retry policy lives in
-        // SipLeg so we keep a single retry authority.
-        let pc2Ready = await this._waitForPc2Connected(1200, 100);
-        if (!pc2Ready) {
-            const state = String(this.session?.sipPeerConnection?.connectionState || "unknown");
-            const iceState = String(this.session?.sipPeerConnection?.iceConnectionState || "unknown");
-            this.logger.error(
-                `[${this.id}] SIP leg PC2 not ready after invite (state=${state}, iceState=${iceState})`
-            );
-            try {
-                await this.sip.close(this.session.sessionId, { reason: "sip-pc2-not-ready" });
-            } catch (closeErr) {
-                this.logger.warn(`[${this.id}] SIP leg close after readiness failure failed: ${closeErr.message}`);
-            }
-            const err = new Error(`sip-pc2-not-ready:${state}:${iceState}`);
-            err.code = "SIP_PC2_NOT_CONNECTED";
-            throw err;
-        }
+        // No PC2 readiness gate here. SIP `Established` is our signal that the
+        // dialog is up; ICE/DTLS on PC2 finish in parallel while the media
+        // bridge attaches (same pattern the inbound path uses successfully).
+        // A gate here was tearing PC2 down before werift's connectionState
+        // could settle, which forced a full re-INVITE = a second ring on the
+        // callee UA. See git history if reintroducing.
     }
 
     // The peer picked up => accept: register as the callee number and accept the
