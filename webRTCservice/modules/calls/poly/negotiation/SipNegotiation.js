@@ -36,13 +36,16 @@ class SipNegotiation extends CallNegotiationPort {
         return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
-    async _waitForPc2Connected(timeoutMs = 5000, pollMs = 100) {
+    async _waitForPc2Connected(timeoutMs = 1200, pollMs = 100) {
         const startedAt = Date.now();
         while ((Date.now() - startedAt) < timeoutMs) {
             const pc2 = this.session?.sipPeerConnection;
             const state = String(pc2?.connectionState || "").toLowerCase();
             const iceState = String(pc2?.iceConnectionState || "").toLowerCase();
-            if (state === "connected" || iceState === "connected" || iceState === "completed") {
+            if (
+                state === "connected" &&
+                (iceState === "connected" || iceState === "completed")
+            ) {
                 return true;
             }
             await this._sleep(pollMs);
@@ -75,7 +78,7 @@ class SipNegotiation extends CallNegotiationPort {
         // Cold-start race guard: SIP can report "Established" before PC2 is
         // actually usable. Readiness check lives here; retry policy lives in
         // SipLeg so we keep a single retry authority.
-        let pc2Ready = await this._waitForPc2Connected(5000, 100);
+        let pc2Ready = await this._waitForPc2Connected(1200, 100);
         if (!pc2Ready) {
             const state = String(this.session?.sipPeerConnection?.connectionState || "unknown");
             const iceState = String(this.session?.sipPeerConnection?.iceConnectionState || "unknown");
