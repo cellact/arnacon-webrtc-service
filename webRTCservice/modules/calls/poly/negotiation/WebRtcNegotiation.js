@@ -543,14 +543,15 @@ class WebRtcNegotiation extends CallNegotiationPort {
 
     // PolySession told us the peer picked up. Flush the answer SDP we held back
     // during the ring (so the caller only now negotiates audio / shows connected),
-    // then ack. If there is no held answer (e.g. ICE-restart already answered),
-    // just ack.
+    // then ack. If that held SDP is absent, we still try hard to forward a usable
+    // answer from ingress/local fallbacks before proceeding.
     async answer(ctx = {}) {
         const callMeta = this._activeCallMeta();
         // Normal path: flush locally-held answer generated from our ring offer.
-        // Fallback path: if this leg has no pending local answer (e.g. caller leg
-        // in secnum<->secnum), forward the peer-provided answer from latest ingress
-        // so the caller still receives the SDP answer signal.
+        // Fallbacks (best-effort, in order):
+        //   1) answer SDP carried by ingress event payload
+        //   2) last generated answer cached on session
+        //   3) current localDescription SDP on the peer connection
         let answerSdp = this._pendingAnswerSdp;
         let answerCandidates = [];
         const ingressPayload = ctx?.event?.payload || null;
@@ -559,6 +560,12 @@ class WebRtcNegotiation extends CallNegotiationPort {
             if (Array.isArray(ingressPayload.candidates)) {
                 answerCandidates = ingressPayload.candidates;
             }
+        }
+        if (!answerSdp && this.session?.lastAnswerSdp) {
+            answerSdp = this.session.lastAnswerSdp;
+        }
+        if (!answerSdp && this.pc?.localDescription?.sdp) {
+            answerSdp = this.pc.localDescription.sdp;
         }
         if (answerSdp) {
             this.signaling.send({
@@ -575,6 +582,10 @@ class WebRtcNegotiation extends CallNegotiationPort {
                 },
             });
             this._pendingAnswerSdp = null;
+        } else {
+            this.logger.warn(
+                `[${this.id}] answer() could not resolve SDP source; sending ack-only`
+            );
         }
         this.signaling.send({ msgType: "call", action: "ack", ackFor: "answer", callId: callMeta.callId });
     }
