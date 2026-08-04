@@ -36,11 +36,15 @@ class SipNegotiation extends CallNegotiationPort {
         return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
-    async _waitForPc2Connected(timeoutMs = 2500, pollMs = 100) {
+    async _waitForPc2Connected(timeoutMs = 5000, pollMs = 100) {
         const startedAt = Date.now();
         while ((Date.now() - startedAt) < timeoutMs) {
-            const state = String(this.session?.sipPeerConnection?.connectionState || "").toLowerCase();
-            if (state === "connected") return true;
+            const pc2 = this.session?.sipPeerConnection;
+            const state = String(pc2?.connectionState || "").toLowerCase();
+            const iceState = String(pc2?.iceConnectionState || "").toLowerCase();
+            if (state === "connected" || iceState === "connected" || iceState === "completed") {
+                return true;
+            }
             await this._sleep(pollMs);
         }
         return false;
@@ -68,33 +72,24 @@ class SipNegotiation extends CallNegotiationPort {
 
         await openOutbound();
 
-        // Cold-start race guard: we sometimes get SIP "Established" but PC2 never
-        // reaches a usable connected state on the first invite. The immediate next
-        // invite usually succeeds, so do one automatic warm retry in-band.
-        let pc2Ready = await this._waitForPc2Connected(2500, 100);
+        // Cold-start race guard: SIP can report "Established" before PC2 is
+        // actually usable. Readiness check lives here; retry policy lives in
+        // SipLeg so we keep a single retry authority.
+        let pc2Ready = await this._waitForPc2Connected(5000, 100);
         if (!pc2Ready) {
-            this.logger.warn(`[${this.id}] SIP leg PC2 did not reach connected; retrying outbound SIP leg once`);
+            const state = String(this.session?.sipPeerConnection?.connectionState || "unknown");
+            const iceState = String(this.session?.sipPeerConnection?.iceConnectionState || "unknown");
+            this.logger.error(
+                `[${this.id}] SIP leg PC2 not ready after invite (state=${state}, iceState=${iceState})`
+            );
             try {
-                await this.sip.close(this.session.sessionId);
-            } catch (err) {
-                this.logger.warn(`[${this.id}] SIP leg warm-retry close failed: ${err.message}`);
+                await this.sip.close(this.session.sessionId, { reason: "sip-pc2-not-ready" });
+            } catch (closeErr) {
+                this.logger.warn(`[${this.id}] SIP leg close after readiness failure failed: ${closeErr.message}`);
             }
-            await openOutbound();
-            pc2Ready = await this._waitForPc2Connected(2500, 100);
-            if (!pc2Ready) {
-                const state = String(this.session?.sipPeerConnection?.connectionState || "unknown");
-                this.logger.error(
-                    `[${this.id}] SIP leg PC2 still not connected after warm retry (state=${state})`
-                );
-                try {
-                    await this.sip.close(this.session.sessionId, { reason: "sip-pc2-not-connected-after-retry" });
-                } catch (closeErr) {
-                    this.logger.warn(`[${this.id}] SIP leg post-retry close failed: ${closeErr.message}`);
-                }
-                const err = new Error(`sip-pc2-not-connected-after-retry:${state}`);
-                err.code = "SIP_PC2_NOT_CONNECTED";
-                throw err;
-            }
+            const err = new Error(`sip-pc2-not-ready:${state}:${iceState}`);
+            err.code = "SIP_PC2_NOT_CONNECTED";
+            throw err;
         }
     }
 
