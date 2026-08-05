@@ -56,9 +56,7 @@ function createSipClient({
     }
 
     function hashIdentityForLog(value) {
-        const str = String(value || "").trim();
-        if (!str) return str;
-        return crypto.createHash("sha256").update(str).digest("hex");
+        return String(value || "").trim();
     }
 
     function sipIdentityUri(value) {
