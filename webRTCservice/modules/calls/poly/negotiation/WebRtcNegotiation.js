@@ -166,14 +166,7 @@ class WebRtcNegotiation extends CallNegotiationPort {
         });
         const callMeta = this._activeCallMeta();
 
-        if (!session.localAudioTrack) {
-            const track = new this.MediaStreamTrack({ kind: "audio" });
-            session.localAudioTrack = track;
-            pc.addTrack(track);
-        } else {
-            const audioT = pc.getTransceivers().find((t) => t.kind === "audio");
-            if (audioT) audioT.setDirection("sendrecv");
-        }
+        this._ensureAudioReadyForOffer("m=audio", pc, { force: true, stopExtra: true });
         session.iceCandidates = [];
         const offer = await pc.createOffer();
         // Narrow the ring offer to the route's codec policy (e.g. PCMA only for
@@ -414,82 +407,52 @@ class WebRtcNegotiation extends CallNegotiationPort {
         try { transceiver.sender?.replaceTrack?.(track); } catch (_) {}
     }
 
-    _repairAudioForOfferMid(sdp, pc, opts = {}) {
-        this._ensureAudioReadyForOffer(sdp, pc, { force: true });
-        const offerMid = String(opts.preferredMid || this._offerAudioMid(sdp) || "").trim() || null;
-        const forceCreate = opts.forceCreate === true;
-        const preferredFromError = String(opts.preferredMid || "").trim() || null;
+    _repairAudioForOfferMid(sdp, pc, _opts = {}) {
+        // Keep the original transceiver mapping stable across calls. Reassigning MIDs
+        // or creating extra audio transceivers is what caused [0,2] vs [0,1] drift.
+        this._ensureAudioReadyForOffer(sdp, pc, { force: true, stopExtra: true });
+        const offerMid = String(this._offerAudioMid(sdp) || "").trim() || null;
+        if (!offerMid) return;
         const track = this.session.localAudioTrack || null;
         const audioTransceivers = pc.getTransceivers?.().filter((t) => t.kind === "audio") || [];
-        for (const transceiver of audioTransceivers) this._primeAudioTransceiver(transceiver, track);
-        if (!offerMid || audioTransceivers.length === 0) return;
-
-        const hasExactMid = () =>
-            (pc.getTransceivers?.().some((t) => t.kind === "audio" && String(t.mid || "") === offerMid) ?? false);
-        if (hasExactMid() && !forceCreate) return;
-
-        // If the stack explicitly reported a missing MID, prefer creating/syncing that
-        // MID before retagging existing transceivers. Some implementations keep an
-        // internal MID map that lags behind exposed transceiver.mid changes.
-        const canRetagExisting = !preferredFromError;
-        if (canRetagExisting) {
-            const candidate =
-                audioTransceivers.find((t) => t.mid == null || t.mid === "") ||
-                audioTransceivers[0];
-            if (candidate && String(candidate.mid || "") !== offerMid) {
-                try { candidate.mid = offerMid; } catch (_) {}
-            }
-            if (hasExactMid() && !forceCreate) return;
+        if (!audioTransceivers.length) return;
+        const exact = audioTransceivers.find((t) => String(t?.mid || "") === offerMid);
+        if (exact) {
+            this._primeAudioTransceiver(exact, track);
+            return;
         }
-
-        // Final fallback: try creating/binding a fresh audio transceiver if the
-        // implementation supports it.
-        if (typeof pc.addTransceiver === "function") {
-            let created = null;
-            try {
-                created = track
-                    ? pc.addTransceiver(track, { direction: "sendrecv" })
-                    : pc.addTransceiver("audio", { direction: "sendrecv" });
-            } catch (_) {}
-            // Some stacks reject addTransceiver(track) when that track is already
-            // attached; retry with kind-only to still create the missing MID slot.
-            if (!created) {
-                try {
-                    created = pc.addTransceiver("audio", { direction: "sendrecv" });
-                } catch (_) {}
-            }
-            if (created) {
-                try { created.mid = offerMid; } catch (_) {}
-                this._primeAudioTransceiver(created, track);
-            }
-        }
-
-        if (!hasExactMid()) {
-            const candidate =
-                (pc.getTransceivers?.().find((t) => t.kind === "audio" && (t.mid == null || t.mid === ""))) ||
-                (pc.getTransceivers?.().find((t) => t.kind === "audio")) ||
-                null;
-            if (candidate && String(candidate.mid || "") !== offerMid) {
-                try { candidate.mid = offerMid; } catch (_) {}
-            }
-        }
+        this._primeAudioTransceiver(audioTransceivers[0], track);
+        this.logger.warn?.(
+            `[${this.id}] offer audio mid=${offerMid} missing on local PC; reused existing audio transceiver without MID retag/create`
+        );
     }
 
     _ensureAudioReadyForOffer(sdp, pc, opts = {}) {
         if (!this._offerHasAudioMLine(sdp)) return;
-        const force = opts.force === true;
-        const audioTransceiver = pc.getTransceivers?.().find((t) => t.kind === "audio");
-        if (audioTransceiver && !force) {
-            this._primeAudioTransceiver(audioTransceiver, this.session.localAudioTrack || null);
-            return;
-        }
+        const stopExtra = opts.stopExtra === true;
 
         if (!this.session.localAudioTrack) {
             this.session.localAudioTrack = new this.MediaStreamTrack({ kind: "audio" });
         }
         const track = this.session.localAudioTrack;
-        const alreadyBound = this._isTrackBoundToAudioTransceiver(pc, track);
-        if (!alreadyBound && typeof pc.addTrack === "function") {
+        const audioTransceivers = pc.getTransceivers?.().filter((t) => t.kind === "audio") || [];
+        if (audioTransceivers.length > 0) {
+            const primary =
+                audioTransceivers.find((t) => t?.sender?.track === track)
+                || audioTransceivers[0];
+            this._primeAudioTransceiver(primary, track);
+            for (const transceiver of audioTransceivers) {
+                if (transceiver === primary) continue;
+                try { transceiver.setDirection?.("inactive"); } catch (_) {}
+                try { transceiver.sender?.replaceTrack?.(null); } catch (_) {}
+                if (stopExtra && typeof transceiver.stop === "function") {
+                    try { transceiver.stop(); } catch (_) {}
+                }
+            }
+            return;
+        }
+
+        if (typeof pc.addTrack === "function") {
             try {
                 pc.addTrack(track);
             } catch (err) {
