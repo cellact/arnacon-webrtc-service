@@ -13,6 +13,9 @@ function createDataChannelApi({ sessions, logger = console }) {
             ? ` ackFor=${message.ackFor}`
             : "";
         logger.log(`[${sessionId}] DC-OUT: msgType=${message.msgType} action=${action}${ackForPart} phase=${session.phase || "?"}${message.payload?.sdp ? ` sdpLen=${message.payload.sdp.length}` : ""}`);
+        if (message.msgType === "signaling" || message.msgType === "call") {
+            logger.log(`[${sessionId}] DC-OUT RAW: ${raw}`);
+        }
         session.dataChannel.send(raw);
     }
 

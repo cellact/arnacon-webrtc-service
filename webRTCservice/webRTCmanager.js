@@ -310,7 +310,8 @@ const selectedServiceConstantsForConfig =
     Object.values(loadedServices)[0]?.serviceConstants ||
     {};
 
-const LOG_PRIVACY_DEFAULT_ENABLED = selectedServiceConstantsForConfig?.logPrivacy?.enabled === true;
+// Default privacy filter is OFF so signaling logs stay full unless explicitly enabled.
+const LOG_PRIVACY_DEFAULT_ENABLED = process.env.LOG_PRIVACY_DEFAULT_ENABLED === "true";
 const PRIVACY_LOG_KEYS = new Set([
     "from",
     "to",
@@ -1762,85 +1763,46 @@ function pairResolutionForOffer(offer) {
 }
 
 async function onExistingPairOffer({ sessionId, offer, session, pairKey } = {}) {
-    const resolved = pairResolutionForOffer(offer);
-    if (!resolved?.poly || !resolved?.ref) {
-        const runtimeServiceId = session?.serviceId || null;
-        console.warn(
-            `[${sessionId || "no-session"}] existing-pair offer unresolved for ${pairKey || "unknown-pair"}`,
-            {
-                from: sanitizeIdentityForLog(runtimeServiceId, offer?.from || null),
-                to: sanitizeIdentityForLog(runtimeServiceId, offer?.to || null),
-            },
-        );
-        return { handled: false };
-    }
-    const sourceLabel = endpointLabel(offer?.from);
-    const callerLabel = endpointLabel(session?.callerEns);
-    const channelRole = sourceLabel && callerLabel && sourceLabel === callerLabel
-        ? "caller-webrtc"
-        : "callee-webrtc";
-    const roleMeta = channelRole === "callee-webrtc"
-        ? {
-            calleeIdentity: offer?.from || null,
-            signalingSessionId: offer?.sessionId || null,
+    // HTTP offer path only. DC-driven offers enter through the poly leg data
+    // channel listener, not through WebRtcOfferUseCase, so this function never
+    // runs for a DC reuse. Policy: a fresh HTTP offer for an existing pair
+    // means the client abandoned the previous transport (client-side unlock,
+    // app relaunch, network switch, etc.). Do a hard destroy of both legs +
+    // the poly entry, then return handled:false so the offer flow falls
+    // through to a clean createSession()/handleHandshake() path.
+    const from = offer?.from ? String(offer.from) : null;
+    const to = offer?.to ? String(offer.to) : null;
+    const targets = findSessionsForCancel(offer, sessionId);
+    const destroyed = [];
+    for (const [sid, s] of targets) {
+        try {
+            if (s) s.localAudioTrack = null;
+            destroySession(sid);
+            destroyed.push(sid);
+        } catch (err) {
+            console.error(`[${sid}] existing-pair http-offer destroy failed: ${err.message}`);
         }
-        : {};
-    if (!polyOwnsSession(resolved.poly, session, channelRole, roleMeta)) {
-        console.warn(
-            `[${sessionId || "no-session"}] existing-pair offer rejected: source transport not owned`,
-            {
-                pairKey: pairKey || "unknown-pair",
-                from: sanitizeIdentityForLog(session?.serviceId || null, offer?.from || null),
-                channelRole,
-            },
-        );
-        return { handled: false };
     }
-    const sourceLegSession = channelRole === "callee-webrtc"
-        ? resolveCalleeLegSession(session, roleMeta)
-        : session;
-    const sourceDc = resolveLegDataChannel(sourceLegSession, session?.sessionId, offer?.from);
-    if (!isOpenDc(sourceDc)) {
-        console.warn(
-            `[${sessionId || "no-session"}] existing-pair offer rejected: source data channel is closed`,
-            {
-                pairKey: pairKey || "unknown-pair",
-                from: sanitizeIdentityForLog(session?.serviceId || null, offer?.from || null),
-                channelRole,
-                signalingSessionId: offer?.sessionId || null,
-            },
-        );
-        return { handled: false };
+    if (from && to) {
+        try {
+            const key = polyRegistry.keyForPair(from, to);
+            await polyRegistry.destroy(key, "http-offer-force-teardown");
+        } catch (err) {
+            console.warn(
+                `[${sessionId || "no-session"}] existing-pair polyRegistry destroy failed: ${err.message}`,
+            );
+        }
     }
-    try {
-        await resolved.poly.onIngress(
-            resolved.ref,
-            polyIngress.toLegEvent(
-                "offer",
-                {
-                    sdp: offer?.sdp,
-                    candidates: offer?.candidates || [],
-                    iceRestart: offer?.iceRestart === true,
-                    offerUfrag: offer?.offerUfrag || null,
-                },
-                { forceOffer: true },
-            ),
-        );
-    } catch (err) {
-        console.error(
-            `[${sessionId || "no-session"}] existing-pair offer ingress failed for ${pairKey || "unknown-pair"}: ${err.message}`,
-        );
-        return { handled: false };
-    }
-    return {
-        handled: true,
-        responseBody: {
-            ok: true,
-            sessionId: sessionId || session?.sessionId || null,
-            type: "offer",
-            reusedPairContext: true,
+    console.warn(
+        `[${sessionId || "no-session"}] existing-pair HTTP offer -> hard teardown, forcing fresh handshake`,
+        {
+            pairKey: pairKey || "unknown-pair",
+            destroyed,
+            from: sanitizeIdentityForLog(session?.serviceId || null, from),
+            to: sanitizeIdentityForLog(session?.serviceId || null, to),
         },
-    };
+    );
+    return { handled: false };
 }
 
 function resolveCalleeLegSession(session, meta = {}) {
@@ -2384,6 +2346,9 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
         const session = sessions.get(sessionId);
         if (!session) return;
         const channelRole = meta.channelRole || "caller-webrtc";
+        if (msg.msgType === "signaling" || msg.msgType === "call") {
+            console.log(`[${sessionId}] DC-IN RAW: ${rawMessage}`);
+        }
 
         const multiring = multiringCoordinator.handleDataChannelMessage(sessionId, msg, meta);
         if (multiring.handled) {

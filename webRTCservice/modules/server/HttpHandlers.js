@@ -40,14 +40,24 @@ function createHandlers({
     sendJsonError,
     logger = console,
 }) {
+    function resolveNotifyType(rawData = {}) {
+        const nested = parseMaybeJson(rawData.payload);
+        if (nested?.type) return nested.type;
+        if (rawData?.type) return rawData.type;
+        return null;
+    }
+
     async function handleNotify(req, res) {
         try {
             const body = await readBody(req);
             const rawData = JSON.parse(body);
+            const notifyType = resolveNotifyType(rawData);
+            logger.log(`[Notify] Raw body: ${body}`);
+            if (notifyType === "offer") {
+                logger.log(`[Notify] Incoming offer full payload: ${body}`);
+            }
             if (isPrivacyEnabled(serviceRuntime)) {
-                logger.log("[Notify] payload received", summarizeNotifyPayload(rawData, body));
-            } else {
-                logger.log(`[Notify] Raw body: ${body}`);
+                logger.log("[Notify] payload summary", summarizeNotifyPayload(rawData, body));
             }
             const headerXSign = req.headers["x-sign"] || req.headers.xsign;
             const headerXData = req.headers["x-data"] || req.headers.xdata;
