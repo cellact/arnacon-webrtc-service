@@ -1066,6 +1066,11 @@ const offerFlowApi = createOfferFlow({
     addIceCandidates: (...args) => addIceCandidates(...args),
     callRuntime,
     createHttpError: (...args) => createHttpError(...args),
+    polyRegistryLookup: {
+        get: (...args) => polyRegistry.get(...args),
+        destroy: (...args) => polyRegistry.destroy(...args),
+        keyForPair: (...args) => polyRegistry.keyForPair(...args),
+    },
     logger: console,
 });
 const handshakeFlowApi = createHandshakeFlow({
@@ -1206,7 +1211,7 @@ const polyCore = createPolyCore({
     sipPort: {
         openOutbound: (sessionId, { target, from, sipDirective = null } = {}) => openSipSession(sessionId, from, target, sipDirective),
         openInbound: (sessionId, { phoneNumber } = {}) => openInboundSipSession(sessionId, phoneNumber),
-        close: (sessionId) => closeSipSession(sessionId),
+        close: (sessionId, options = {}) => closeSipSession(sessionId, options),
         sendDtmf: (sessionId, digit) => { console.log(`[${sessionId}] DTMF ${digit} (no-op; out of scope)`); },
         setHold: (sessionId, held) => { console.log(`[${sessionId}] hold=${held} (no-op; out of scope)`); },
     },
@@ -2284,6 +2289,9 @@ async function onDcRing(callerSessionId, payload) {
 
         callPairResolver.bindSessionPairRef(session, a.endpoint, b.endpoint);
         const { poly } = polyRegistry.resolve({ a, b, target: "a" });
+        if (typeof poly.markActiveCall === "function") {
+            poly.markActiveCall(session.callerEns, payload?.callId);
+        }
         startMonitoredAttempt({
             session,
             poly,
@@ -2821,8 +2829,8 @@ async function openInboundSipSession(sessionId, phoneNumber) {
 /**
  * Closes the SIP session — sends BYE via sip.js, tears down UserAgent.
  */
-async function closeSipSession(sessionId) {
-    return sipGateway.close(sessionId);
+async function closeSipSession(sessionId, options = {}) {
+    return sipGateway.close(sessionId, options);
 }
 
 

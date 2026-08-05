@@ -18,8 +18,15 @@ function createOfferFlow({
     normalizeIdentity = null,
     callRuntime = null,
     createHttpError,
+    polyRegistryLookup = null,
     logger = console,
 }) {
+    function normalizeCallId(value) {
+        if (value === undefined || value === null || value === "") return null;
+        const n = Number.parseInt(String(value), 10);
+        return Number.isFinite(n) && n > 0 ? n : null;
+    }
+
     function sessionMatchesPair(session, from, to) {
         if (!session) return false;
         return stableKey(session.callerEns, session.toIdentity) === stableKey(from, to);
@@ -101,6 +108,24 @@ function createOfferFlow({
             }
             sessionId = resolveExistingSessionId(from, to, sessionId);
             offer.sessionId = sessionId;
+            // Prefer (from, callId) correlation: only act on cancels that target
+            // the currently active call. A stale cancel (client raced, or cancel
+            // for a call already rotated away) must not tear down the fresh one.
+            const cancelCallId = normalizeCallId(offer.callId);
+            if (cancelCallId && polyRegistryLookup) {
+                try {
+                    const pairKey = polyRegistryLookup.keyForPair(from, to);
+                    const poly = polyRegistryLookup.get(pairKey);
+                    if (poly && !poly.isSameCall(from, cancelCallId)) {
+                        logger.warn(
+                            `[${sessionId || "no-session"}] HTTP cancel ignored: callId=${cancelCallId} does not match active call ${poly.activeCall?.callId || "none"}`,
+                        );
+                        return { ok: true, ignored: true, reason: "callid-mismatch", type: "cancel", sessionId };
+                    }
+                } catch (err) {
+                    logger.warn(`[${sessionId || "no-session"}] cancel callId lookup failed: ${err.message}`);
+                }
+            }
             if (typeof handleHttpCancel === "function") {
                 return handleHttpCancel(sessionId, offer);
             }
@@ -188,7 +213,59 @@ function createOfferFlow({
 
         assertAllowedInitialOfferFrom(from, sessionId, serviceId);
 
+        // callId is the single correlation key for a call attempt. A missing
+        // callId means the client cannot be reconciled against an active call
+        // and cannot be rotated safely -- reject rather than silently mixing
+        // state across attempts. (iOS callNonce is intentionally not aliased;
+        // clients must migrate to callId.)
+        const incomingCallId = normalizeCallId(offer.callId);
+        if (!incomingCallId) {
+            throw createHttpError(400, "Missing callId in offer");
+        }
+
         const key = stableKey(from, to);
+
+        // callId rotation: if a PolySession already exists for this pair and
+        // the incoming callId does not match its active call, this is a cold
+        // start from the client (or a fresh call after prior teardown). Hard
+        // rotate: end any live legs (SIP BYE flushes upstream, closing the
+        // Kamailio dialog), destroy the poly and the WebRTC runtime session,
+        // then fall through to the fresh-handshake path.
+        if (polyRegistryLookup) {
+            try {
+                const existingPoly = polyRegistryLookup.get(key);
+                if (existingPoly && !existingPoly.isSameCall(from, incomingCallId)) {
+                    const priorCallId = existingPoly.activeCall?.callId || "none";
+                    logger.log(
+                        `[${sessionId || key}] callId rotation ${priorCallId} -> ${incomingCallId}; tearing down prior session`,
+                    );
+                    try {
+                        await existingPoly.rotate("callid-rotation");
+                    } catch (err) {
+                        logger.error(`[${sessionId || key}] poly.rotate failed: ${err.message}`);
+                    }
+                    try {
+                        await polyRegistryLookup.destroy(key, "callid-rotation");
+                    } catch (_) {}
+                    const priorRuntimeId = resolveExistingSessionId(from, to, sessionId || key);
+                    if (priorRuntimeId && sessions.has(priorRuntimeId) && callRuntime) {
+                        try {
+                            await callRuntime.destroyRuntimeSession(priorRuntimeId, {
+                                source: "http",
+                                reason: "callid-rotation",
+                            });
+                        } catch (err) {
+                            logger.error(
+                                `[${sessionId || key}] runtime destroy failed on callid-rotation: ${err.message}`,
+                            );
+                        }
+                    }
+                }
+            } catch (err) {
+                logger.warn(`[${sessionId || key}] callId rotation check failed: ${err.message}`);
+            }
+        }
+
         const existingPairSessionId = resolveExistingSessionId(from, to, sessionId || key);
         if (existingPairSessionId && sessions.has(existingPairSessionId)) {
             sessionId = existingPairSessionId;

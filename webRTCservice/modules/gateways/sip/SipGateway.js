@@ -15,8 +15,8 @@ class SipGateway {
         return this.sipClient.openInboundSipSession(sessionId, this.sessionStore, options);
     }
 
-    close(sessionId) {
-        return this.sipClient.closeSipSession(sessionId, this.sessionStore);
+    close(sessionId, options = {}) {
+        return this.sipClient.closeSipSession(sessionId, this.sessionStore, options?.reason || "close");
     }
 }
 

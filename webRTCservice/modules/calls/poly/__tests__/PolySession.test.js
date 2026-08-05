@@ -500,3 +500,65 @@ test("media bridge still bidirectional after teardown and reconnect", async () =
     assert.equal(health.bToA, 2);
     await second.stop();
 });
+
+test("markActiveCall / isSameCall: normalizes from + callId, rejects mismatches", () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeWebRtcLeg("bob");
+    const { poly } = buildPoly(a, b);
+
+    assert.equal(poly.activeCall, null);
+    assert.equal(poly.isSameCall("alice", 1), false, "no activeCall -> never same");
+
+    poly.markActiveCall("Alice", "1");
+    assert.deepEqual(poly.activeCall, { from: "alice", callId: 1 });
+    assert.equal(poly.isSameCall("alice", 1), true);
+    assert.equal(poly.isSameCall("alice", "1"), true, "string callId still matches");
+    assert.equal(poly.isSameCall("ALICE", 1), true, "from is case-insensitive");
+    assert.equal(poly.isSameCall("alice", 2), false, "different callId is rotation signal");
+    assert.equal(poly.isSameCall("bob", 1), false, "different from is rotation signal");
+
+    poly.markActiveCall("alice", "not-a-number");
+    assert.deepEqual(poly.activeCall, { from: "alice", callId: 1 }, "invalid callId is ignored (keeps prior)");
+
+    poly.markActiveCall("alice", 42);
+    assert.deepEqual(poly.activeCall, { from: "alice", callId: 42 }, "valid callId overwrites prior");
+});
+
+test("rotate: ends both non-disconnected legs (SIP BYE flushes) and disposes", async () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeSipLeg("*9225");
+    const { poly, media } = buildPoly(a, b);
+
+    // Both legs up in a live call.
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o" }));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "ans" }));
+    assert.equal(a.leg.state, S.IN_CALL);
+    assert.equal(b.leg.state, S.IN_CALL);
+    assert.equal(media.connects.length, 1);
+
+    poly.markActiveCall("alice", 1);
+    await poly.rotate("callid-rotation");
+
+    assert.equal(poly.activeCall, null, "activeCall cleared after rotate");
+    assert.equal(poly._disposed, true, "poly disposed");
+    // Each active leg received an endCall (SIP -> BYE upstream, WebRtc -> end reneg).
+    assert.equal(a.negotiation.named("endCall").length >= 1, true, "webrtc endCall issued");
+    assert.equal(b.negotiation.named("endCall").length >= 1, true, "sip endCall issued (BYE)");
+    // Media bridge torn down as part of the leg endings.
+    assert.equal(media.disconnects.length >= 1, true);
+});
+
+test("rotate: idempotent on a disposed poly (no throw, no re-fire)", async () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeWebRtcLeg("bob");
+    const { poly } = buildPoly(a, b);
+    poly.markActiveCall("alice", 7);
+    await poly.rotate("callid-rotation");
+    const endCountsA = a.negotiation.named("endCall").length;
+    const endCountsB = b.negotiation.named("endCall").length;
+    await poly.rotate("callid-rotation");
+    assert.equal(a.negotiation.named("endCall").length, endCountsA);
+    assert.equal(b.negotiation.named("endCall").length, endCountsB);
+});

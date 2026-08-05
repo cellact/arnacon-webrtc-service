@@ -721,45 +721,21 @@ class WebRtcNegotiation extends CallNegotiationPort {
     //      the recovery helper.
     //   3) Fall back to the text patcher (which also covers recvonly now).
     // Never throws; on any failure we return the last non-null candidate.
+    // Honest pass-through. Prior versions attempted to synthesize an m=audio
+    // section in the answer when the offer had none (DC-only bootstrap offer),
+    // which is impossible under offer/answer negotiation and produced a silent
+    // one-way SIP bridge. With callId-scoped session rotation, a DC-only offer
+    // now cleanly gets a DC-only answer; the client's follow-up offer over the
+    // fresh DC carries the audio m-line, which we then answer normally. If the
+    // answer direction is not sendrecv/sendonly, log it and pass through --
+    // never mutate SDP behind the client's back.
     async _ensureActiveAudioAnswer(pc, offerSdp, answerSdp, label) {
         if (!answerSdp) return answerSdp;
         const dir = audioDirection(answerSdp);
         if (dir === "sendrecv" || dir === "sendonly") return answerSdp;
-        this.logger.warn?.(
-            `[${this.id}] ${label || "answer"} has non-active audio (dir=${dir || "unknown"}); repairing before emit`
+        this.logger.log?.(
+            `[${this.id}] ${label || "answer"} audio direction=${dir || "none"} (pass-through, no repair)`
         );
-        try {
-            if (this.session) this.session.localAudioTrack = null;
-            if (pc && this._ensureAudioReadyForOffer) {
-                this._ensureAudioReadyForOffer(offerSdp || answerSdp, pc, { force: true });
-            }
-            if (pc && this.p?.ensureLocalAudioTrack) {
-                this.p.ensureLocalAudioTrack(this.session, pc, this.id);
-            }
-        } catch (err) {
-            this.logger.warn?.(`[${this.id}] audio-repair prime failed: ${err?.message || err}`);
-        }
-        if (offerSdp && pc && this._createAnswerWithRecovery) {
-            try {
-                const rebuilt = await this._createAnswerWithRecovery(pc, offerSdp, `${label || "ANSWER"} REPAIR`);
-                if (rebuilt) {
-                    const rebuiltDir = audioDirection(rebuilt);
-                    if (rebuiltDir === "sendrecv" || rebuiltDir === "sendonly") return rebuilt;
-                    answerSdp = rebuilt;
-                }
-            } catch (err) {
-                this.logger.warn?.(`[${this.id}] audio-repair rebuild failed: ${err?.message || err}`);
-            }
-        }
-        if (this.p?.patchInactiveToSendrecv) {
-            try {
-                const patched = this.p.patchInactiveToSendrecv(answerSdp);
-                if (patched && patched !== answerSdp) {
-                    this.logger.warn?.(`[${this.id}] audio-repair text-patched ${label || "answer"} -> sendrecv`);
-                    return patched;
-                }
-            } catch (_) {}
-        }
         return answerSdp;
     }
 

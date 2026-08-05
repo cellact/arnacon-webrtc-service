@@ -51,6 +51,12 @@ class PolySession {
         this._onCallStart = null;
         this._onCallEnd = null;
         this._callActive = false;
+        // (from, callId) that owns the current call attempt on this pair.
+        // A new callId (or new from) arriving via /notify is a cold-start signal
+        // from the client: the offer intake layer rotates the PolySession before
+        // handing the offer to a leg. Set via markActiveCall on first ingress.
+        this.activeCall = null;
+        this._disposed = false;
         this.logger = logger;
 
         this.mediaHandle = null;
@@ -63,6 +69,64 @@ class PolySession {
             legA.onStateChange((e) => this._onLegChange(e)),
             legB.onStateChange((e) => this._onLegChange(e)),
         ];
+    }
+
+    _normalizeCallIdValue(value) {
+        if (value === undefined || value === null || value === "") return null;
+        const n = Number.parseInt(String(value), 10);
+        return Number.isFinite(n) && n > 0 ? n : null;
+    }
+
+    _normalizeFromValue(value) {
+        return identityLabel(String(value || "").toLowerCase()) || null;
+    }
+
+    // Called by the offer intake layer as soon as a new call attempt is bound
+    // to this PolySession. Overwrites any prior activeCall — the caller is
+    // responsible for having rotated first when the (from, callId) changed.
+    markActiveCall(from, callId) {
+        const normFrom = this._normalizeFromValue(from);
+        const normCallId = this._normalizeCallIdValue(callId);
+        if (!normFrom || !normCallId) return;
+        this.activeCall = { from: normFrom, callId: normCallId };
+    }
+
+    // Same call attempt? Returns true only when BOTH fields match a live
+    // activeCall record. Missing/mismatched fields yield false: the caller
+    // decides whether that means "rotate" or "reject".
+    isSameCall(from, callId) {
+        if (!this.activeCall) return false;
+        const normFrom = this._normalizeFromValue(from);
+        const normCallId = this._normalizeCallIdValue(callId);
+        if (!normFrom || !normCallId) return false;
+        return this.activeCall.from === normFrom && this.activeCall.callId === normCallId;
+    }
+
+    // Hard-rotate this PolySession: end whichever legs are still up (so SIP BYE
+    // fires and Kamailio's dialog counter drops), then dispose. Idempotent.
+    // Registered PolySessionRegistry deletion is the caller's job.
+    async rotate(reason = "call-rotated") {
+        if (this._disposed) return;
+        const priorCall = this.activeCall
+            ? `from=${this.activeCall.from} callId=${this.activeCall.callId}`
+            : "unknown";
+        this.logger.log(`[${this.id}] rotate (${reason}) prior=${priorCall}`);
+        const endCallSafely = async (leg) => {
+            if (!leg) return;
+            if (leg.state === LEG_STATES.DISCONNECTED) return;
+            if (leg._isTerminal && leg._isTerminal()) return;
+            try {
+                await leg.endCall({ reason });
+            } catch (err) {
+                this.logger.error(`[${this.id}] rotate: leg ${leg.id} endCall failed: ${err?.message || err}`);
+            }
+        };
+        await Promise.all([endCallSafely(this.legs.a), endCallSafely(this.legs.b)]);
+        try {
+            await this._settle();
+        } catch (_) {}
+        this.activeCall = null;
+        await this.dispose(reason);
     }
 
     refOf(leg) {
@@ -272,6 +336,8 @@ class PolySession {
     }
 
     async dispose(reason = "dispose") {
+        if (this._disposed) return;
+        this._disposed = true;
         for (const off of this._unsubscribe.splice(0)) {
             try { off(); } catch (_) {}
         }

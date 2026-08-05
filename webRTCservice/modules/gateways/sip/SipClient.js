@@ -76,8 +76,9 @@ function createSipClient({
     }
 
     function registerSipHandle(sessionId, session, sipConnection) {
+        sipConnection.sessionId = sessionId;
         session.resources?.register("sipLeg", async (reason = "sip-resource-stop") => {
-            await closeSipConnectionResources(sipConnection);
+            await closeSipConnectionResources(sipConnection, { sessionId, reason });
             releaseSipSessionFields(session, sipConnection);
             logger.log(`[${sessionId}] SIP leg released reason=${reason}`);
         });
@@ -297,9 +298,12 @@ function createSipClient({
         logger.log(`[${sessionId}] Inbound call active — audio flowing via SBC`);
     }
 
-    async function closeSipConnectionResources(connection) {
+    async function closeSipConnectionResources(connection, ctx = {}) {
         if (!connection) return;
         const { userAgent, registerer, inviter, invitation } = connection;
+        const sessionId = ctx.sessionId || connection.sessionId || null;
+        const reason = ctx.reason || "close";
+        const tag = sessionId ? `[${sessionId}]` : "[no-session]";
         if (connection.inviteTimer) {
             clearTimeout(connection.inviteTimer);
             connection.inviteTimer = null;
@@ -309,13 +313,19 @@ function createSipClient({
         }
         const sipSession = inviter || invitation;
         if (sipSession) {
-            if (sipSession.state === SessionState.Established) {
-                try { await sipSession.bye(); } catch (_) {}
-            } else if (sipSession.state !== SessionState.Terminated && sipSession.state !== "Terminating") {
+            const state = sipSession.state;
+            if (state === SessionState.Established) {
+                logger.log(`${tag} SIP BYE sending (state=Established reason=${reason})`);
+                try { await sipSession.bye(); logger.log(`${tag} SIP BYE sent`); }
+                catch (err) { logger.warn(`${tag} SIP BYE failed: ${err?.message || err}`); }
+            } else if (state !== SessionState.Terminated && state !== "Terminating") {
+                logger.log(`${tag} SIP CANCEL/REJECT sending (state=${state} reason=${reason})`);
                 try {
-                    if (typeof sipSession.cancel === "function") await sipSession.cancel();
-                    else if (typeof sipSession.reject === "function") await sipSession.reject();
-                } catch (_) {}
+                    if (typeof sipSession.cancel === "function") { await sipSession.cancel(); logger.log(`${tag} SIP CANCEL sent`); }
+                    else if (typeof sipSession.reject === "function") { await sipSession.reject(); logger.log(`${tag} SIP REJECT sent`); }
+                } catch (err) { logger.warn(`${tag} SIP CANCEL/REJECT failed: ${err?.message || err}`); }
+            } else {
+                logger.log(`${tag} SIP close skipped (state=${state} reason=${reason})`);
             }
         }
         if (registerer) {
@@ -326,11 +336,11 @@ function createSipClient({
         }
     }
 
-    async function closeSipSession(sessionId, sessionStore) {
+    async function closeSipSession(sessionId, sessionStore, reason = "close") {
         const session = sessionStore.get(sessionId);
         if (!session || !session.sipConnection) return;
         const sipConnection = session.sipConnection;
-        await closeSipConnectionResources(sipConnection);
+        await closeSipConnectionResources(sipConnection, { sessionId, reason });
         if (session.sipConnection !== sipConnection) return;
         session.resources?.remove?.("sipLeg");
         releaseSipSessionFields(session, sipConnection);
