@@ -74,6 +74,11 @@ class SessionStore {
             remoteTracks: [],
             localAudioTrack: null,
             connectionState: "new",
+            // Becomes true once this session's data channel has opened. This is
+            // deliberately sticky: a later call cancellation must distinguish a
+            // reusable transport established by an earlier call from an initial
+            // handshake that was cancelled before it became usable.
+            transportEstablished: false,
             disconnectTimer: null,
             walletAddress: null,
             sipConnection: null,

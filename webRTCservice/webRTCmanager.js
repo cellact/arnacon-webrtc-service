@@ -2325,6 +2325,11 @@ async function onDcRing(callerSessionId, payload) {
 function onDataChannelOpen(sessionId, meta = {}) {
     const session = sessions.get(sessionId);
     if (!session) return;
+    // Sticky transport capability, independent from the current call attempt.
+    // HTTP cancel uses this to preserve a PC/DC that was already established
+    // (and may have carried earlier calls) while still hard-destroying a
+    // cancelled initial handshake that never became reusable.
+    session.transportEstablished = true;
     if (multiringCoordinator.handleDataChannelOpen(sessionId, meta).handled) return;
     const poly = polyForSession(session);
     if (!poly) return;
@@ -2645,18 +2650,50 @@ function findSessionsForCancel(offer, sessionId) {
     return [...found.entries()];
 }
 
+function hasReusableTransport(session) {
+    if (!session) return false;
+    if (session.transportEstablished === true) return true;
+    const dcOpen = session.dataChannel?.readyState === "open";
+    const pcConnected =
+        session.peerConnection?.connectionState === "connected"
+        || session.peerConnection?.iceConnectionState === "connected"
+        || session.peerConnection?.iceConnectionState === "completed";
+    return !!(dcOpen && pcConnected);
+}
+
+function resolveHttpCancelTarget(offer, targets) {
+    const byOfferPair = pairResolutionForOffer(offer);
+    if (byOfferPair?.poly && byOfferPair?.ref) return byOfferPair;
+
+    // The HTTP identity pair may differ from the canonical endpoints stored on
+    // the poly (hashed notification identities vs resolved secnum/ENS labels).
+    // Fall back through the session's own callPairRef and, most importantly,
+    // object ownership of the WebRTC negotiation session.
+    for (const [, session] of targets) {
+        const poly = polyForSession(session);
+        if (!poly) continue;
+        const ref =
+            polyWebrtcRef(poly, session, "caller-webrtc")
+            || polyRefByEndpoint(poly, offer?.from);
+        if (ref) {
+            return {
+                key: callPairResolver.keyFromPoly(poly),
+                poly,
+                ref,
+            };
+        }
+    }
+    return null;
+}
+
 // HTTP /notify "cancel".
 //
-// A cancel MUST always leave the pair truly empty, so a subsequent offer from
-// the same (from,to) starts from a clean slate. The old behavior bailed out
-// with `unresolved-pair-for-http-cancel` whenever `polyRegistry` did not yet
-// have an entry (poly not born yet, or service resolution failed) -- but the
-// underlying WebRTC session, its PC and its localAudioTrack were already alive,
-// so the next call attempt inherited that ghost state and shipped
-// `a=recvonly` in the accept answer (Android then never accepts). Now:
-//   * poly ingress ("cancel") is best-effort when a poly exists
-//   * we always force-teardown every session bound to this cancel
-//   * we always drop the polyRegistry entry for the pair
+// The session is a reusable transport; the cancel addresses one call attempt.
+// Therefore:
+//   * established PC/DC + resolved poly -> cancel through the poly and keep
+//     session/poly/transport alive for the next call
+//   * initial transport not established (or no poly exists yet) -> atomically
+//     hard-destroy the partial session and pair so it cannot become a ghost
 async function onHttpCancel(sessionId, offer) {
     const directSession = sessions.get(sessionId);
     if (directSession?.referTransfer?.enabled && directSession.referTransfer.mode === "controller") {
@@ -2665,21 +2702,44 @@ async function onHttpCancel(sessionId, offer) {
         return { ok: true, type: "cancel", sessionId, transferId: state?.transferId || null };
     }
 
-    const resolved = pairResolutionForOffer(offer);
-    let polyIngressError = null;
-    if (resolved?.poly && resolved?.ref) {
+    const targets = findSessionsForCancel(offer, sessionId);
+    const resolved = resolveHttpCancelTarget(offer, targets);
+    const reusableTarget = targets.find(([, session]) => hasReusableTransport(session));
+    const preserveTransport = !!(resolved?.poly && resolved?.ref && reusableTarget);
+
+    if (preserveTransport) {
         try {
             await resolved.poly.onIngress(resolved.ref, polyIngress.toLegEvent("cancel", {}, {}));
+            emitCallMonitorFailure(directSession || reusableTarget[1], "cancel");
+            return {
+                ok: true,
+                type: "cancel",
+                sessionId,
+                destroyed: [],
+                transportPreserved: true,
+                polyResolved: true,
+            };
         } catch (err) {
-            polyIngressError = err;
             console.error(`[${sessionId || "no-session"}] poly http-cancel ingress failed: ${err.message}`);
             emitCallMonitorFailure(directSession, "poly-http-cancel-failed");
+            // The transport was already proven reusable. Do not turn a call-level
+            // state error into a PC/DC teardown; preserve it and surface the
+            // diagnostic so a later call can still recover on the same session.
+            return {
+                ok: true,
+                type: "cancel",
+                sessionId,
+                destroyed: [],
+                transportPreserved: true,
+                polyResolved: true,
+                polyIngressError: err.message,
+            };
         }
-    } else {
-        console.warn(`[${sessionId || "no-session"}] http-cancel with no resolvable poly; force-tearing pair down anyway`);
     }
 
-    const targets = findSessionsForCancel(offer, sessionId);
+    console.warn(
+        `[${sessionId || "no-session"}] http-cancel before reusable transport; force-tearing partial pair down`
+    );
     const destroyed = [];
     for (const [sid, s] of targets) {
         try {
@@ -2708,8 +2768,9 @@ async function onHttpCancel(sessionId, offer) {
         type: "cancel",
         sessionId,
         destroyed,
+        transportPreserved: false,
         polyResolved: !!(resolved?.poly && resolved?.ref),
-        polyIngressError: polyIngressError ? polyIngressError.message : null,
+        polyIngressError: null,
     };
 }
 

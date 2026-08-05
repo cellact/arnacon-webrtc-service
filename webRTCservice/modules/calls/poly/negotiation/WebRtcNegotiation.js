@@ -634,6 +634,17 @@ class WebRtcNegotiation extends CallNegotiationPort {
         this._rememberCallMeta(payload);
         const callMeta = this._activeCallMeta();
 
+        if (ctx.mode === "cancel" || ctx.mode === "reject") {
+            // Cancel/reject ends only the current call attempt on this already
+            // established transport. Do not initiate another inactive SDP offer
+            // back toward the client that just cancelled: SessionLeg settles this
+            // actor to CANCELED/REJECTED, then PolySession ends the peer leg. The
+            // PC/DC and this side's negotiated transceivers remain reusable.
+            this._pendingAnswerSdp = null;
+            if (this.session) this.session.lastAnswerSdp = null;
+            return { state: LEG_STATES.CONNECTED };
+        }
+
         if (ctx.mode === "remote") {
             // Client drove the end. NEVER (re)initiate an end-call offer here.
             if (payload.type === "answer") {
