@@ -723,22 +723,38 @@ function createBlockchainApi({
         if (!xsign) throw createHttpError(401, "Missing required field: xsign");
 
         const offeredFrom = normalizeEnsDomain(offer.from || "");
-        let expectedIdentity = normalizeEnsDomain(session.outboundWebrtc?.toIdentity || session.toIdentity || "");
-        if (session.outboundWebrtcLegs?.values && offeredFrom) {
+        const allowedIdentities = new Set();
+        const addAllowedIdentity = (value) => {
+            const normalized = normalizeEnsDomain(value || "");
+            if (normalized) allowedIdentities.add(normalized);
+        };
+        // Depending on reuse/fallback timing, the session tied to this answer may
+        // currently represent either participant as "toIdentity"/"callerEns".
+        // Accept either known participant identity, then cryptographically verify
+        // the offered signer against that identity.
+        addAllowedIdentity(session.outboundWebrtc?.toIdentity);
+        addAllowedIdentity(session.toIdentity);
+        addAllowedIdentity(session.callerEns);
+        if (session.outboundWebrtcLegs?.values) {
             for (const leg of session.outboundWebrtcLegs.values()) {
-                const legIdentity = normalizeEnsDomain(leg.toIdentity || "");
-                if (legIdentity && legIdentity === offeredFrom) {
-                    expectedIdentity = legIdentity;
-                    break;
-                }
+                addAllowedIdentity(leg?.toIdentity);
+                addAllowedIdentity(leg?.callerEns);
             }
         }
+        const allowed = Array.from(allowedIdentities);
+        const expectedIdentity = allowed[0] || "";
         if (!expectedIdentity) {
             throw createHttpError(401, "Unable to verify answer signer: missing session toIdentity");
         }
 
-        if (offeredFrom && !sameIdentityLabel(offeredFrom, expectedIdentity)) {
-            throw createHttpError(403, `Answer 'from' mismatch: expected ${expectedIdentity}, got ${offeredFrom}`);
+        if (offeredFrom) {
+            const fromMatchesSession = allowed.some((candidate) => sameIdentityLabel(offeredFrom, candidate));
+            if (!fromMatchesSession) {
+                throw createHttpError(
+                    403,
+                    `Answer 'from' mismatch: expected one of [${allowed.join(", ")}], got ${offeredFrom}`,
+                );
+            }
         }
 
         const verificationIdentity = offeredFrom || expectedIdentity;
