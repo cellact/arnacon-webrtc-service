@@ -79,9 +79,14 @@ function embedCandidatesInSdp(sdp, candidates) {
     return result.join(lineEnding) + lineEnding;
 }
 
+// Also patches a=recvonly on the audio section. werift emits recvonly when the
+// audio sender has no live track (e.g. after a prior end-call reneg
+// replaceTrack(null) or an unresolved cancel leaving the sender dangling).
+// Shipping recvonly on the accept path breaks Android which treats it as a
+// stale/inactive answer and never picks up the call.
 function patchInactiveToSendrecv(sdp) {
-    if (/m=audio[\s\S]*?a=inactive/m.test(sdp)) {
-        return sdp.replace(/^(m=audio[\s\S]*?)a=inactive/m, "$1a=sendrecv");
+    if (/m=audio[\s\S]*?a=(inactive|recvonly)/m.test(sdp)) {
+        return sdp.replace(/^(m=audio[\s\S]*?)a=(inactive|recvonly)/m, "$1a=sendrecv");
     }
     return sdp;
 }

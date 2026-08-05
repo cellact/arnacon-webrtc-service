@@ -236,6 +236,16 @@ class WebRtcNegotiation extends CallNegotiationPort {
             offerSdp = this.p.patchInactiveToSendrecv(offerSdp);
         }
         const offerHasAudio = this._offerHasAudioMLine(offerSdp);
+        // Fresh accept path (a client ring, not an ICE restart): force a brand
+        // new MediaStreamTrack. Reusing session.localAudioTrack across attempts
+        // is what let werift ship a=recvonly on the answer when a prior
+        // end-call reneg (or an unresolved cancel) had already null-tracked the
+        // sender behind our back. The mint-if-missing branches inside
+        // _ensureAudioReadyForOffer / ensureLocalAudioTrack do the actual
+        // allocation once we drop the stale reference here.
+        if (!isIceRestart && offerHasAudio && this.session) {
+            this.session.localAudioTrack = null;
+        }
         if (!isIceRestart && offerHasAudio) this._ensureAudioReadyForOffer(offerSdp, pc);
         await this._setRemoteOfferWithRecovery(pc, offerSdp);
         await this.p.addIceCandidates?.(pc, payload.candidates || []);
@@ -245,7 +255,8 @@ class WebRtcNegotiation extends CallNegotiationPort {
             this.p.ensureLocalAudioTrack(this.session, pc, this.id);
         }
         const label = isIceRestart ? "ICE-RESTART ANSWER SDP" : "ANSWER SDP";
-        const answerSdp = await this._createAnswerWithRecovery(pc, offerSdp, label);
+        let answerSdp = await this._createAnswerWithRecovery(pc, offerSdp, label);
+        answerSdp = await this._ensureActiveAudioAnswer(pc, offerSdp, answerSdp, label);
         this.session.lastAnswerSdp = answerSdp;
         // In-call renegotiation (ICE restart) answers immediately. For a fresh
         // ring we hold the answer: the caller must not see "connected" until the
@@ -568,6 +579,10 @@ class WebRtcNegotiation extends CallNegotiationPort {
             answerSdp = this.pc.localDescription.sdp;
         }
         if (answerSdp) {
+            // Emit-time safety net: if audio direction is not active, repair the
+            // sender track and rebuild the answer before it goes on the wire.
+            // Never fail the call -- worst case we patch the SDP text directly.
+            answerSdp = await this._ensureActiveAudioAnswer(this.pc, null, answerSdp, "ANSWER FLUSH");
             this.signaling.send({
                 msgType: "signaling",
                 callId: callMeta.callId,
@@ -696,6 +711,58 @@ class WebRtcNegotiation extends CallNegotiationPort {
         });
     }
 
+    // Emit-time safety net for the accept path: if the answer SDP we're about
+    // to ship has non-active audio direction (recvonly/inactive), rebuild it
+    // so Android accepts the call. Rebuild strategy:
+    //   1) Force-refresh audio sender (mint fresh track + setDirection sendrecv)
+    //      so RTP has a live source going forward, even if we ship text-patched
+    //      SDP below.
+    //   2) If we still have the offer SDP handy, try a fresh createAnswer via
+    //      the recovery helper.
+    //   3) Fall back to the text patcher (which also covers recvonly now).
+    // Never throws; on any failure we return the last non-null candidate.
+    async _ensureActiveAudioAnswer(pc, offerSdp, answerSdp, label) {
+        if (!answerSdp) return answerSdp;
+        const dir = audioDirection(answerSdp);
+        if (dir === "sendrecv" || dir === "sendonly") return answerSdp;
+        this.logger.warn?.(
+            `[${this.id}] ${label || "answer"} has non-active audio (dir=${dir || "unknown"}); repairing before emit`
+        );
+        try {
+            if (this.session) this.session.localAudioTrack = null;
+            if (pc && this._ensureAudioReadyForOffer) {
+                this._ensureAudioReadyForOffer(offerSdp || answerSdp, pc, { force: true });
+            }
+            if (pc && this.p?.ensureLocalAudioTrack) {
+                this.p.ensureLocalAudioTrack(this.session, pc, this.id);
+            }
+        } catch (err) {
+            this.logger.warn?.(`[${this.id}] audio-repair prime failed: ${err?.message || err}`);
+        }
+        if (offerSdp && pc && this._createAnswerWithRecovery) {
+            try {
+                const rebuilt = await this._createAnswerWithRecovery(pc, offerSdp, `${label || "ANSWER"} REPAIR`);
+                if (rebuilt) {
+                    const rebuiltDir = audioDirection(rebuilt);
+                    if (rebuiltDir === "sendrecv" || rebuiltDir === "sendonly") return rebuilt;
+                    answerSdp = rebuilt;
+                }
+            } catch (err) {
+                this.logger.warn?.(`[${this.id}] audio-repair rebuild failed: ${err?.message || err}`);
+            }
+        }
+        if (this.p?.patchInactiveToSendrecv) {
+            try {
+                const patched = this.p.patchInactiveToSendrecv(answerSdp);
+                if (patched && patched !== answerSdp) {
+                    this.logger.warn?.(`[${this.id}] audio-repair text-patched ${label || "answer"} -> sendrecv`);
+                    return patched;
+                }
+            } catch (_) {}
+        }
+        return answerSdp;
+    }
+
     async _setAudioInactive(pc) {
         for (const transceiver of pc.getTransceivers()) {
             if (transceiver.kind !== "audio") continue;
@@ -703,6 +770,11 @@ class WebRtcNegotiation extends CallNegotiationPort {
             if (transceiver.sender && typeof transceiver.sender.replaceTrack === "function") {
                 try { await transceiver.sender.replaceTrack(null); } catch (_) {}
             }
+            // Drop the session's reference so the next accept path is forced to
+            // mint a fresh track. Leaving it truthy makes ensureOutputTrack /
+            // _ensureAudioReadyForOffer reuse a track werift now treats as dead,
+            // which makes werift downgrade the next answer to a=recvonly.
+            if (this.session) this.session.localAudioTrack = null;
             return true;
         }
         return false;

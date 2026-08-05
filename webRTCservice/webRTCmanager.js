@@ -175,6 +175,7 @@ const { narrowAudioOfferForCodecPolicy } = require("./modules/media/negotiation/
 const {
     identityLabel,
     createCallPairRef,
+    pairKeyFromIdentities,
 } = require("./modules/runtime/CallPairRef");
 const { CallPairResolver } = require("./modules/runtime/CallPairResolver");
 const {
@@ -2613,7 +2614,49 @@ async function onHttpReject(sessionId, offer) {
     return { ok: true, type: "reject", sessionId };
 }
 
+// Find every WebRTC session that belongs to this cancel. HTTP cancels can land
+// before the poly is registered under the pair (fast-cancel race, or service
+// resolution never completes at all -- e.g. ans-mapping 404), so lookup by
+// polyRegistry alone is not enough. We collect:
+//   1) the session by the offer's sessionId (if present in `sessions`)
+//   2) any session whose callPairRef matches the (from,to) pair
+// De-duplicated, in insertion order.
+function findSessionsForCancel(offer, sessionId) {
+    const found = new Map();
+    const add = (sid, s) => {
+        if (!sid || !s || found.has(sid)) return;
+        found.set(sid, s);
+    };
+    if (sessionId) {
+        const s = sessions.get(sessionId);
+        if (s) add(sessionId, s);
+    }
+    const from = offer?.from ? String(offer.from) : null;
+    const to = offer?.to ? String(offer.to) : null;
+    if (from && to) {
+        const wantKey = pairKeyFromIdentities(from, to);
+        for (const [sid, s] of sessions.entries()) {
+            if (found.has(sid)) continue;
+            const ref = s?.callPairRef;
+            if (!ref?.caller || !ref?.callee) continue;
+            if (pairKeyFromIdentities(ref.caller, ref.callee) === wantKey) add(sid, s);
+        }
+    }
+    return [...found.entries()];
+}
+
 // HTTP /notify "cancel".
+//
+// A cancel MUST always leave the pair truly empty, so a subsequent offer from
+// the same (from,to) starts from a clean slate. The old behavior bailed out
+// with `unresolved-pair-for-http-cancel` whenever `polyRegistry` did not yet
+// have an entry (poly not born yet, or service resolution failed) -- but the
+// underlying WebRTC session, its PC and its localAudioTrack were already alive,
+// so the next call attempt inherited that ghost state and shipped
+// `a=recvonly` in the accept answer (Android then never accepts). Now:
+//   * poly ingress ("cancel") is best-effort when a poly exists
+//   * we always force-teardown every session bound to this cancel
+//   * we always drop the polyRegistry entry for the pair
 async function onHttpCancel(sessionId, offer) {
     const directSession = sessions.get(sessionId);
     if (directSession?.referTransfer?.enabled && directSession.referTransfer.mode === "controller") {
@@ -2621,22 +2664,53 @@ async function onHttpCancel(sessionId, offer) {
         await failReferTransfer(state, "c-cancelled");
         return { ok: true, type: "cancel", sessionId, transferId: state?.transferId || null };
     }
+
     const resolved = pairResolutionForOffer(offer);
-    if (!resolved?.poly || !resolved?.ref) {
-        const err = "unresolved-pair-for-http-cancel";
-        console.error(`[${sessionId || "no-session"}] ${err}`);
-        emitCallMonitorFailure(directSession, "cancel-unresolved-pair");
-        return { ok: false, error: err, type: "cancel", sessionId };
+    let polyIngressError = null;
+    if (resolved?.poly && resolved?.ref) {
+        try {
+            await resolved.poly.onIngress(resolved.ref, polyIngress.toLegEvent("cancel", {}, {}));
+        } catch (err) {
+            polyIngressError = err;
+            console.error(`[${sessionId || "no-session"}] poly http-cancel ingress failed: ${err.message}`);
+            emitCallMonitorFailure(directSession, "poly-http-cancel-failed");
+        }
+    } else {
+        console.warn(`[${sessionId || "no-session"}] http-cancel with no resolvable poly; force-tearing pair down anyway`);
     }
-    try {
-        await resolved.poly.onIngress(resolved.ref, polyIngress.toLegEvent("cancel", {}, {}));
-    } catch (err) {
-        console.error(`[${sessionId}] poly http-cancel failed: ${err.message}`);
-        emitCallMonitorFailure(directSession, "poly-http-cancel-failed");
-        return { ok: false, error: "poly-http-cancel-failed", type: "cancel", sessionId };
+
+    const targets = findSessionsForCancel(offer, sessionId);
+    const destroyed = [];
+    for (const [sid, s] of targets) {
+        try {
+            if (s) s.localAudioTrack = null;
+            destroySession(sid);
+            destroyed.push(sid);
+        } catch (err) {
+            console.error(`[${sid}] http-cancel destroy failed: ${err.message}`);
+        }
     }
-    emitCallMonitorFailure(directSession, "cancel");
-    return { ok: true, type: "cancel", sessionId };
+
+    const from = offer?.from ? String(offer.from) : null;
+    const to = offer?.to ? String(offer.to) : null;
+    if (from && to) {
+        try {
+            const pairKey = polyRegistry.keyForPair(from, to);
+            await polyRegistry.destroy(pairKey, "http-cancel-force-teardown");
+        } catch (err) {
+            console.warn(`[${sessionId || "no-session"}] http-cancel polyRegistry destroy failed: ${err.message}`);
+        }
+    }
+
+    emitCallMonitorFailure(directSession, resolved?.poly ? "cancel" : "cancel-unresolved-pair");
+    return {
+        ok: true,
+        type: "cancel",
+        sessionId,
+        destroyed,
+        polyResolved: !!(resolved?.poly && resolved?.ref),
+        polyIngressError: polyIngressError ? polyIngressError.message : null,
+    };
 }
 
 // secnum<->secnum callee invite: reuse the proven outbound leg factory + FCM.
