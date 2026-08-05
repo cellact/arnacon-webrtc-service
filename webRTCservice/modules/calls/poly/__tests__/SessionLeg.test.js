@@ -93,6 +93,17 @@ test("ingress END answer while ENDING completes a P-initiated end -> CONNECTED",
     assert.equal(negotiation.named("endCall")[0].mode, "remote", "the client's end-call answer is applied");
 });
 
+test("transport close while ENDING settles to DISCONNECTED", async () => {
+    const { leg } = makeWebRtcLeg("ending-closed");
+    leg.setState(S.ENDING, { from: "self" });
+    await leg.handleIngress(makeLegEvent(LEG_EVENTS.TRANSPORT_CLOSE));
+    assert.equal(
+        leg.state,
+        S.DISCONNECTED,
+        "a closed transport cannot remain waiting for an end-call answer",
+    );
+});
+
 test("idempotent teardown: trailing end-call renegotiation is absorbed without state churn", async () => {
     const { leg, negotiation } = makeWebRtcLeg("t");
     leg.setState(S.IN_CALL, { from: "self" });

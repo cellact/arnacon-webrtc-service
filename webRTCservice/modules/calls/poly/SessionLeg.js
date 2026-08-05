@@ -188,6 +188,17 @@ class SessionLeg {
                 }
                 return;
             case LEG_EVENTS.TRANSPORT_CLOSE:
+                // An ENDING WebRTC leg is waiting for an answer on the transport
+                // that just closed. That answer can never arrive, so settle to
+                // DISCONNECTED and let PolySession reconnect it for any queued
+                // call instead of leaving the queue blocked forever.
+                if (this.state === LEG_STATES.ENDING) {
+                    this.setState(LEG_STATES.DISCONNECTED, {
+                        reason: "transport-close-during-end",
+                        from: "self",
+                    });
+                    return;
+                }
                 // Transport dropped. If we are not already settled/tearing down
                 // (a graceful end already ran), this is an abnormal loss -> FAILED
                 // (a teardown state) so PolySession ends the peer. We never go back

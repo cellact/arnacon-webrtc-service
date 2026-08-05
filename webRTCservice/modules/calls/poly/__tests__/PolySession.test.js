@@ -60,6 +60,95 @@ test("webrtc<->webrtc happy path: connect, ring, answer, media GO; then end retu
     assert.equal(b.leg.state, S.CONNECTED);
 });
 
+test("fresh offer waits for prior end to settle, then rings exactly once", async () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeWebRtcLeg("bob");
+    const { poly } = buildPoly(a, b);
+
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "call-1" }));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END));
+    assert.equal(a.leg.state, S.CONNECTED);
+    assert.equal(b.leg.state, S.ENDING);
+
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "call-2" }));
+    assert.equal(a.leg.state, S.CONNECTED, "new offer must not enter CALLING during peer teardown");
+    assert.equal(b.leg.state, S.ENDING);
+    assert.equal(a.negotiation.named("applyOffer").length, 1, "queued offer not applied early");
+    assert.equal(b.negotiation.named("ring").length, 1, "peer not rung again during teardown");
+    assert.equal(a.negotiation.named("endCall").length, 0, "fresh caller is not ended");
+
+    await poly.onIngress(
+        "b",
+        makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "end-ans" }),
+    );
+    assert.equal(a.leg.state, S.CALLING);
+    assert.equal(b.leg.state, S.RINGING);
+    assert.equal(a.negotiation.named("applyOffer").length, 2, "queued offer applied after quiescence");
+    assert.equal(b.negotiation.named("ring").length, 2, "peer rung exactly once for queued call");
+});
+
+test("duplicate offers during teardown coalesce to one queued call", async () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeWebRtcLeg("bob");
+    const { poly } = buildPoly(a, b);
+
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "call-1" }));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END));
+
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "call-2a" }));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "call-2b" }));
+    await poly.onIngress(
+        "b",
+        makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "end-ans" }),
+    );
+
+    assert.equal(a.negotiation.named("applyOffer").length, 2, "only latest queued offer replayed");
+    assert.equal(b.negotiation.named("ring").length, 2, "only one second ring emitted");
+});
+
+test("cancel removes a queued call without touching the peer", async () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeWebRtcLeg("bob");
+    const { poly } = buildPoly(a, b);
+
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "call-1" }));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "queued-call" }));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.CANCEL));
+
+    await poly.onIngress(
+        "b",
+        makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "end-ans" }),
+    );
+    assert.equal(a.leg.state, S.CONNECTED);
+    assert.equal(b.leg.state, S.CONNECTED);
+    assert.equal(a.negotiation.named("applyOffer").length, 1, "cancelled queued offer never applied");
+    assert.equal(b.negotiation.named("ring").length, 1, "cancelled queued offer never forwarded");
+});
+
+test("offer queued behind failed peer recovers and reconnects instead of ending caller", async () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeWebRtcLeg("bob");
+    const { poly } = buildPoly(a, b);
+
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    b.leg.setState(S.FAILED, { reason: "stale-transport", from: "self" });
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "fresh-call" }));
+
+    assert.equal(a.leg.state, S.CALLING);
+    assert.equal(b.leg.state, S.RINGING);
+    assert.equal(a.negotiation.named("endCall").length, 0, "fresh caller must not be ended");
+    assert.equal(b.negotiation.named("connect").length, 1, "failed peer reconnected");
+    assert.equal(b.negotiation.named("ring").length, 1, "reconnected peer rung");
+});
+
 test("secnum<->secnum two-phase callee: connect -> session-answer -> ring -> accept -> media GO", async () => {
     const a = makeWebRtcLeg("alice");                      // caller: transport up via handshake
     const b = makeWebRtcLeg("bob", { deferConnect: true }); // callee: connect only invites

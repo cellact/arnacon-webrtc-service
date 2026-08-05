@@ -6,8 +6,8 @@
 // Legs never talk to each other; all cross-leg coordination flows through here.
 
 const { reconcile } = require("./ReconcileRules");
-const { LEG_INTENTS } = require("./ports");
-const { LEG_STATES, isActiveCall } = require("./states");
+const { LEG_INTENTS, LEG_EVENTS } = require("./ports");
+const { LEG_STATES, isActiveCall, isTeardown } = require("./states");
 const { identityLabel } = require("../../runtime/CallPairRef");
 
 const MAX_RECONCILE_PASSES = 50;
@@ -58,6 +58,11 @@ class PolySession {
         this._dirty = false;
         this._running = false;
         this._chain = Promise.resolve();
+        // A transport can outlive many calls. If a fresh offer arrives while the
+        // previous call is still tearing down, keep the raw offer here instead
+        // of putting its leg into CALLING. That preserves the invariant that
+        // CALLING + ENDING always describes the same call attempt.
+        this._pendingOffers = new Map();
 
         this._unsubscribe = [
             legA.onStateChange((e) => this._onLegChange(e)),
@@ -86,10 +91,35 @@ class PolySession {
     // Entry point for ingress adapters: deliver a normalized wire event to the
     // target leg. The leg updates its own state, which triggers reconciliation.
     async onIngress(legRef, event) {
+        const ref = typeof legRef === "string" ? legRef : this.refOf(legRef);
         const leg = typeof legRef === "string" ? this.legs[legRef] : legRef;
         if (!leg) throw new Error(`PolySession.onIngress: unknown leg ${legRef}`);
+        const cancelsQueuedOffer =
+            event?.type === LEG_EVENTS.CANCEL
+            || event?.type === LEG_EVENTS.REJECT
+            || event?.type === LEG_EVENTS.END;
+        if (cancelsQueuedOffer && this._pendingOffers.has(ref)) {
+            this._pendingOffers.delete(ref);
+            this.logger.log(`[${this.id}] removed queued offer for leg ${ref} (${event.type})`);
+            // The queued attempt was never applied and was never forwarded to the
+            // peer, so there is no peer call state to tear down.
+            return this._settle();
+        }
+        if (event?.type === LEG_EVENTS.OFFER && this._hasTeardownState()) {
+            this._pendingOffers.set(ref, event);
+            this.logger.log(`[${this.id}] queued offer for leg ${ref} while teardown is in progress`);
+            // FAILED can be recovered immediately when the peer is idle. Mark the
+            // poly dirty so the drain gets a chance to recover it and release the
+            // offer without waiting for another external event.
+            this._dirty = true;
+            return this._settle();
+        }
         await leg.handleIngress(event);
         return this._settle();
+    }
+
+    _hasTeardownState() {
+        return isTeardown(this.legs.a.state) || isTeardown(this.legs.b.state);
     }
 
     _onLegChange(event) {
@@ -115,6 +145,31 @@ class PolySession {
         };
     }
 
+    _isQuiescentForPendingOffer() {
+        if (this._hasTeardownState()) return false;
+        const busy = new Set([
+            LEG_STATES.CONNECTING,
+            LEG_STATES.CALLING,
+            LEG_STATES.RINGING,
+            LEG_STATES.ANSWERING,
+            LEG_STATES.IN_CALL,
+        ]);
+        return !busy.has(this.legs.a.state) && !busy.has(this.legs.b.state);
+    }
+
+    async _releasePendingOfferIfReady() {
+        if (!this._pendingOffers.size || !this._isQuiescentForPendingOffer()) return false;
+        const entry = this._pendingOffers.entries().next().value;
+        if (!entry) return false;
+        const [ref, event] = entry;
+        const leg = this.legs[ref];
+        this._pendingOffers.delete(ref);
+        if (!leg) return false;
+        this.logger.log(`[${this.id}] replaying queued offer for leg ${ref} after teardown settled`);
+        await leg.handleIngress(event);
+        return true;
+    }
+
     async _drain() {
         if (this._running) return;
         this._running = true;
@@ -125,6 +180,13 @@ class PolySession {
                 if (++passes > MAX_RECONCILE_PASSES) {
                     this.logger.error(`[${this.id}] reconcile did not converge after ${MAX_RECONCILE_PASSES} passes`);
                     break;
+                }
+                // Recover a stale failed peer before looking at queued work. Since
+                // the new offer has not entered CALLING yet, the other leg is idle
+                // and FAILED can safely collapse to DISCONNECTED for reconnect.
+                this._recoverFailedLegs();
+                if (await this._releasePendingOfferIfReady()) {
+                    continue;
                 }
                 const actions = this.rules(this._snapshot(), this.lastEvent);
                 for (const action of actions) {
@@ -272,6 +334,7 @@ class PolySession {
     }
 
     async dispose(reason = "dispose") {
+        this._pendingOffers.clear();
         for (const off of this._unsubscribe.splice(0)) {
             try { off(); } catch (_) {}
         }
