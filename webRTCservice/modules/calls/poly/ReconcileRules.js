@@ -14,6 +14,13 @@ const { LEG_STATES, isTeardown, needsEnding, canBeRung, callViable } = require("
 function isCaller(state) {
     return state === LEG_STATES.CALLING || state === LEG_STATES.RINGING;
 }
+
+// Peer is finishing a prior end-call reneg (ENDING) while this leg just started a
+// new call (CALLING). Do not treat that as "peer teardown → kill this call".
+function isSoftEndingVsFreshCall(teardownState, otherState) {
+    return teardownState === LEG_STATES.ENDING && otherState === LEG_STATES.CALLING;
+}
+
 const { LEG_INTENTS } = require("./ports");
 
 // Action constructors (plain data; PolySession resolves leg refs + executes).
@@ -47,15 +54,39 @@ function reconcile(snapshot, event = null) {
     //   - this leg is IN_CALL but the peer is no longer call-viable (idle
     //     connected / failed / disconnected / end-requested) -- you cannot be in a
     //     call by yourself. A ringing/answering peer IS viable (pickup in flight).
+    //
+    // Soft exception: peer ENDING is "finish previous end-call reneg", not a hard
+    // kill. A fresh CALLING offer that arrives while the peer is still ENDING must
+    // wait for the peer to return to CONNECTED and then RING — not get ended into
+    // the RING→end-call loop (same callId re-kill).
     const toEnd = new Set();
-    if (isTeardown(a.state) && needsEnding(b.state)) toEnd.add("b");
-    if (isTeardown(b.state) && needsEnding(a.state)) toEnd.add("a");
+    if (isTeardown(a.state) && needsEnding(b.state) && !isSoftEndingVsFreshCall(a.state, b.state)) {
+        toEnd.add("b");
+    }
+    if (isTeardown(b.state) && needsEnding(a.state) && !isSoftEndingVsFreshCall(b.state, a.state)) {
+        toEnd.add("a");
+    }
     if (a.state === LEG_STATES.IN_CALL && !callViable(b.state)) toEnd.add("a");
     if (b.state === LEG_STATES.IN_CALL && !callViable(a.state)) toEnd.add("b");
     for (const ref of toEnd) {
         teardown.push(intent(ref, LEG_INTENTS.END, ref === "a" ? "b" : "a"));
     }
+    // Soft wait: new caller + peer still finishing end-call → no progress yet
+    // (peer not rungable). Return empty rather than falling through to a no-op
+    // that could be confused with steady-state; next ingress/settle will RING.
     if (teardown.length) return teardown;
+    if (
+        (a.state === LEG_STATES.CALLING && b.state === LEG_STATES.ENDING)
+        || (b.state === LEG_STATES.CALLING && a.state === LEG_STATES.ENDING)
+    ) {
+        // Still ack a fresh CALLING so the client stops re-offering while we wait.
+        if (event && event.state === LEG_STATES.CALLING) {
+            if (a.state === LEG_STATES.CALLING) actions.push(intent("a", LEG_INTENTS.ACK_CONNECTED, "self"));
+            if (b.state === LEG_STATES.CALLING) actions.push(intent("b", LEG_INTENTS.ACK_CONNECTED, "self"));
+            return actions;
+        }
+        return actions;
+    }
 
     // ---- 2. Progress ------------------------------------------------------
     // (2a) Ack a *fresh* ring (caller's client offered -> CALLING). A leg only

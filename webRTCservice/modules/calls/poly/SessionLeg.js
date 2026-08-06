@@ -272,6 +272,20 @@ class SessionLeg {
                     this.setState(LEG_STATES.CONNECTED, { reason: "end-complete", from: "self" });
                     return;
                 }
+                // (1b) Stale end-call ANSWER after a fresh offer already moved us to
+                // CALLING/RINGING/ANSWERING. Absorb SDP only — do NOT flip to
+                // END_REQUESTED or the new RING gets killed immediately.
+                if (
+                    ptype === "answer"
+                    && (
+                        this.state === LEG_STATES.CALLING
+                        || this.state === LEG_STATES.RINGING
+                        || this.state === LEG_STATES.ANSWERING
+                    )
+                ) {
+                    await this._tx(() => this.negotiation.endCall?.({ leg: this, mode: "remote", ...event }));
+                    return;
+                }
                 // (2) Already settled / mid-teardown / idle stray: absorb the SDP so
                 // the client PC closes cleanly, but do NOT churn state (this is the
                 // teardown glare that used to cascade ended<->ending).

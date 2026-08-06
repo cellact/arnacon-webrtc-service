@@ -6,7 +6,7 @@
 // Legs never talk to each other; all cross-leg coordination flows through here.
 
 const { reconcile } = require("./ReconcileRules");
-const { LEG_INTENTS } = require("./ports");
+const { LEG_INTENTS, LEG_EVENTS } = require("./ports");
 const { LEG_STATES, isActiveCall } = require("./states");
 const { identityLabel } = require("../../runtime/CallPairRef");
 
@@ -147,6 +147,17 @@ class PolySession {
     async onIngress(legRef, event) {
         const leg = typeof legRef === "string" ? this.legs[legRef] : legRef;
         if (!leg) throw new Error(`PolySession.onIngress: unknown leg ${legRef}`);
+        // Fresh client offer owns the next call attempt on this pair.
+        if (event?.type === LEG_EVENTS.OFFER) {
+            const from = event.payload?.from || leg.endpoint;
+            const callId = event.payload?.callId;
+            if (this._normalizeCallIdValue(callId)) {
+                this.markActiveCall(from, callId);
+            } else {
+                // Redial without a callId must not inherit the ended call's id.
+                this.activeCall = null;
+            }
+        }
         await leg.handleIngress(event);
         return this._settle();
     }
@@ -234,6 +245,7 @@ class PolySession {
             from: fromLeg ? fromLeg.endpoint : null,
             fromKind: fromLeg ? fromLeg.kind : null,
             event: this.lastEvent,
+            callId: this.activeCall?.callId ?? null,
         };
         try {
             switch (action.intent) {

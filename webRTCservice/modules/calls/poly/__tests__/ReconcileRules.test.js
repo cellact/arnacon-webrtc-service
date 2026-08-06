@@ -73,6 +73,23 @@ test("teardown: ending side does not get re-ended; peer (ringing) gets ended", (
     assert.deepEqual(ends[0], { kind: "intent", leg: "a", intent: I.END, from: "b" });
 });
 
+test("fresh CALLING while peer still ENDING: wait (ack only), do not kill the new call", () => {
+    const actions = reconcile(snap(S.CALLING, S.ENDING, false), ringEvent);
+    assert.equal(intents(actions).some((x) => x.intent === I.END), false, "must not end the redial");
+    assert.equal(intents(actions).some((x) => x.intent === I.RING), false, "peer not rungable until CONNECTED");
+    assert.deepEqual(intents(actions), [
+        { kind: "intent", leg: "a", intent: I.ACK_CONNECTED, from: "self" },
+    ]);
+});
+
+test("after peer finishes ENDING→CONNECTED, fresh CALLING rings the peer", () => {
+    const actions = reconcile(snap(S.CALLING, S.CONNECTED, false), ringEvent);
+    assert.deepEqual(intents(actions), [
+        { kind: "intent", leg: "a", intent: I.ACK_CONNECTED, from: "self" },
+        { kind: "intent", leg: "b", intent: I.RING, from: "a" },
+    ]);
+});
+
 test("no double disconnect / no throw when both sides tear down", () => {
     const actions = reconcile(snap(S.ENDING, S.FAILED, true));
     assert.deepEqual(mediaOps(actions), ["disconnect"]);

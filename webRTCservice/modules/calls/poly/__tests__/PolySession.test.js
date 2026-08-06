@@ -358,6 +358,39 @@ test("second call reuse: after end, a fresh offer rings the peer again", async (
     assert.equal(b.negotiation.named("ring").length, 2);
 });
 
+test("redial while peer still ENDING: wait, then RING — do not immediate end-call loop", async () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeWebRtcLeg("bob");
+    const { poly } = buildPoly(a, b);
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o1", callId: 111 }));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.ANSWER, { sdp: "ans" }));
+
+    // Cancel/end: alice connected, bob still ENDING (awaiting end-call answer).
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END));
+    assert.equal(a.leg.state, S.CONNECTED);
+    assert.equal(b.leg.state, S.ENDING);
+
+    // Immediate redial while bob has not finished end reneg.
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o2", callId: 222 }));
+    assert.equal(a.leg.state, S.CALLING, "redial stays CALLING");
+    assert.equal(b.leg.state, S.ENDING, "peer still finishing prior end");
+    assert.equal(b.negotiation.named("endCall").length, 1, "no second endCall on bob yet");
+    assert.equal(b.negotiation.named("ring").length, 1, "no RING until peer CONNECTED");
+
+    // Stale end-call answer for the prior call must not kill the redial.
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "stale-end-ans" }));
+    assert.equal(a.leg.state, S.CALLING, "stale end answer absorbed while CALLING");
+
+    // Peer finishes prior end → CONNECTED → RING the new call.
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "end-ans" }));
+    assert.equal(b.leg.state, S.RINGING, "peer rung after end completes");
+    assert.equal(a.leg.state, S.CALLING);
+    assert.equal(b.negotiation.named("ring").length, 2);
+    assert.equal(b.negotiation.named("endCall").length, 1, "must not end the new RING");
+});
+
 test("caller cancels while callee is still connecting (deferred connect)", async () => {
     const a = makeWebRtcLeg("alice");
     const b = makeWebRtcLeg("bob", { deferConnect: true });

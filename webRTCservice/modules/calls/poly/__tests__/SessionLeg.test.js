@@ -93,6 +93,15 @@ test("ingress END answer while ENDING completes a P-initiated end -> CONNECTED",
     assert.equal(negotiation.named("endCall")[0].mode, "remote", "the client's end-call answer is applied");
 });
 
+test("stale end-call answer while CALLING is absorbed (does not END_REQUESTED)", async () => {
+    const { leg, negotiation } = makeWebRtcLeg("e3");
+    leg.setState(S.CALLING, { from: "self" });
+    await leg.handleIngress(makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "stale" }));
+    assert.equal(leg.state, S.CALLING, "redial must stay CALLING");
+    assert.equal(negotiation.named("endCall").length, 1);
+    assert.equal(negotiation.named("endCall")[0].mode, "remote");
+});
+
 test("idempotent teardown: trailing end-call renegotiation is absorbed without state churn", async () => {
     const { leg, negotiation } = makeWebRtcLeg("t");
     leg.setState(S.IN_CALL, { from: "self" });

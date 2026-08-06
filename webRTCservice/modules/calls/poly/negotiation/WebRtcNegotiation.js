@@ -159,10 +159,14 @@ class WebRtcNegotiation extends CallNegotiationPort {
         const session = this.session;
         const pc = this.pc;
         if (!pc) throw new Error(`[${this.id}] cannot ring without a peer connection`);
+        // Each RING is a new call presentation. Never reuse the previous callId
+        // (that made cancel/redial look like the same call being immediately ended).
+        if (session._activeCallMeta) session._activeCallMeta.callId = null;
         this._rememberCallMeta({
             from: identityLabel(session.callerEns),
             to: session.toIdentity,
             sessionId: session.signalingSessionId || session.sessionId,
+            callId: ctx.callId,
         });
         const callMeta = this._activeCallMeta();
 
@@ -216,8 +220,15 @@ class WebRtcNegotiation extends CallNegotiationPort {
         const pc = this.pc;
         if (!pc) throw new Error(`[${this.id}] cannot apply offer without a peer connection`);
         const payload = ctx.payload || {};
-        this._rememberCallMeta(payload);
         const isIceRestart = ctx.mode === "ice-restart";
+        // Fresh ring offer: adopt payload callId, otherwise mint a new one so a
+        // redial cannot inherit the ended call's id.
+        if (!isIceRestart) {
+            if (this.session?._activeCallMeta && !this._normalizeCallId(payload.callId)) {
+                this.session._activeCallMeta.callId = null;
+            }
+        }
+        this._rememberCallMeta(payload);
         let offerSdp = payload.sdp;
         // Pin the audio to the route's codec policy (e.g. PCMA for webrtc<->webrtc)
         // BEFORE answering, so PC1's answer can only contain that codec. Otherwise
