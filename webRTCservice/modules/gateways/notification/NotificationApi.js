@@ -9,25 +9,6 @@ function createNotificationApi({
     logger = console,
     fetchImpl = fetch,
 }) {
-    function redactHeadersJson(headersJson) {
-        if (!headersJson || headersJson === "{}") return headersJson || "{}";
-        try {
-            const parsed = JSON.parse(headersJson);
-            const redacted = {};
-            for (const [k, v] of Object.entries(parsed)) {
-                const key = String(k || "").toLowerCase();
-                if (key.includes("authorization") || key.includes("x-api-key") || key.includes("token")) {
-                    redacted[k] = "***redacted***";
-                } else {
-                    redacted[k] = v;
-                }
-            }
-            return JSON.stringify(redacted);
-        } catch (_) {
-            return headersJson;
-        }
-    }
-
     function isEthAddress(value) {
         return /^0x[0-9a-fA-F]{40}$/.test(String(value || "").trim());
     }
@@ -60,43 +41,20 @@ function createNotificationApi({
 
     async function resolveTargetWallet(calleeEns, options = {}) {
         const providedWallet = checksumWalletOrNull(options.targetWallet);
-        if (providedWallet) {
-            logger.log("[Notification] target wallet source", { source: "provided", wallet: providedWallet });
-            return providedWallet;
-        }
+        if (providedWallet) return providedWallet;
 
         if (typeof blockchainApi.resolveWalletByWeb2Identity === "function") {
             const web2identity = String(options.web2identity || deriveWeb2Identity(calleeEns)).trim();
             if (web2identity) {
                 const mapped = checksumWalletOrNull(await blockchainApi.resolveWalletByWeb2Identity(web2identity));
-                if (mapped) {
-                    logger.log("[Notification] target wallet source", {
-                        source: "gcp+sdk",
-                        calleeEns,
-                        web2identity,
-                        wallet: mapped,
-                    });
-                    return mapped;
-                }
-                logger.log("[Notification] target wallet miss", {
-                    source: "gcp+sdk",
-                    calleeEns,
-                    web2identity,
-                });
+                if (mapped) return mapped;
             }
         }
 
         if (typeof blockchainApi.resolveEnsToAddress === "function" && calleeEns) {
             try {
                 const ensWallet = checksumWalletOrNull(await blockchainApi.resolveEnsToAddress(calleeEns));
-                if (ensWallet) {
-                    logger.log("[Notification] target wallet source", {
-                        source: "ens-fallback",
-                        calleeEns,
-                        wallet: ensWallet,
-                    });
-                    return ensWallet;
-                }
+                if (ensWallet) return ensWallet;
             } catch (err) {
                 logger.warn(`[Notification] ENS fallback lookup failed for ${calleeEns}: ${err.message}`);
             }
@@ -112,16 +70,6 @@ function createNotificationApi({
         if (!targetWallet) {
             throw new Error(`No target wallet resolved for notification callee: ${calleeEns}`);
         }
-        logger.log("[Notification] provider config", {
-            callerEns,
-            calleeEns,
-            targetWallet,
-            notificationType,
-            notificationRegistryAddress: config.notificationRegistryAddress || null,
-            networkName: config.networkName || null,
-            rpcUrl: config.rpcUrl || null,
-            source: config.isDefault ? "hardcoded" : "legacy-discovery",
-        });
         const provider = new ethers.providers.JsonRpcProvider(config.rpcUrl);
         const contract = new ethers.Contract(
             config.notificationRegistryAddress,
@@ -141,20 +89,6 @@ function createNotificationApi({
         const [steps] = contract.interface.decodeFunctionResult("getApplicationTokenPlan", raw);
         if (!steps || steps.length === 0) {
             throw new Error("No signaling plan returned");
-        }
-        for (let i = 0; i < steps.length; i++) {
-            const step = steps[i];
-            logger.log("[Notification] fetched plan step", {
-                step: i + 1,
-                method: step.method || null,
-                url: step.url || null,
-                fallbackUrl: step.fallbackUrl || null,
-                contentType: step.contentType || null,
-                responseExtractField: step.responseExtractField || null,
-                placeholderKey: step.placeholderKey || null,
-                headers: redactHeadersJson(step.headers || "{}"),
-                body: step.body || "",
-            });
         }
         return { steps, targetWallet };
     }
@@ -188,7 +122,15 @@ function createNotificationApi({
                 "{{TARGET_ADDR}}": targetWallet,
             },
         });
-        if (!result.success) throw new Error(`Plan-based execution failed (HTTP ${result.statusCode})`);
+        if (!result.success) {
+            logger.warn(
+                `[Notification] send failed from=${callerEns} to=${calleeEns} status=${result.statusCode}`,
+            );
+            throw new Error(`Plan-based execution failed (HTTP ${result.statusCode})`);
+        }
+        logger.log(
+            `[Notification] send ok from=${callerEns} to=${calleeEns} status=${result.statusCode}`,
+        );
         return result;
     }
 
@@ -211,22 +153,8 @@ function createNotificationApi({
             const extractField = step.responseExtractField;
             const placeholderKey = step.placeholderKey;
 
-            logger.log(`[Notification] Step ${i + 1}/${steps.length}: ${method}`);
-            logger.log("[Notification] Step evaluated", {
-                step: i + 1,
-                method,
-                url,
-                fallbackUrl,
-                contentType,
-                extractField: extractField || null,
-                placeholderKey: placeholderKey || null,
-                headers: redactHeadersJson(headers || "{}"),
-                body: body || "",
-            });
-
             if (method === "CLIENT_GENERATE") {
                 const value = handleClientGenerate(body);
-                logger.log(`[Notification] Step ${i + 1} CLIENT_GENERATE -> ${placeholderKey}`);
                 if (placeholderKey) placeholders[placeholderKey] = value;
                 i++;
                 continue;
@@ -235,7 +163,6 @@ function createNotificationApi({
             if (method === "CLIENT_ETH_SIGN") {
                 const dataToSign = replacePlaceholders(body, placeholders);
                 const signature = await handleClientEthSign(dataToSign);
-                logger.log(`[Notification] Step ${i + 1} CLIENT_ETH_SIGN -> ${placeholderKey}`);
                 if (placeholderKey) placeholders[placeholderKey] = signature;
                 i++;
                 continue;
@@ -246,7 +173,6 @@ function createNotificationApi({
                 if (!calldata) {
                     return { success: false, statusCode: -1, error: `CLIENT_ABI_ENCODE failed: ${body}` };
                 }
-                logger.log(`[Notification] Step ${i + 1} CLIENT_ABI_ENCODE -> ${placeholderKey}`);
                 if (placeholderKey) placeholders[placeholderKey] = calldata;
                 i++;
                 continue;
@@ -257,7 +183,6 @@ function createNotificationApi({
                 if (decoded === null) {
                     return { success: false, statusCode: -1, error: `CLIENT_ABI_DECODE failed: ${body}` };
                 }
-                logger.log(`[Notification] Step ${i + 1} CLIENT_ABI_DECODE -> ${placeholderKey}`);
                 if (placeholderKey) placeholders[placeholderKey] = decoded;
                 i++;
                 continue;
@@ -266,11 +191,9 @@ function createNotificationApi({
             if (method === "CLIENT_JSON_EXTRACT") {
                 const extracted = handleClientJsonExtract(body);
                 if (extracted === null) {
-                    logger.log(`[Notification] Step ${i + 1} CLIENT_JSON_EXTRACT missing field, leaving placeholder unchanged`);
                     i++;
                     continue;
                 }
-                logger.log(`[Notification] Step ${i + 1} CLIENT_JSON_EXTRACT -> ${placeholderKey}`);
                 if (placeholderKey) placeholders[placeholderKey] = extracted;
                 i++;
                 continue;
@@ -278,31 +201,18 @@ function createNotificationApi({
 
             if (method === "CLIENT_CONDITION") {
                 const skipCount = handleClientCondition(body);
-                if (skipCount > 0) {
-                    logger.log(`[Notification] Step ${i + 1} CLIENT_CONDITION -> skip ${skipCount}`);
-                    i += skipCount;
-                } else {
-                    logger.log(`[Notification] Step ${i + 1} CLIENT_CONDITION -> continue`);
-                }
+                if (skipCount > 0) i += skipCount;
                 i++;
                 continue;
             }
 
             if (method === "CLIENT_RETURN") {
-                logger.log(`[Notification] Step ${i + 1} CLIENT_RETURN`);
                 return { success: true, statusCode: 200, responseBody: body };
             }
 
             if (extractField) {
-                logger.log(`[Notification] Step ${i + 1} intermediate HTTP: ${method} ${url}`);
                 let result = await executeHttpRequest(url, method, contentType, body, headers);
-                logger.log(
-                    `[Notification] Step ${i + 1} intermediate result ` +
-                    `success=${result.success} status=${result.statusCode}`
-                );
-
                 if (!result.success && fallbackUrl) {
-                    logger.log(`[Notification] Step ${i + 1} primary failed (${result.statusCode}), trying fallback: ${fallbackUrl}`);
                     result = await executeHttpRequest(fallbackUrl, method, contentType, body, headers);
                 }
 
@@ -312,36 +222,16 @@ function createNotificationApi({
 
                 const extracted = extractJsonField(result.responseBody, extractField);
                 if (!extracted) {
-                    logger.log(`[Notification] Step ${i + 1} missing '${extractField}', leaving placeholder unchanged`);
                     i++;
                     continue;
                 }
 
-                logger.log(`[Notification] Step ${i + 1} extracted '${extractField}' -> ${placeholderKey}`);
                 if (placeholderKey) placeholders[placeholderKey] = extracted;
-                logger.log("[Notification] Placeholder updated", {
-                    step: i + 1,
-                    placeholderKey,
-                    placeholderValue: String(extracted),
-                });
             } else {
-                logger.log(`[Notification] Step ${i + 1} final HTTP executing: ${method} ${url}`);
                 let result = await executeHttpRequest(url, method, contentType, body, headers);
-                logger.log(
-                    `[Notification] Step ${i + 1} final HTTP result ` +
-                    `success=${result.success} status=${result.statusCode}`
-                );
 
                 if (!result.success && fallbackUrl) {
-                    logger.log(
-                        `[Notification] Step ${i + 1} primary URL failed status=${result.statusCode} ` +
-                        `body=${result.responseBody || ""}, trying fallback: ${fallbackUrl}`
-                    );
                     result = await executeHttpRequest(fallbackUrl, method, contentType, body, headers);
-                    logger.log(
-                        `[Notification] Step ${i + 1} fallback result success=${result.success} ` +
-                        `status=${result.statusCode} body=${result.responseBody || ""}`
-                    );
                 }
 
                 if (!result.success) {

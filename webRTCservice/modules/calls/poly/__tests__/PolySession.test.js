@@ -240,6 +240,46 @@ test("no-open-dc during ring marks callee disconnected and reconnects instead of
     assert.equal(b.negotiation.named("connect").length, 1, "reconnect should be triggered");
 });
 
+test("no-open-dc during endCall marks disconnected (not failed); recall drives CONNECT", async () => {
+    const a = makeWebRtcLeg("alice");
+    const b = makeWebRtcLeg("bob", { deferConnect: true });
+    const { poly } = buildPoly(a, b);
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+    await poly.onIngress("b", makeLegEvent(LEG_EVENTS.TRANSPORT_OPEN));
+
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o1" }));
+    assert.equal(b.leg.state, S.RINGING);
+
+    b.negotiation.endCall = async () => {
+        const err = new Error("no open data channel for end");
+        err.code = "NO_OPEN_DC";
+        throw err;
+    };
+
+    // Cancel before pickup: END on callee hits dead DC -> transport recovery.
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END));
+    assert.equal(b.leg.state, S.DISCONNECTED, "end NO_OPEN_DC must not leave a zombie CONNECTED leg");
+    assert.notEqual(b.leg.state, S.FAILED, "transport loss must not FAIL the leg");
+
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.END_RENEGOTIATION, { type: "answer", sdp: "end-ans" }));
+    assert.equal(a.leg.state, S.CONNECTED);
+
+    // Restore endCall; recall while peer still DISCONNECTED -> CONNECT handshake.
+    b.negotiation.endCall = async function endCall(ctx) {
+        this._record("endCall", ctx);
+        return ctx?.mode === "remote" ? undefined : this.endResult;
+    };
+    const connectsBefore = b.negotiation.named("connect").length;
+
+    await poly.onIngress("a", makeLegEvent(LEG_EVENTS.OFFER, { sdp: "o2" }));
+    assert.equal(a.leg.state, S.CALLING, "caller stays alive for recall");
+    assert.equal(b.leg.state, S.CONNECTING, "recall must rebuild handshake via CONNECT");
+    assert.ok(
+        b.negotiation.named("connect").length > connectsBefore,
+        "CONNECT must run after endCall NO_OPEN_DC recovery",
+    );
+});
+
 test("reject before answer: caller is ended, no media ever bridged", async () => {
     const a = makeWebRtcLeg("alice");
     const b = makeWebRtcLeg("bob");
@@ -561,4 +601,25 @@ test("rotate: idempotent on a disposed poly (no throw, no re-fire)", async () =>
     await poly.rotate("callid-rotation");
     assert.equal(a.negotiation.named("endCall").length, endCountsA);
     assert.equal(b.negotiation.named("endCall").length, endCountsB);
+});
+
+test("DataChannelGateway send throws NO_OPEN_DC when channel missing or closed", () => {
+    const { createDataChannelApi } = require("../../../participants/signaling/DataChannelGateway");
+    const sessions = new Map();
+    const api = createDataChannelApi({ sessions, logger: silentLogger });
+
+    sessions.set("s1", { sessionId: "s1", dataChannel: null });
+    assert.throws(
+        () => api.sendDataChannelMessage("s1", { msgType: "call", action: "end" }),
+        (err) => err?.code === "NO_OPEN_DC",
+    );
+
+    sessions.set("s2", {
+        sessionId: "s2",
+        dataChannel: { readyState: "closed", send() { throw new Error("should not send"); } },
+    });
+    assert.throws(
+        () => api.sendDataChannelMessage("s2", { msgType: "call", action: "ring" }),
+        (err) => err?.code === "NO_OPEN_DC",
+    );
 });

@@ -1,51 +1,3 @@
-const crypto = require("crypto");
-
-const PRIVACY_LOG_KEYS = new Set([
-    "from",
-    "to",
-    "fromnumber",
-    "tonumber",
-    "caller",
-    "callee",
-    "callerens",
-    "calleeens",
-    "ensname",
-    "notifyidentity",
-    "targetvalue",
-    "identity",
-    "endpoint",
-]);
-
-function isLogPrivacyEnabled(serviceRuntime) {
-    return serviceRuntime?.serviceConstants?.logPrivacy?.enabled === true;
-}
-
-function hashLogIdentity(value) {
-    const str = String(value ?? "").trim();
-    if (!str) return "";
-    return crypto.createHash("sha256").update(str).digest("hex");
-}
-
-function sanitizeLogPayload(value, privacyEnabled, keyHint = "") {
-    if (!privacyEnabled) return value;
-    if (value === null || value === undefined) return value;
-    if (Array.isArray(value)) {
-        return value.map((item) => sanitizeLogPayload(item, privacyEnabled, keyHint));
-    }
-    if (typeof value === "object") {
-        const out = {};
-        for (const [key, entry] of Object.entries(value)) {
-            out[key] = sanitizeLogPayload(entry, privacyEnabled, key);
-        }
-        return out;
-    }
-    const normalizedKey = String(keyHint || "").toLowerCase();
-    if (PRIVACY_LOG_KEYS.has(normalizedKey)) {
-        return hashLogIdentity(value);
-    }
-    return value;
-}
-
 class ServiceContextFactory {
     constructor({
         serviceRegistry,
@@ -124,7 +76,6 @@ class ServiceContextFactory {
     }
 
     helpers(serviceRuntime) {
-        const logPrivacyEnabled = isLogPrivacyEnabled(serviceRuntime);
         return {
             zeroAddress: this.zeroAddress,
             getServiceConstants: () => serviceRuntime.serviceConstants || {},
@@ -181,10 +132,10 @@ class ServiceContextFactory {
             sendAckAndAnswer: this.sendAckAndAnswer,
             sendDataChannelMessage: this.sendDataChannelMessage,
             endCall: (sessionId, reason) => this.handleCallEnd(sessionId, reason, true),
-            logRouteDecision: (entry) =>
-                this.logger.log("[ServiceRoute]", sanitizeLogPayload(entry, logPrivacyEnabled)),
-            emitServiceMetric: (metric) =>
-                this.logger.log("[ServiceMetric]", sanitizeLogPayload(metric, logPrivacyEnabled)),
+            // Route/metric chatter is non-essential for call debugging; keep helpers
+            // as no-ops so callers stay stable without flooding logs.
+            logRouteDecision: (_entry) => {},
+            emitServiceMetric: (_metric) => {},
             getAllServiceDomains: () => this.serviceRegistry.allDomains(),
             getFirstServiceDomain: () => this.serviceRegistry.firstDomain(serviceRuntime.id),
             tryInternalWebrtcLookup: (...args) => this.tryInternalWebrtcLookup(...args),

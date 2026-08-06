@@ -23,11 +23,6 @@ const FAIL_ON_ERROR_INTENTS = new Set([
     LEG_INTENTS.ACK_CONNECTED,
     LEG_INTENTS.ACK_RING,
 ]);
-const RETRY_ON_NO_OPEN_DC_INTENTS = new Set([
-    LEG_INTENTS.RING,
-    LEG_INTENTS.ACK_CONNECTED,
-    LEG_INTENTS.ACK_RING,
-]);
 
 class PolySession {
     constructor({ id, legA, legB, mediaController, rules = reconcile, teardownHooks = [], logger = console } = {}) {
@@ -256,9 +251,11 @@ class PolySession {
             }
         } catch (err) {
             this.logger.error(`[${this.id}] intent ${action.intent} on leg ${leg.id} failed: ${err.message}`);
-            // Dead/missing data channel on forward signaling is recoverable transport
-            // loss: drop this leg to DISCONNECTED so reconcile drives CONNECT -> RING.
-            if (err?.code === "NO_OPEN_DC" && RETRY_ON_NO_OPEN_DC_INTENTS.has(action.intent)) {
+            // Architecture: any DC send that fails because the channel is missing/closed
+            // is transport loss, not call failure. Drop the leg to DISCONNECTED so
+            // reconcile always rebuilds the WebRTC handshake (CONNECT) before re-driving
+            // RING/answer. Applies to every intent — not a RING-only special case.
+            if (err?.code === "NO_OPEN_DC") {
                 if (leg.state !== LEG_STATES.DISCONNECTED) {
                     leg.setState(LEG_STATES.DISCONNECTED, {
                         reason: `intent-no-open-dc:${action.intent}`,

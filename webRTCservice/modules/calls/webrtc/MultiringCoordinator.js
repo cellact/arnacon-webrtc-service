@@ -144,10 +144,12 @@ class MultiringCoordinator {
 
     _sendLegMessage(candidate, message) {
         const dc = candidate?.legSession?.dataChannel;
-        if (!dc || (dc.readyState !== "open" && dc.readyState !== "OPEN")) return;
-        try {
-            dc.send(JSON.stringify(message));
-        } catch (_) {}
+        if (!dc || (dc.readyState !== "open" && dc.readyState !== "OPEN")) {
+            const err = new Error("[multiring] no open data channel");
+            err.code = "NO_OPEN_DC";
+            throw err;
+        }
+        dc.send(JSON.stringify(message));
     }
 
     closeCandidate(candidate, reason = "multiring-loser") {
@@ -160,7 +162,12 @@ class MultiringCoordinator {
         if (mapped === candidate.legSession) {
             group.hostSession.outboundWebrtcLegs.delete(candidate.walletKey);
         }
-        this._sendLegMessage(candidate, { msgType: "call", action: "end", reason });
+        // Best-effort end on a loser leg; missing DC must not abort teardown.
+        try {
+            this._sendLegMessage(candidate, { msgType: "call", action: "end", reason });
+        } catch (err) {
+            if (err?.code !== "NO_OPEN_DC") throw err;
+        }
         try { candidate.legSession.dataChannel?.close(); } catch (_) {}
         try { candidate.legSession.peerConnection?.close(); } catch (_) {}
         candidate.legSession.dataChannel = null;

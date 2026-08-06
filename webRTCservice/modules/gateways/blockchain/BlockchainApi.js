@@ -193,25 +193,6 @@ function createBlockchainApi({
     function logMappingConfig() {
         if (mappingConfigLogged) return;
         mappingConfigLogged = true;
-        const authSnapshot = identityMappingAuthService.getConfigSnapshot();
-        logger.log("[IdentityMapping] config", {
-            configured: Boolean((authSnapshot.hasServiceAccount || authSnapshot.hasTokenFile) && GCP_ANS_MAPPING_URL),
-            authMode: authSnapshot.authMode,
-            tokenFile: authSnapshot.tokenFile,
-            serviceAccountJsonFile: authSnapshot.serviceAccountJsonFile,
-            idTokenAudience: authSnapshot.idTokenAudience,
-            oauthTokenUrl: authSnapshot.oauthTokenUrl,
-            ansMappingUrl: GCP_ANS_MAPPING_URL || null,
-            deprecatedWeb3IdentityMappingUrl: DEPRECATED_GCP_WEB3_IDENTITY_MAPPING_URL || null,
-            web3IdentityMappingDeprecated: Boolean(DEPRECATED_GCP_WEB3_IDENTITY_MAPPING_URL),
-            arnaconSdkNetwork: ARNACON_SDK_NETWORK || null,
-            arnaconSdkChainId: Number.isFinite(ARNACON_SDK_CHAIN_ID) ? ARNACON_SDK_CHAIN_ID : null,
-            arnaconSdkRpcUrl: ARNACON_SDK_RPC || null,
-            arnaconSdkPrivateKey: ARNACON_SDK_PRIVATE_KEY ? "<provided>" : "<empty>",
-            timeoutMs: Number.isFinite(GCP_MAPPING_REQUEST_TIMEOUT_MS) && GCP_MAPPING_REQUEST_TIMEOUT_MS > 0
-                ? GCP_MAPPING_REQUEST_TIMEOUT_MS
-                : 2500,
-        });
     }
 
     function getArnaconSdk() {
@@ -378,11 +359,6 @@ function createBlockchainApi({
         logMappingConfig();
         const token = await identityMappingAuthService.getBearerToken(baseUrl, contextLabel);
         if (!baseUrl || !token) {
-            logger.log("[IdentityMapping] request skipped (missing config)", {
-                context: contextLabel,
-                hasUrl: Boolean(baseUrl),
-                hasToken: Boolean(token),
-            });
             return null;
         }
         const timeoutMs = Number.isFinite(GCP_MAPPING_REQUEST_TIMEOUT_MS) && GCP_MAPPING_REQUEST_TIMEOUT_MS > 0
@@ -397,10 +373,6 @@ function createBlockchainApi({
                     url.searchParams.set(key, String(value).trim());
                 }
             }
-            logger.log("[IdentityMapping] calling endpoint", {
-                context: contextLabel,
-                url: url.toString(),
-            });
             const resp = await fetch(url.toString(), {
                 method: "GET",
                 headers: { Authorization: `Bearer ${token}` },
@@ -412,14 +384,6 @@ function createBlockchainApi({
                 return null;
             }
             const payload = await resp.json().catch(() => null);
-            const keys = payload && typeof payload === "object" ? Object.keys(payload) : [];
-            logger.log("[IdentityMapping] response shape", {
-                context: contextLabel,
-                keys,
-                hasWeb2Identity: Boolean(payload?.web2identity),
-                hasWeb3Identity: Boolean(payload?.web3identity),
-                hasWallet: Boolean(payload?.wallet),
-            });
             return payload && typeof payload === "object" ? payload : null;
         } catch (err) {
             logger.warn(`[IdentityMapping] ${contextLabel} request error: ${err.message}`);
@@ -464,52 +428,22 @@ function createBlockchainApi({
             `ans-mapping:${normalized}`,
         );
         if (ansPayload && ansPayload.active === false) {
-            logger.log("[IdentityMapping] mapping inactive", {
-                web2identity: normalized,
-                active: ansPayload.active,
-                activated: ansPayload.activated ?? null,
-                expiresAt: ansPayload.expires_at || null,
-            });
             if (enforceActive) {
                 throw buildIdentityInactiveError(normalized, ansPayload);
             }
             return null;
         }
-        const ansWallet = checksumWalletOrNull(ansPayload?.wallet);
-        if (ansWallet) {
-            logger.log("[IdentityMapping] ans wallet ignored (chain-authoritative mode)", {
-                web2identity: normalized,
-                wallet: ansWallet,
-            });
-        }
-
         const web3identity = String(ansPayload?.web3identity || "").trim();
         if (!web3identity) {
-            logger.log("[IdentityMapping] fallback reason", {
-                web2identity: normalized,
-                reason: "missing_web3identity",
-            });
             return null;
         }
         const ownerLookupName = buildOwnerLookupName(web3identity);
         const sdk = getArnaconSdk();
         if (!sdk || typeof sdk.getOwner !== "function") {
-            logger.log("[IdentityMapping] fallback reason", {
-                web2identity: normalized,
-                web3identity,
-                ownerLookupName,
-                reason: "sdk_unavailable",
-            });
             return null;
         }
         let sdkOwner;
         try {
-            logger.log("[IdentityMapping] sdk owner lookup", {
-                web2identity: normalized,
-                ownerLookupName,
-                network: ARNACON_SDK_NETWORK,
-                chainId: ARNACON_SDK_CHAIN_ID,
-            });
             sdkOwner = await sdk.getOwner(ownerLookupName);
         } catch (err) {
             logger.warn(`[IdentityMapping] sdk owner lookup failed for ${ownerLookupName}: ${err.message}`);
@@ -517,21 +451,8 @@ function createBlockchainApi({
         }
         const ownerWallet = checksumWalletOrNull(sdkOwner);
         if (ownerWallet) {
-            logger.log("[IdentityMapping] wallet selected", {
-                web2identity: normalized,
-                web3identity,
-                ownerLookupName,
-                walletSource: "sdk_owner_wallet",
-                wallet: ownerWallet,
-            });
             return ownerWallet;
         }
-        logger.log("[IdentityMapping] fallback reason", {
-            web2identity: normalized,
-            web3identity,
-            ownerLookupName,
-            reason: "sdk_owner_missing",
-        });
         return null;
     }
 
@@ -699,10 +620,8 @@ function createBlockchainApi({
                 throw err;
             }
             if (mappedWallet) {
-                logger.log(`[Auth] signer source=gcp web2identity=${web2identity} wallet=${mappedWallet}`);
                 return mappedWallet;
             }
-            logger.log(`[Auth] signer fallback=ens identity=${identity} web2identity=${web2identity}`);
         }
         let wrappedOwner;
         try {
@@ -783,12 +702,6 @@ function createBlockchainApi({
             && (NOTIFICATION_PROVIDER_APPLY_ALL || SECNUM_DOMAINS.has(callerDomain)),
         );
         if (useHardcodedProvider) {
-            logger.log("[NotificationProvider] using hardcoded provider", {
-                callerEns: normalizedCallerEns || null,
-                callerDomain: callerDomain || null,
-                notificationRegistryAddress: NOTIFICATION_PROVIDER_ADDRESS,
-                source: "hardcoded",
-            });
             return {
                 notificationRegistryAddress: NOTIFICATION_PROVIDER_ADDRESS,
                 networkName: "polygon",

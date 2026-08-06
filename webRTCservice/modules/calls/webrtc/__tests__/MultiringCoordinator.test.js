@@ -226,3 +226,16 @@ test("existing inbound timeout closes all candidates and destroys only the host 
         assert.equal(leg.dataChannel, null);
     }
 });
+
+test("multiring DC send throws NO_OPEN_DC when channel is closed", () => {
+    const harness = makeHarness();
+    const candidate = {
+        legSession: {
+            dataChannel: { readyState: "closed", send() { throw new Error("should not send"); } },
+        },
+    };
+    assert.throws(
+        () => harness.coordinator._sendLegMessage(candidate, { msgType: "call", action: "end" }),
+        (err) => err?.code === "NO_OPEN_DC",
+    );
+});

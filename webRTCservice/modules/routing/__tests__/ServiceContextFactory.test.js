@@ -1,6 +1,5 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const crypto = require("node:crypto");
 
 const { ServiceContextFactory } = require("../ServiceContextFactory");
 
@@ -30,11 +29,7 @@ function buildFactory(loggerSink) {
     });
 }
 
-function digest(value) {
-    return crypto.createHash("sha256").update(String(value)).digest("hex");
-}
-
-test("logRouteDecision hashes from/to-like fields when log privacy enabled", () => {
+test("logRouteDecision is muted (no ServiceRoute log spam)", () => {
     const captured = [];
     const factory = buildFactory({
         log: (...args) => captured.push(args),
@@ -58,17 +53,10 @@ test("logRouteDecision hashes from/to-like fields when log privacy enabled", () 
         other: "keep-this",
     });
 
-    assert.equal(captured.length, 1);
-    assert.equal(captured[0][0], "[ServiceRoute]");
-    assert.deepEqual(captured[0][1], {
-        from: digest("972557140001.secnum.global"),
-        to: digest("972557220060"),
-        route: "webrtc",
-        other: "keep-this",
-    });
+    assert.equal(captured.length, 0);
 });
 
-test("logRouteDecision keeps original fields when log privacy disabled", () => {
+test("logRouteDecision remains muted when log privacy disabled", () => {
     const captured = [];
     const factory = buildFactory({
         log: (...args) => captured.push(args),
@@ -91,10 +79,5 @@ test("logRouteDecision keeps original fields when log privacy disabled", () => {
         route: "webrtc",
     });
 
-    assert.equal(captured.length, 1);
-    assert.deepEqual(captured[0][1], {
-        from: "972557140001.secnum.global",
-        to: "972557220060",
-        route: "webrtc",
-    });
+    assert.equal(captured.length, 0);
 });
