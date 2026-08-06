@@ -410,7 +410,8 @@ async function resolveInboundTarget(ctx) {
                 toDomain: inboundDomain || null,
                 ensName,
             });
-            const wallet = await resolveEnsWallet(helpers, ensName, { web2identity: targetValue });
+            const resolved = await resolveEnsWalletWithSource(helpers, ensName, { web2identity: targetValue });
+            const wallet = resolved.wallet;
             if (wallet) {
                 helpers.logRouteDecision?.({
                     serviceId: "secnum",
@@ -419,8 +420,20 @@ async function resolveInboundTarget(ctx) {
                     toDomain: inboundDomain || null,
                     ensName,
                     wallet,
+                    walletSource: resolved.source || null,
                 });
-                return { route: "webrtc", wallet, ensName, targetValue };
+                // Mapping hit → notify by bare number. ENS-only → notify by ensName.
+                // Same rule as resolveDestination / outbound invite.
+                return {
+                    route: "webrtc",
+                    wallet,
+                    ensName,
+                    targetValue,
+                    walletSource: resolved.source || null,
+                    notifyIdentity: resolved.source && resolved.source.startsWith("ens")
+                        ? ensName
+                        : targetValue,
+                };
             }
             helpers.logRouteDecision?.({
                 serviceId: "secnum",

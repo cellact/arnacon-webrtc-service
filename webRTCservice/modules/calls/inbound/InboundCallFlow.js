@@ -66,6 +66,11 @@ function createInboundCallFlow({
         const calleeWalletKey = destination.wallet.toLowerCase();
         const gatewayIdentity = String(from || "").replace(/^\+/, "");
         const calleeLabel = identityLabel(calleeEns || to);
+        // Resolver sets notifyIdentity:
+        //   identity-mapping (GCP) → bare number
+        //   ens-*                 → full ens (number.secnum….global)
+        // Fallback is ensName, never bare number — bare number is wrong for non-mapping hits.
+        const notifyIdentity = String(destination.notifyIdentity || calleeEns || "").trim() || calleeEns;
         const sessionId = `${gatewayIdentity}|${calleeLabel}`;
 
         if (callRuntime && callRuntime.getSession(sessionId)) {
@@ -126,14 +131,15 @@ function createInboundCallFlow({
 
         const offerPayload = serializeNotifyPayload(buildOfferPayload({
             from: gatewayIdentity,
-            to: calleeEns,
+            to: notifyIdentity,
             sessionId,
             sdp: sdpWithCandidates,
             candidates: relayCandidates,
             callNonce,
             isCall: true,
         }));
-        session.lastNotificationResult = await sendNotification(calleeEns, calleeEns, offerPayload, notiTypeCall, {
+        // Plan caller stays ens (service provider); notify target uses mapping identity.
+        session.lastNotificationResult = await sendNotification(calleeEns, notifyIdentity, offerPayload, notiTypeCall, {
             targetWallet: destination.wallet,
         });
         return { ok: true, wallet: destination.wallet, ensName: destination.ensName, sessionId };
