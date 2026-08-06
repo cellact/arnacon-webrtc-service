@@ -166,14 +166,9 @@ class WebRtcNegotiation extends CallNegotiationPort {
         });
         const callMeta = this._activeCallMeta();
 
-        if (!session.localAudioTrack) {
-            const track = new this.MediaStreamTrack({ kind: "audio" });
-            session.localAudioTrack = track;
-            pc.addTrack(track);
-        } else {
-            const audioT = pc.getTransceivers().find((t) => t.kind === "audio");
-            if (audioT) audioT.setDirection("sendrecv");
-        }
+        // After end-call, localAudioTrack is nulled but mid=1 audio transceiver
+        // remains. Must reactivate that transceiver — never addTrack (mid=2).
+        this._ensureAudioSenderOnExistingTransceiver(pc);
         session.iceCandidates = [];
         const offer = await pc.createOffer();
         // Narrow the ring offer to the route's codec policy (e.g. PCMA only for
@@ -352,7 +347,6 @@ class WebRtcNegotiation extends CallNegotiationPort {
     }
 
     async _setRemoteOfferWithRecovery(pc, offerSdp) {
-        let forceCreate = false;
         for (let attempt = 0; attempt < 3; attempt += 1) {
             try {
                 await pc.setRemoteDescription(new this.p.RTCSessionDescription(offerSdp, "offer"));
@@ -365,16 +359,14 @@ class WebRtcNegotiation extends CallNegotiationPort {
                 this._alignTransceiversToOffer(pc, offerSdp);
                 if (hasAudio) {
                     const missingMid = this._extractMissingMidFromError(err);
-                    this._repairAudioForOfferMid(offerSdp, pc, { preferredMid: missingMid, forceCreate });
+                    this._repairAudioForOfferMid(offerSdp, pc, { preferredMid: missingMid });
                 }
-                forceCreate = true;
                 if (attempt === 2) throw err;
             }
         }
     }
 
     async _createAnswerWithRecovery(pc, offerSdp, label) {
-        let forceCreate = false;
         for (let attempt = 0; attempt < 3; attempt += 1) {
             try {
                 return await this.p.createAnswerSdp(pc, this.id, label);
@@ -386,9 +378,8 @@ class WebRtcNegotiation extends CallNegotiationPort {
                 this._alignTransceiversToOffer(pc, offerSdp);
                 if (hasAudio) {
                     const missingMid = this._extractMissingMidFromError(err);
-                    this._repairAudioForOfferMid(offerSdp, pc, { preferredMid: missingMid, forceCreate });
+                    this._repairAudioForOfferMid(offerSdp, pc, { preferredMid: missingMid });
                 }
-                forceCreate = true;
                 if (attempt === 2) throw err;
             }
         }
@@ -400,12 +391,6 @@ class WebRtcNegotiation extends CallNegotiationPort {
         return /Track already added/i.test(msg);
     }
 
-    _isTrackBoundToAudioTransceiver(pc, track) {
-        if (!track) return false;
-        const audioTransceivers = pc.getTransceivers?.().filter((t) => t.kind === "audio") || [];
-        return audioTransceivers.some((t) => t?.sender?.track === track);
-    }
-
     _primeAudioTransceiver(transceiver, track) {
         if (!transceiver) return;
         try { transceiver.setDirection?.("sendrecv"); } catch (_) {}
@@ -414,90 +399,93 @@ class WebRtcNegotiation extends CallNegotiationPort {
         try { transceiver.sender?.replaceTrack?.(track); } catch (_) {}
     }
 
-    _repairAudioForOfferMid(sdp, pc, opts = {}) {
-        this._ensureAudioReadyForOffer(sdp, pc, { force: true });
-        const offerMid = String(opts.preferredMid || this._offerAudioMid(sdp) || "").trim() || null;
-        const forceCreate = opts.forceCreate === true;
-        const preferredFromError = String(opts.preferredMid || "").trim() || null;
-        const track = this.session.localAudioTrack || null;
-        const audioTransceivers = pc.getTransceivers?.().filter((t) => t.kind === "audio") || [];
-        for (const transceiver of audioTransceivers) this._primeAudioTransceiver(transceiver, track);
-        if (!offerMid || audioTransceivers.length === 0) return;
-
-        const hasExactMid = () =>
-            (pc.getTransceivers?.().some((t) => t.kind === "audio" && String(t.mid || "") === offerMid) ?? false);
-        if (hasExactMid() && !forceCreate) return;
-
-        // If the stack explicitly reported a missing MID, prefer creating/syncing that
-        // MID before retagging existing transceivers. Some implementations keep an
-        // internal MID map that lags behind exposed transceiver.mid changes.
-        const canRetagExisting = !preferredFromError;
-        if (canRetagExisting) {
-            const candidate =
-                audioTransceivers.find((t) => t.mid == null || t.mid === "") ||
-                audioTransceivers[0];
-            if (candidate && String(candidate.mid || "") !== offerMid) {
-                try { candidate.mid = offerMid; } catch (_) {}
-            }
-            if (hasExactMid() && !forceCreate) return;
-        }
-
-        // Final fallback: try creating/binding a fresh audio transceiver if the
-        // implementation supports it.
-        if (typeof pc.addTransceiver === "function") {
-            let created = null;
-            try {
-                created = track
-                    ? pc.addTransceiver(track, { direction: "sendrecv" })
-                    : pc.addTransceiver("audio", { direction: "sendrecv" });
-            } catch (_) {}
-            // Some stacks reject addTransceiver(track) when that track is already
-            // attached; retry with kind-only to still create the missing MID slot.
-            if (!created) {
-                try {
-                    created = pc.addTransceiver("audio", { direction: "sendrecv" });
-                } catch (_) {}
-            }
-            if (created) {
-                try { created.mid = offerMid; } catch (_) {}
-                this._primeAudioTransceiver(created, track);
-            }
-        }
-
-        if (!hasExactMid()) {
-            const candidate =
-                (pc.getTransceivers?.().find((t) => t.kind === "audio" && (t.mid == null || t.mid === ""))) ||
-                (pc.getTransceivers?.().find((t) => t.kind === "audio")) ||
-                null;
-            if (candidate && String(candidate.mid || "") !== offerMid) {
-                try { candidate.mid = offerMid; } catch (_) {}
-            }
-        }
-    }
-
-    _ensureAudioReadyForOffer(sdp, pc, opts = {}) {
-        if (!this._offerHasAudioMLine(sdp)) return;
-        const force = opts.force === true;
-        const audioTransceiver = pc.getTransceivers?.().find((t) => t.kind === "audio");
-        if (audioTransceiver && !force) {
-            this._primeAudioTransceiver(audioTransceiver, this.session.localAudioTrack || null);
-            return;
-        }
-
+    // Attach (or re-attach) local audio for an outbound/inbound offer without
+    // inventing a new audio m-line. After end-call the mid=1 transceiver stays
+    // on the PC with a null track; addTrack/addTransceiver would allocate mid=2
+    // and break WebRTC m-line continuity with the peer.
+    _ensureAudioSenderOnExistingTransceiver(pc) {
         if (!this.session.localAudioTrack) {
             this.session.localAudioTrack = new this.MediaStreamTrack({ kind: "audio" });
         }
         const track = this.session.localAudioTrack;
-        const alreadyBound = this._isTrackBoundToAudioTransceiver(pc, track);
-        if (!alreadyBound && typeof pc.addTrack === "function") {
+        const audioTransceivers = pc.getTransceivers?.().filter((t) => t.kind === "audio") || [];
+        if (audioTransceivers.length > 0) {
+            const preferred =
+                audioTransceivers.find((t) => t.mid != null && String(t.mid).trim() !== "") ||
+                audioTransceivers[0];
+            this._primeAudioTransceiver(preferred, track);
+            for (const transceiver of audioTransceivers) {
+                if (transceiver === preferred) continue;
+                try { transceiver.setDirection?.("inactive"); } catch (_) {}
+                try { transceiver.sender?.replaceTrack?.(null); } catch (_) {}
+            }
+            return preferred;
+        }
+        if (typeof pc.addTrack === "function") {
             try {
                 pc.addTrack(track);
             } catch (err) {
                 if (!this._isTrackAlreadyAddedError(err)) throw err;
             }
         }
-        const latestAudio = pc.getTransceivers?.().find((t) => t.kind === "audio");
-        if (latestAudio) this._primeAudioTransceiver(latestAudio, track);
+        return pc.getTransceivers?.().find((t) => t.kind === "audio") || null;
+    }
+
+    _repairAudioForOfferMid(sdp, pc, opts = {}) {
+        this._ensureAudioReadyForOffer(sdp, pc, { force: true });
+        const offerMid = String(opts.preferredMid || this._offerAudioMid(sdp) || "").trim() || null;
+        const track = this.session.localAudioTrack || null;
+        let audioTransceivers = pc.getTransceivers?.().filter((t) => t.kind === "audio") || [];
+
+        // Bootstrap only when the PC has no audio transceiver at all. Never grow
+        // the audio m-line count beside an existing mid (mid=1 → mid=2 poison).
+        if (audioTransceivers.length === 0 && typeof pc.addTransceiver === "function") {
+            let created = null;
+            try {
+                created = track
+                    ? pc.addTransceiver(track, { direction: "sendrecv" })
+                    : pc.addTransceiver("audio", { direction: "sendrecv" });
+            } catch (_) {}
+            if (!created) {
+                try {
+                    created = pc.addTransceiver("audio", { direction: "sendrecv" });
+                } catch (_) {}
+            }
+            if (created) {
+                if (offerMid) {
+                    try { created.mid = offerMid; } catch (_) {}
+                }
+                this._primeAudioTransceiver(created, track);
+            }
+            audioTransceivers = pc.getTransceivers?.().filter((t) => t.kind === "audio") || [];
+        }
+
+        if (!offerMid || audioTransceivers.length === 0) {
+            for (const transceiver of audioTransceivers) this._primeAudioTransceiver(transceiver, track);
+            return;
+        }
+
+        const preferred =
+            audioTransceivers.find((t) => String(t.mid || "") === offerMid) ||
+            audioTransceivers.find((t) => t.mid == null || t.mid === "") ||
+            audioTransceivers[0];
+        if (preferred && String(preferred.mid || "") !== offerMid) {
+            try { preferred.mid = offerMid; } catch (_) {}
+        }
+        this._primeAudioTransceiver(preferred, track);
+        for (const transceiver of audioTransceivers) {
+            if (transceiver === preferred) continue;
+            try { transceiver.setDirection?.("inactive"); } catch (_) {}
+            try { transceiver.sender?.replaceTrack?.(null); } catch (_) {}
+        }
+    }
+
+    _ensureAudioReadyForOffer(sdp, pc, opts = {}) {
+        if (!this._offerHasAudioMLine(sdp)) return;
+        // force is kept for call-site compatibility; attach path always reuses an
+        // existing audio transceiver when present (never invents mid=N+1).
+        void opts;
+        this._ensureAudioSenderOnExistingTransceiver(pc);
     }
 
     // The caller's client offered a ring and we are connected: ack it so the

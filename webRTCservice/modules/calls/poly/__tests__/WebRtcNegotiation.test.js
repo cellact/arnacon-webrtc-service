@@ -167,12 +167,40 @@ class DuplicateTrackOnRecoveryPeerConnection extends FakePeerConnection {
 class MidMapLagPeerConnection extends FakePeerConnection {
     constructor({ initialAudioMid = "1", ...opts } = {}) {
         super(opts);
-        this.transceivers = [
-            { kind: "application", mid: "0", setDirection() {}, sender: { replaceTrack: async () => {} } },
-            { kind: "audio", mid: initialAudioMid, setDirection() {}, sender: { replaceTrack: async () => {}, track: null } },
-        ];
         this.acceptedAudioMids = new Set([String(initialAudioMid)]);
         this._remoteOfferAudioMid = null;
+        this.addTrackCalls = 0;
+        this.addTransceiverCalls = 0;
+        this.transceivers = [
+            { kind: "application", mid: "0", setDirection() {}, sender: { replaceTrack: async () => {}, track: null } },
+            this._makeAudioTransceiver(String(initialAudioMid)),
+        ];
+    }
+
+    _makeAudioTransceiver(initialMid, track = null) {
+        const self = this;
+        let currentMid = String(initialMid || "").trim();
+        const created = {
+            kind: "audio",
+            setDirection() {},
+            sender: { replaceTrack: async () => {}, track },
+        };
+        Object.defineProperty(created, "mid", {
+            get() {
+                return currentMid;
+            },
+            set: (newMid) => {
+                const normalized = String(newMid ?? "").trim();
+                if (normalized === currentMid) return;
+                if (currentMid) self.acceptedAudioMids.delete(currentMid);
+                currentMid = normalized;
+                if (currentMid) self.acceptedAudioMids.add(currentMid);
+            },
+            enumerable: true,
+            configurable: true,
+        });
+        if (currentMid) this.acceptedAudioMids.add(currentMid);
+        return created;
     }
 
     _extractAudioMid(sdp = "") {
@@ -187,40 +215,26 @@ class MidMapLagPeerConnection extends FakePeerConnection {
     }
 
     addTrack(track) {
+        this.addTrackCalls += 1;
         const audio = this.transceivers.find((t) => t.kind === "audio");
         if (audio?.sender) audio.sender.track = track;
         return { kind: track?.kind || "audio" };
     }
 
     addTransceiver(kindOrTrack) {
+        this.addTransceiverCalls += 1;
         const isAudio = kindOrTrack === "audio" || kindOrTrack?.kind === "audio";
         if (!isAudio) return null;
+        // Still models stack growth — production must not call this when audio exists.
         const existingNumericMids = this.transceivers
             .map((t) => Number.parseInt(String(t.mid ?? ""), 10))
             .filter((n) => Number.isFinite(n));
         const nextMid = String(existingNumericMids.length ? Math.max(...existingNumericMids) + 1 : 1);
-        const created = {
-            kind: "audio",
-            setDirection() {},
-            sender: { replaceTrack: async () => {}, track: kindOrTrack?.kind === "audio" ? kindOrTrack : null },
-        };
-        let currentMid = nextMid;
-        Object.defineProperty(created, "mid", {
-            get() {
-                return currentMid;
-            },
-            set: (newMid) => {
-                const normalized = String(newMid ?? "").trim();
-                if (normalized === currentMid) return;
-                this.acceptedAudioMids.delete(currentMid);
-                currentMid = normalized;
-                if (currentMid) this.acceptedAudioMids.add(currentMid);
-            },
-            enumerable: true,
-            configurable: true,
-        });
+        const created = this._makeAudioTransceiver(
+            nextMid,
+            kindOrTrack?.kind === "audio" ? kindOrTrack : null,
+        );
         this.transceivers.push(created);
-        this.acceptedAudioMids.add(nextMid);
         return created;
     }
 
@@ -323,6 +337,95 @@ function deepLifecyclePrimitives() {
                 }
             }),
     };
+}
+
+// Models a reused PC after end-call: mid=0 DC + mid=1 audio. addTrack while
+// audio already exists invents mid=2 (the production poison). createOffer SDP
+// reflects live audio transceiver mids/directions.
+class ContinuityPeerConnection extends FakePeerConnection {
+    constructor(opts = {}) {
+        super(opts);
+        this.addTrackCalls = 0;
+        this.addTransceiverCalls = 0;
+        const makeSender = (track = null) => ({
+            track,
+            async replaceTrack(next) { this.track = next || null; },
+            registerTrack(next) { this.track = next || null; },
+        });
+        this.transceivers = [
+            {
+                kind: "application",
+                mid: "0",
+                direction: "sendrecv",
+                setDirection(d) { this.direction = d; },
+                sender: makeSender(),
+            },
+            {
+                kind: "audio",
+                mid: "1",
+                direction: "inactive",
+                setDirection(d) { this.direction = d; },
+                sender: makeSender(null),
+            },
+        ];
+    }
+
+    addTrack(track) {
+        this.addTrackCalls += 1;
+        const existing = this.transceivers.filter((t) => t.kind === "audio");
+        if (existing.length > 0) {
+            // Poison model: second audio m-line (mid=2) when mid=1 already exists.
+            const nextMid = String(
+                Math.max(
+                    0,
+                    ...this.transceivers.map((t) => Number.parseInt(String(t.mid ?? ""), 10)).filter(Number.isFinite),
+                ) + 1,
+            );
+            this.transceivers.push({
+                kind: "audio",
+                mid: nextMid,
+                direction: "sendrecv",
+                setDirection(d) { this.direction = d; },
+                sender: {
+                    track,
+                    async replaceTrack(next) { this.track = next || null; },
+                    registerTrack(next) { this.track = next || null; },
+                },
+            });
+            return { kind: "audio" };
+        }
+        this.transceivers.push({
+            kind: "audio",
+            mid: "1",
+            direction: "sendrecv",
+            setDirection(d) { this.direction = d; },
+            sender: {
+                track,
+                async replaceTrack(next) { this.track = next || null; },
+                registerTrack(next) { this.track = next || null; },
+            },
+        });
+        return { kind: "audio" };
+    }
+
+    addTransceiver(kindOrTrack) {
+        this.addTransceiverCalls += 1;
+        return this.addTrack(kindOrTrack?.kind === "audio" ? kindOrTrack : { kind: "audio" });
+    }
+
+    async createOffer() {
+        const audioMids = this.transceivers
+            .filter((t) => t.kind === "audio")
+            .map((t) => String(t.mid));
+        const bundle = ["0", ...audioMids].join(" ");
+        let sdp = `v=0\r\na=group:BUNDLE ${bundle}\r\n`;
+        sdp += "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:0\r\n";
+        for (const t of this.transceivers.filter((x) => x.kind === "audio")) {
+            const dir = t.direction || "sendrecv";
+            sdp += `m=audio 9 UDP/TLS/RTP/SAVPF 8\r\na=mid:${t.mid}\r\na=${dir}\r\n`;
+        }
+        return { type: "offer", sdp };
+    }
 }
 
 test("ring sends a signaling offer with the caller's bare label", async () => {
@@ -577,6 +680,70 @@ test("ring narrows the callee ring offer to the session codec policy (PCMA)", as
     assert.doesNotMatch(msg.payload.sdp, /opus/, "opus must be stripped from the ring offer");
 });
 
+test("ring after end-call reuses mid=1 audio transceiver (no mid=2)", async () => {
+    const signaling = new FakeSignaling();
+    const pc = new ContinuityPeerConnection();
+    const session = {
+        sessionId: "alice|bob",
+        callerEns: "alice.secnum.global",
+        toIdentity: "bob.secnum.global",
+        peerConnection: pc,
+        localAudioTrack: null,
+    };
+    const neg = new WebRtcNegotiation({
+        id: "bob",
+        endpoint: "bob.secnum.global",
+        session,
+        signaling,
+        primitives: fakePrimitives(),
+        logger: silentLogger,
+    });
+
+    await neg.endCall({ from: "alice.secnum.global" });
+    assert.equal(session.localAudioTrack, null, "end-call nulls localAudioTrack");
+    assert.equal(pc.transceivers.filter((t) => t.kind === "audio").length, 1);
+
+    await neg.ring({ from: "alice.secnum.global" });
+    const msg = signaling.lastOfType("signaling", "offer");
+    assert.ok(msg?.payload?.sdp, "expected ring offer");
+    assert.equal(pc.addTrackCalls, 0, "must not addTrack when mid=1 audio already exists");
+    assert.equal(pc.addTransceiverCalls, 0);
+    assert.equal(pc.transceivers.filter((t) => t.kind === "audio").length, 1);
+    assert.equal(String(pc.transceivers.find((t) => t.kind === "audio").mid), "1");
+    assert.match(msg.payload.sdp, /a=mid:1/);
+    assert.doesNotMatch(msg.payload.sdp, /a=mid:2/, "ring must not invent mid=2");
+    assert.match(msg.payload.sdp, /a=group:BUNDLE 0 1/);
+    assert.ok(session.localAudioTrack, "fresh track attached to existing transceiver");
+    assert.equal(pc.transceivers.find((t) => t.kind === "audio").direction, "sendrecv");
+});
+
+test("ring on inactive mid=1 PC reuses transceiver without addTrack", async () => {
+    const signaling = new FakeSignaling();
+    const pc = new ContinuityPeerConnection();
+    const session = {
+        sessionId: "alice|bob",
+        callerEns: "alice.secnum.global",
+        toIdentity: "bob.secnum.global",
+        peerConnection: pc,
+        localAudioTrack: null,
+    };
+    const neg = new WebRtcNegotiation({
+        id: "bob",
+        endpoint: "bob.secnum.global",
+        session,
+        signaling,
+        primitives: fakePrimitives(),
+        logger: silentLogger,
+    });
+
+    await neg.ring({ from: "alice.secnum.global" });
+    assert.equal(pc.addTrackCalls, 0);
+    assert.equal(pc.transceivers.filter((t) => t.kind === "audio").length, 1);
+    assert.equal(String(pc.transceivers.find((t) => t.kind === "audio").mid), "1");
+    const msg = signaling.lastOfType("signaling", "offer");
+    assert.doesNotMatch(msg.payload.sdp, /a=mid:2/);
+});
+
 test("callee leg connect delegates to inviteCallee (deferred) and binds the returned leg session", async () => {
     const signaling = new FakeSignaling();
     const legSession = {
@@ -764,7 +931,7 @@ test("DEEP BUG REPRO: recovery must not throw when local track is already bound"
     );
 });
 
-test("DEEP BUG REPRO: mid=2 map-lag recovers via forced transceiver create", async () => {
+test("mid mismatch recovers by retagging existing audio transceiver (no second mid)", async () => {
     const signaling = new FakeSignaling();
     const localTrack = { kind: "audio" };
     const pc = new MidMapLagPeerConnection({
@@ -797,13 +964,21 @@ test("DEEP BUG REPRO: mid=2 map-lag recovers via forced transceiver create", asy
         "a=mid:2\r\n" +
         "a=sendrecv\r\n";
 
+    const audioCountBefore = pc.transceivers.filter((t) => t.kind === "audio").length;
     await assert.doesNotReject(
         () => neg.applyOffer({ mode: "ring", payload: { sdp: offerWithAudioMid2 } }),
-        "recovery should survive mid=2 drift where transceiver maps lag behind exposed mids",
+        "recovery should retag existing mid=1 → mid=2 without inventing a new transceiver",
     );
+    assert.equal(pc.addTransceiverCalls, 0, "must not addTransceiver when audio already exists");
+    assert.equal(
+        pc.transceivers.filter((t) => t.kind === "audio").length,
+        audioCountBefore,
+        "audio transceiver count must stay stable",
+    );
+    assert.equal(String(pc.transceivers.find((t) => t.kind === "audio").mid), "2");
 });
 
-test("DEEP BUG REPRO: repeated decline/reuse can advance to mid=2 then mid=3", async () => {
+test("repeated mid retags reuse one audio transceiver (no mid=2 then mid=3 growth)", async () => {
     const signaling = new FakeSignaling();
     const localTrack = { kind: "audio" };
     const pc = new MidMapLagPeerConnection({
@@ -846,15 +1021,18 @@ test("DEEP BUG REPRO: repeated decline/reuse can advance to mid=2 then mid=3", a
 
     await assert.doesNotReject(
         () => neg.applyOffer({ mode: "ring", payload: { sdp: offerMid2 } }),
-        "first reuse cycle should recover from mid=2 mismatch",
+        "first reuse cycle should retag mid without growth",
     );
     await assert.doesNotReject(
         () => neg.applyOffer({ mode: "ring", payload: { sdp: offerMid3 } }),
-        "second reuse cycle should recover from mid=3 mismatch",
+        "second reuse cycle should retag mid without growth",
     );
+    assert.equal(pc.addTransceiverCalls, 0);
+    assert.equal(pc.transceivers.filter((t) => t.kind === "audio").length, 1);
+    assert.equal(String(pc.transceivers.find((t) => t.kind === "audio").mid), "3");
 });
 
-test("DEEP BUG REPRO: recovery falls back to addTransceiver('audio') when addTransceiver(track) fails", async () => {
+test("mid recovery retags even when addTransceiver(track) would fail", async () => {
     const signaling = new FakeSignaling();
     const localTrack = { kind: "audio" };
     const pc = new MidMapLagTrackCreateFailsPeerConnection({
@@ -887,8 +1065,10 @@ test("DEEP BUG REPRO: recovery falls back to addTransceiver('audio') when addTra
         "a=sendrecv\r\n";
     await assert.doesNotReject(
         () => neg.applyOffer({ mode: "ring", payload: { sdp: offerWithAudioMid2 } }),
-        "mid recovery should succeed even if addTransceiver(track) fails on reused track",
+        "mid recovery should retag existing transceiver and never need addTransceiver",
     );
+    assert.equal(pc.addTransceiverCalls, 0);
+    assert.equal(pc.transceivers.filter((t) => t.kind === "audio").length, 1);
 });
 
 test("DEEP MATRIX: createAnswer recovery handles missing mids 1/2/3", async () => {
