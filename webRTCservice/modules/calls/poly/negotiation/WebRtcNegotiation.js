@@ -242,16 +242,9 @@ class WebRtcNegotiation extends CallNegotiationPort {
             offerSdp = this.p.patchInactiveToSendrecv(offerSdp);
         }
         const offerHasAudio = this._offerHasAudioMLine(offerSdp);
-        // Fresh accept path (a client ring, not an ICE restart): force a brand
-        // new MediaStreamTrack. Reusing session.localAudioTrack across attempts
-        // is what let werift ship a=recvonly on the answer when a prior
-        // end-call reneg (or an unresolved cancel) had already null-tracked the
-        // sender behind our back. The mint-if-missing branches inside
-        // _ensureAudioReadyForOffer / ensureLocalAudioTrack do the actual
-        // allocation once we drop the stale reference here.
-        if (!isIceRestart && offerHasAudio && this.session) {
-            this.session.localAudioTrack = null;
-        }
+        // Fresh accept path (not ICE restart): always mint a new outbound track
+        // before answering. Warm redial must not reuse the prior call's track/
+        // SSRC after end-call null-tracked the sender.
         if (!isIceRestart && offerHasAudio) this._ensureAudioReadyForOffer(offerSdp, pc);
         await this._setRemoteOfferWithRecovery(pc, offerSdp);
         await this.p.addIceCandidates?.(pc, payload.candidates || []);
@@ -288,6 +281,10 @@ class WebRtcNegotiation extends CallNegotiationPort {
         // We do NOT ack here: P decides WHEN to ack (reconcile emits ACK_CONNECTED
         // on the fresh ring); this adapter only knows HOW (ackConnected above).
         this._pendingAnswerSdp = answerSdp;
+        this.logger.log(
+            `[${this.id}] held ring answer (not sent yet) len=${answerSdp?.length || 0} ` +
+            `audio=${offerHasAudio} mode=${ctx.mode || "ring"}`,
+        );
     }
 
     _offerHasAudioMLine(sdp = "") {
@@ -410,14 +407,19 @@ class WebRtcNegotiation extends CallNegotiationPort {
         try { transceiver.sender?.replaceTrack?.(track); } catch (_) {}
     }
 
-    // Attach (or re-attach) local audio for an outbound/inbound offer without
+    // Attach a fresh local audio track for an outbound/inbound offer without
     // inventing a new audio m-line. After end-call the mid=1 transceiver stays
     // on the PC with a null track; addTrack/addTransceiver would allocate mid=2
     // and break WebRTC m-line continuity with the peer.
+    // Always mint: caller applyOffer and callee RING both hit this for every
+    // new call so warm redial cannot reuse a dead track/SSRC/msid.
     _ensureAudioSenderOnExistingTransceiver(pc) {
-        if (!this.session.localAudioTrack) {
-            this.session.localAudioTrack = new this.MediaStreamTrack({ kind: "audio" });
+        const prev = this.session.localAudioTrack;
+        this.session.localAudioTrack = new this.MediaStreamTrack({ kind: "audio" });
+        if (prev && typeof prev.stop === "function") {
+            try { prev.stop(); } catch (_) {}
         }
+        this.logger.log?.(`[${this.id}] minted fresh localAudioTrack`);
         const track = this.session.localAudioTrack;
         const audioTransceivers = pc.getTransceivers?.().filter((t) => t.kind === "audio") || [];
         if (audioTransceivers.length > 0) {
@@ -506,6 +508,9 @@ class WebRtcNegotiation extends CallNegotiationPort {
     // reused leg gets a fresh ack on each new call.
     async ackConnected() {
         const callMeta = this._activeCallMeta();
+        this.logger.log(
+            `[${this.id}] ackConnected -> ackFor=ring callId=${callMeta.callId || "-"}`,
+        );
         this.signaling.send({ msgType: "call", action: "ack", ackFor: "ring", callId: callMeta.callId });
     }
 

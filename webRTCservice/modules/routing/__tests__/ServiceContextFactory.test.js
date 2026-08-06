@@ -1,24 +1,23 @@
-const { test } = require("node:test");
+const test = require("node:test");
 const assert = require("node:assert/strict");
-
 const { ServiceContextFactory } = require("../ServiceContextFactory");
 
-function buildFactory(loggerSink) {
+function buildFactory(loggerSink = console) {
     return new ServiceContextFactory({
         serviceRegistry: {
-            allDomains: () => [],
-            firstDomain: () => null,
+            allDomains: () => ["secnum.global"],
+            firstDomain: () => "secnum.global",
         },
-        zeroAddress: "0x0000000000000000000000000000000000000000",
+        zeroAddress: "0x0",
         parseAddress: () => ({}),
-        normalizePhone: (value) => value,
+        normalizePhone: (v) => String(v || "").replace(/\D/g, ""),
         blockchainApi: {},
         callRouterApi: {},
         sendNotification: async () => ({}),
         findOutboundSessionForInbound: () => null,
-        openSipSession: async () => ({}),
-        openInboundSipSession: async () => ({}),
-        notifyAndBridge: async () => ({}),
+        openSipSession: async () => {},
+        openInboundSipSession: async () => {},
+        notifyAndBridge: async () => {},
         sendAck: () => {},
         sendAnswer: () => {},
         sendAckAndAnswer: () => {},
@@ -29,55 +28,29 @@ function buildFactory(loggerSink) {
     });
 }
 
-test("logRouteDecision is muted (no ServiceRoute log spam)", () => {
+test("logRouteDecision emits compact ServiceRoute breadcrumb", () => {
     const captured = [];
     const factory = buildFactory({
-        log: (...args) => captured.push(args),
+        log: (...args) => captured.push(args.join(" ")),
     });
     const runtime = {
         id: "secnum",
         providerId: "secnum",
         primaryDomain: "secnum.global",
         domainAliases: [],
-        serviceConstants: {
-            logPrivacy: {
-                enabled: true,
-            },
-        },
+        serviceConstants: {},
     };
     const helpers = factory.helpers(runtime);
     helpers.logRouteDecision({
-        from: "972557140001.secnum.global",
-        to: "972557220060",
-        route: "webrtc",
-        other: "keep-this",
+        targetValue: "972557220060",
+        route: "number-to-sbc-fallback",
+        notifyIdentity: "972557220060",
+        walletSource: "identity-mapping",
     });
 
-    assert.equal(captured.length, 0);
-});
-
-test("logRouteDecision remains muted when log privacy disabled", () => {
-    const captured = [];
-    const factory = buildFactory({
-        log: (...args) => captured.push(args),
-    });
-    const runtime = {
-        id: "secnum",
-        providerId: "secnum",
-        primaryDomain: "secnum.global",
-        domainAliases: [],
-        serviceConstants: {
-            logPrivacy: {
-                enabled: false,
-            },
-        },
-    };
-    const helpers = factory.helpers(runtime);
-    helpers.logRouteDecision({
-        from: "972557140001.secnum.global",
-        to: "972557220060",
-        route: "webrtc",
-    });
-
-    assert.equal(captured.length, 0);
+    assert.equal(captured.length, 1);
+    assert.match(captured[0], /\[ServiceRoute\]/);
+    assert.match(captured[0], /route=number-to-sbc-fallback/);
+    assert.match(captured[0], /target=972557220060/);
+    assert.match(captured[0], /notify=972557220060/);
 });

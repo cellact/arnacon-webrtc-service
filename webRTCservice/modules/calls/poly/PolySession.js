@@ -196,7 +196,20 @@ class PolySession {
                     this.logger.error(`[${this.id}] reconcile did not converge after ${MAX_RECONCILE_PASSES} passes`);
                     break;
                 }
-                const actions = this.rules(this._snapshot(), this.lastEvent);
+                const snap = this._snapshot();
+                const eventState = this.lastEvent?.state || null;
+                const eventReason = this.lastEvent?.cause?.reason || this.lastEvent?.reason || null;
+                const actions = this.rules(snap, this.lastEvent);
+                const actionSummary = actions.map((a) => (
+                    a.kind === "media"
+                        ? `media:${a.op}`
+                        : `${a.intent}@${a.leg}${a.from ? `<-${a.from}` : ""}`
+                )).join(", ") || "(none)";
+                this.logger.log(
+                    `[${this.id}] reconcile a=${snap.a.state}/${snap.a.kind} b=${snap.b.state}/${snap.b.kind} ` +
+                    `media=${snap.mediaConnected} event=${eventState || "-"}${eventReason ? `(${eventReason})` : ""} ` +
+                    `-> [${actionSummary}]`,
+                );
                 for (const action of actions) {
                     await this._execute(action);
                 }

@@ -39,14 +39,18 @@ class WebRtcClientLeg extends MediaLeg {
         return this.peerConnection?.getTransceivers?.().find((t) => t.kind === "audio") || null;
     }
 
-    ensureOutputTrack() {
+    ensureOutputTrack({ forceFresh = false } = {}) {
         const audioT = this.getAudioTransceiver();
         if (!audioT) return null;
-        if (!this.session.localAudioTrack) {
+        if (forceFresh || !this.session.localAudioTrack) {
             if (typeof this.MediaStreamTrack !== "function") {
                 throw new Error("MediaStreamTrack unavailable for WebRTC leg");
             }
+            const prev = this.session.localAudioTrack;
             this.session.localAudioTrack = new this.MediaStreamTrack({ kind: "audio" });
+            if (prev && typeof prev.stop === "function") {
+                try { prev.stop(); } catch (_) {}
+            }
             this.logger.log(`[${this.id}] WebRTC leg created localAudioTrack`);
         } else {
             this.logger.log(`[${this.id}] WebRTC leg reusing localAudioTrack`);
@@ -54,6 +58,7 @@ class WebRtcClientLeg extends MediaLeg {
         if (audioT.sender && typeof audioT.sender.registerTrack === "function") {
             audioT.sender.registerTrack(this.session.localAudioTrack);
         }
+        try { audioT.sender?.replaceTrack?.(this.session.localAudioTrack); } catch (_) {}
         audioT.setDirection("sendrecv");
         audioT.offerDirection = "sendrecv";
         return this.session.localAudioTrack;
@@ -210,6 +215,9 @@ class WebRtcClientLeg extends MediaLeg {
                 try { await audioT.sender.replaceTrack(null); } catch (_) {}
             }
         }
+        // Match negotiation end-call: drop the ref so the next call cannot
+        // reuse a track that werift already treats as dead.
+        this.session.localAudioTrack = null;
     }
 }
 

@@ -715,6 +715,13 @@ test("ring after end-call reuses mid=1 audio transceiver (no mid=2)", async () =
     assert.match(msg.payload.sdp, /a=group:BUNDLE 0 1/);
     assert.ok(session.localAudioTrack, "fresh track attached to existing transceiver");
     assert.equal(pc.transceivers.find((t) => t.kind === "audio").direction, "sendrecv");
+    const track1 = session.localAudioTrack;
+
+    await neg.endCall({ from: "alice.secnum.global" });
+    await neg.ring({ from: "alice.secnum.global" });
+    assert.ok(session.localAudioTrack, "second ring mints a track");
+    assert.notEqual(session.localAudioTrack, track1, "each ring mints a new localAudioTrack");
+    assert.equal(pc.transceivers.filter((t) => t.kind === "audio").length, 1);
 });
 
 test("ring on inactive mid=1 PC reuses transceiver without addTrack", async () => {

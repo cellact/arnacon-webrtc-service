@@ -132,9 +132,21 @@ class ServiceContextFactory {
             sendAckAndAnswer: this.sendAckAndAnswer,
             sendDataChannelMessage: this.sendDataChannelMessage,
             endCall: (sessionId, reason) => this.handleCallEnd(sessionId, reason, true),
-            // Route/metric chatter is non-essential for call debugging; keep helpers
-            // as no-ops so callers stay stable without flooding logs.
-            logRouteDecision: (_entry) => {},
+            // Compact route breadcrumb — needed to debug stuck dials (sbc vs webrtc, mapping misses).
+            logRouteDecision: (entry = {}) => {
+                const route = entry.route || "-";
+                const target = entry.targetValue || entry.to || entry.ensName || "-";
+                const extra = [
+                    entry.walletSource ? `src=${entry.walletSource}` : null,
+                    entry.notifyIdentity ? `notify=${entry.notifyIdentity}` : null,
+                    entry.wallet ? `wallet=${String(entry.wallet).slice(0, 10)}…` : null,
+                    entry.reason ? `reason=${entry.reason}` : null,
+                ].filter(Boolean).join(" ");
+                this.logger.log(
+                    `[ServiceRoute] service=${serviceRuntime.id || "-"} route=${route} target=${target}` +
+                    (extra ? ` ${extra}` : ""),
+                );
+            },
             emitServiceMetric: (_metric) => {},
             getAllServiceDomains: () => this.serviceRegistry.allDomains(),
             getFirstServiceDomain: () => this.serviceRegistry.firstDomain(serviceRuntime.id),

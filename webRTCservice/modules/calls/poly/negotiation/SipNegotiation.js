@@ -34,6 +34,7 @@ class SipNegotiation extends CallNegotiationPort {
 
     async connect() {
         // SIP registration/INVITE happens on ring()/answer(); nothing to pre-establish.
+        this.logger.log(`[${this.session.sessionId}] sip connect (no-op; invite on ring/answer) endpoint=${this.endpoint}`);
     }
 
     // P presents the call to the SIP side => originate: place the INVITE toward the
@@ -42,17 +43,26 @@ class SipNegotiation extends CallNegotiationPort {
     // caller is seeded CALLING and is driven via answer(), never ring -- so there is
     // no stored "outbound vs inbound" to check, the intent itself is the decision.
     async ring(ctx = {}) {
-        if (this.session.sipConnection) return; // already up -> idempotent
+        if (this.session.sipConnection) {
+            this.logger.log(`[${this.session.sessionId}] sip ring skipped (already has sipConnection) endpoint=${this.endpoint}`);
+            return; // already up -> idempotent
+        }
+        const from = this.session.sipFrom || ctx.from || null;
+        this.logger.log(
+            `[${this.session.sessionId}] sip ring -> openOutbound target=${this.endpoint} ` +
+            `from=${from || "-"} directive=${this.session.sipDirective ? "yes" : "no"}`,
+        );
         const openOutbound = async () => {
             await this.sip.openOutbound(this.session.sessionId, {
                 target: this.endpoint,
                 // Prefer the resolved SBC caller-id over the raw peer ref.
-                from: this.session.sipFrom || ctx.from || null,
+                from,
                 sipDirective: this.session.sipDirective || null,
             });
         };
 
         await openOutbound();
+        this.logger.log(`[${this.session.sessionId}] sip ring openOutbound returned (dialog up) target=${this.endpoint}`);
         // No PC2 readiness gate here. SIP `Established` is our signal that the
         // dialog is up; ICE/DTLS on PC2 finish in parallel while the media
         // bridge attaches (same pattern the inbound path uses successfully).
@@ -65,12 +75,16 @@ class SipNegotiation extends CallNegotiationPort {
     // resumed INVITE from Kamailio. P only fires answer on a SIP leg that is the
     // CALLER (a PSTN call dialed in and our WebRTC side just answered it).
     async answer(ctx = {}) {
-        if (this.session.sipConnection) return; // idempotent
+        if (this.session.sipConnection) {
+            this.logger.log(`[${this.session.sessionId}] sip answer skipped (already has sipConnection)`);
+            return; // idempotent
+        }
         const referTransfer = this.session.referTransfer;
         if (referTransfer?.enabled && referTransfer.mode === "controller") {
             // REFER transfer controller keeps A's signaling dialog untouched and
             // handles bridge switching out-of-band; this SIP leg must not wait
             // for a suspended INVITE that does not exist in REFER orchestration.
+            this.logger.log(`[${this.session.sessionId}] sip answer via REFER controller`);
             await referTransfer.onSipAnswer?.({
                 sessionId: this.session.sessionId,
                 endpoint: this.endpoint,
@@ -79,9 +93,13 @@ class SipNegotiation extends CallNegotiationPort {
         }
         // REFER must still be accepted via the existing inbound SIP path so we
         // do not create a fresh dialog/call-id that appears as a second call.
+        this.logger.log(
+            `[${this.session.sessionId}] sip answer -> openInbound phone=${this.phoneNumber || ctx.phoneNumber || "-"}`,
+        );
         await this.sip.openInbound(this.session.sessionId, {
             phoneNumber: this.phoneNumber || ctx.phoneNumber || null,
         });
+        this.logger.log(`[${this.session.sessionId}] sip answer openInbound returned`);
     }
 
     async applyOffer() {
