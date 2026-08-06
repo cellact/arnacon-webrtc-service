@@ -349,9 +349,24 @@ class ContinuityPeerConnection extends FakePeerConnection {
         this.addTransceiverCalls = 0;
         const makeSender = (track = null) => ({
             track,
+            ssrc: 111111111,
+            rtxSsrc: 222222222,
+            streamId: "stream-fixed",
+            trackId: "track-fixed",
+            sequenceNumber: 9,
+            timestamp: 99,
+            seqOffset: 1,
+            timestampOffset: 1,
+            packetCount: 7,
+            octetCount: 70,
+            rtpCache: [1],
             async replaceTrack(next) { this.track = next || null; },
             registerTrack(next) { this.track = next || null; },
         });
+        this.router = {
+            ssrcTable: { 111111111: true },
+            registerRtpSender(sender) { this.ssrcTable[sender.ssrc] = sender; },
+        };
         this.transceivers = [
             {
                 kind: "application",
@@ -716,11 +731,20 @@ test("ring after end-call reuses mid=1 audio transceiver (no mid=2)", async () =
     assert.ok(session.localAudioTrack, "fresh track attached to existing transceiver");
     assert.equal(pc.transceivers.find((t) => t.kind === "audio").direction, "sendrecv");
     const track1 = session.localAudioTrack;
+    const audioSender = pc.transceivers.find((t) => t.kind === "audio").sender;
+    const ssrc1 = audioSender.ssrc;
+    const msid1 = `${audioSender.streamId} ${audioSender.trackId}`;
+    assert.notEqual(ssrc1, 111111111, "ring rotates sender SSRC off the prior-call value");
+    assert.notEqual(audioSender.streamId, "stream-fixed", "ring rotates sender streamId/msid");
+    assert.equal(audioSender.sequenceNumber, undefined, "ring clears sender RTP continuity");
+    assert.equal(pc.router.ssrcTable[ssrc1], audioSender, "router re-registers rotated SSRC");
 
     await neg.endCall({ from: "alice.secnum.global" });
     await neg.ring({ from: "alice.secnum.global" });
     assert.ok(session.localAudioTrack, "second ring mints a track");
     assert.notEqual(session.localAudioTrack, track1, "each ring mints a new localAudioTrack");
+    assert.notEqual(audioSender.ssrc, ssrc1, "each ring rotates a new sender SSRC");
+    assert.notEqual(`${audioSender.streamId} ${audioSender.trackId}`, msid1, "each ring rotates msid");
     assert.equal(pc.transceivers.filter((t) => t.kind === "audio").length, 1);
 });
 

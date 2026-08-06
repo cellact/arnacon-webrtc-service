@@ -5,6 +5,7 @@
 // legacy use cases received) + a SignalingTransportPort, so it stays testable
 // and free of global reaches.
 
+const crypto = require("crypto");
 const { CallNegotiationPort } = require("../ports");
 const { LEG_STATES } = require("../states");
 const { WebRtcClientLeg } = require("../../../media/legs/WebRtcClientLeg");
@@ -16,6 +17,13 @@ const {
 const {
     identityLabel,
 } = require("../../../runtime/CallPairRef");
+
+function _randomSsrc() {
+    // Match werift RTCRtpSender: random 32-bit. Avoid 0 (some stacks treat it as unset).
+    let ssrc = 0;
+    while (ssrc === 0) ssrc = crypto.randomBytes(4).readUInt32BE(0) >>> 0;
+    return ssrc;
+}
 
 class WebRtcNegotiation extends CallNegotiationPort {
     constructor({
@@ -407,12 +415,56 @@ class WebRtcNegotiation extends CallNegotiationPort {
         try { transceiver.sender?.replaceTrack?.(track); } catch (_) {}
     }
 
+    // werift keeps RTCRtpSender.ssrc / streamId / trackId across replaceTrack.
+    // Warm redial then re-answers with the same a=ssrc + a=msid the client already
+    // tore down → silent playout while MEDIA-STATS still climb. Rotate identity
+    // on the reused mid=1 sender before createOffer/createAnswer.
+    _rotateAudioSenderIdentity(pc, sender) {
+        if (!sender) return null;
+        const oldSsrc = sender.ssrc;
+        const oldMsid = `${sender.streamId || ""} ${sender.trackId || ""}`.trim();
+        const router = pc?.router;
+        if (router?.ssrcTable) {
+            try { delete router.ssrcTable[oldSsrc]; } catch (_) {}
+            if (sender.rtxSsrc != null) {
+                try { delete router.ssrcTable[sender.rtxSsrc]; } catch (_) {}
+            }
+        }
+        sender.ssrc = _randomSsrc();
+        sender.rtxSsrc = _randomSsrc();
+        sender.streamId = crypto.randomUUID();
+        sender.trackId = crypto.randomUUID();
+        // Drop continuity state from the prior call so seq/ts offsets don't
+        // stitch onto a zombie SSRC timeline.
+        sender.sequenceNumber = undefined;
+        sender.timestamp = undefined;
+        sender.seqOffset = 0;
+        sender.timestampOffset = 0;
+        sender.packetCount = 0;
+        sender.octetCount = 0;
+        sender.rtpCache = [];
+        if (sender.track) {
+            try { sender.track.id = sender.trackId; } catch (_) {}
+            try { sender.track.ssrc = sender.ssrc; } catch (_) {}
+            try { sender.track.streamId = sender.streamId; } catch (_) {}
+        }
+        if (typeof router?.registerRtpSender === "function") {
+            try { router.registerRtpSender(sender); } catch (_) {}
+        }
+        const msid = `${sender.streamId} ${sender.trackId}`;
+        this.logger.log?.(
+            `[${this.id}] rotated audio sender identity ssrc ${oldSsrc} -> ${sender.ssrc} ` +
+            `msid ${oldMsid || "n/a"} -> ${msid}`
+        );
+        return { ssrc: sender.ssrc, msid };
+    }
+
     // Attach a fresh local audio track for an outbound/inbound offer without
     // inventing a new audio m-line. After end-call the mid=1 transceiver stays
     // on the PC with a null track; addTrack/addTransceiver would allocate mid=2
     // and break WebRTC m-line continuity with the peer.
-    // Always mint: caller applyOffer and callee RING both hit this for every
-    // new call so warm redial cannot reuse a dead track/SSRC/msid.
+    // Always mint + rotate sender SSRC/msid: caller applyOffer and callee RING
+    // both hit this for every new call.
     _ensureAudioSenderOnExistingTransceiver(pc) {
         const prev = this.session.localAudioTrack;
         this.session.localAudioTrack = new this.MediaStreamTrack({ kind: "audio" });
@@ -426,6 +478,7 @@ class WebRtcNegotiation extends CallNegotiationPort {
             const preferred =
                 audioTransceivers.find((t) => t.mid != null && String(t.mid).trim() !== "") ||
                 audioTransceivers[0];
+            this._rotateAudioSenderIdentity(pc, preferred.sender);
             this._primeAudioTransceiver(preferred, track);
             for (const transceiver of audioTransceivers) {
                 if (transceiver === preferred) continue;
