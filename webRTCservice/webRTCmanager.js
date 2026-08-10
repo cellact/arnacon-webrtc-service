@@ -154,6 +154,10 @@ const { adaptRtpPayloadType } = require("./modules/media/codecs/rtp");
 const { MediaGraphFactory } = require("./modules/media/MediaGraphFactory");
 const { CallSdpUseCases } = require("./modules/calls/useCases/CallSdpUseCases");
 const { SignalingAuthVerifier, createSignalingPipeline } = require("./modules/participants/signaling/SignalingPipeline");
+const {
+    createSecnumLogicClient,
+    readSecnumLogicConfig,
+} = require("./modules/gateways/secnumLogic/SecnumLogicClient");
 const { createMinuteCounter } = require("./modules/callFeatures/minuteCounter/MinuteCounter");
 const { MinuteCounterPolicy } = require("./modules/callFeatures/minuteCounter/MinuteCounterPolicy");
 const { AddressParser } = require("./modules/routing/AddressParser");
@@ -768,11 +772,41 @@ function parseAddress(addr, serviceId = null) {
 const isRawEmail = (...args) => addressParserApi.isRawEmail(...args);
 const emailToEnsName = (...args) => addressParserApi.emailToEnsName(...args);
 const resolveEnsToAddress = (...args) => blockchainGateway.resolveEnsToAddress(...args);
+function getSecnumLogicConfig(serviceId = null) {
+    const runtime =
+        (serviceId && loadedServices[serviceId]) ||
+        loadedServices[process.env.SERVICE_ID || ""] ||
+        loadedServices.secnum ||
+        Object.values(loadedServices)[0] ||
+        null;
+    return readSecnumLogicConfig(runtime?.serviceConstants || {});
+}
+
 const signalingAuthVerifier = new SignalingAuthVerifier({
     blockchainGateway,
     sessions,
     sessionsByUser,
     stableKey: (...args) => stableKey(...args),
+    remoteAuth: async (payload = {}) => {
+        const cfg = getSecnumLogicConfig();
+        if (!cfg?.enabled || !cfg.baseUrl) return false;
+        const client = createSecnumLogicClient(cfg);
+        try {
+            await client.auth({
+                origin: "client",
+                from: payload.from,
+                to: payload.to,
+                sdp: payload.sdp,
+                sessionId: payload.sessionId,
+                type: payload.type || "offer",
+                xsign: payload.xsign || payload["x-sign"],
+                xdata: payload.xdata || payload["x-data"],
+            });
+            return true;
+        } catch (err) {
+            throw createHttpError(err.status || err.statusCode || 401, err.message);
+        }
+    },
 });
 const isEthAddress = (...args) => blockchainGateway.isEthAddress(...args);
 
@@ -2073,7 +2107,7 @@ async function enforceSingleCallBeforeAnswer(poly, ref) {
 // and asserts the caller may still start a call. Returns { allowed, settings,
 // identity }: allowed=false means the monthly cap is exhausted (the caller has
 // already been told to end). No active policy => allowed with settings=null.
-function checkSbcMinuteBudget({ session, callerSessionId, parsedFrom, serviceId }) {
+async function checkSbcMinuteBudget({ session, callerSessionId, parsedFrom, serviceId }) {
     const settings = minuteCounterPolicy.getSettings(serviceId);
     const identity = minuteCounterPolicy.getIdentity(parsedFrom, session);
     if (!minuteCounterApi || !settings?.limitSeconds) return { allowed: true, settings: null, identity };
@@ -2087,6 +2121,31 @@ function checkSbcMinuteBudget({ session, callerSessionId, parsedFrom, serviceId 
         ...settings,
         limitSeconds: effectiveLimitSeconds,
     };
+
+    const secnumLogicCfg = getSecnumLogicConfig(serviceId);
+    if (secnumLogicCfg?.enabled && secnumLogicCfg.baseUrl) {
+        try {
+            const client = createSecnumLogicClient(secnumLogicCfg);
+            const decision = await client.minutes({
+                event: "check",
+                identity,
+                serviceId: effectiveSettings.serviceId,
+                from: parsedFrom?.full || parsedFrom?.value || null,
+                sessionId: callerSessionId,
+            });
+            if (decision && decision.allowed === false) {
+                console.log(`[${callerSessionId}] secnumLogic minute check denied for ${identity}`);
+                sendEndCallSignal(callerSessionId, "minute-limit");
+                return { allowed: false, settings: effectiveSettings, identity };
+            }
+            return { allowed: true, settings: effectiveSettings, identity };
+        } catch (err) {
+            console.warn(
+                `[${callerSessionId}] secnumLogic minutes check failed, falling back to local: ${err.message}`,
+            );
+        }
+    }
+
     try {
         minuteCounterApi.assertCanStart({
             serviceId: effectiveSettings.serviceId,
@@ -2281,7 +2340,7 @@ async function onDcRing(callerSessionId, payload) {
         // legacy SbcRouteStrategy where start()/assertCanStart() lived, so gate on
         // the per-service monthly cap here at SIP-leg origination. The cap header +
         // billing hooks are applied below once the poly exists.
-            const budget = checkSbcMinuteBudget({ session, callerSessionId, parsedFrom, serviceId });
+            const budget = await checkSbcMinuteBudget({ session, callerSessionId, parsedFrom, serviceId });
             if (!budget.allowed) return;
             minuteCounterSettings = budget.settings;
             minuteCounterIdentity = budget.identity;
@@ -2374,7 +2433,7 @@ function isRecoverableOfferIngressError(err) {
  * Data channel ingress -> normalized leg events for the owning PolySession.
  * Replaces SignalingMessageRouter phase-gating (leg states gate instead).
  */
-function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
+async function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
     let msg;
     try {
         msg = JSON.parse(rawMessage);
@@ -2467,7 +2526,7 @@ function onDataChannelMessage(sessionId, rawMessage, meta = {}) {
         if (sipRef) {
             const serviceId = session.serviceId || null;
             const parsedFrom = parseAddress(session.callerEns, serviceId);
-            const budget = checkSbcMinuteBudget({ session, callerSessionId: sessionId, parsedFrom, serviceId });
+            const budget = await checkSbcMinuteBudget({ session, callerSessionId: sessionId, parsedFrom, serviceId });
             if (!budget.allowed) return;
             attachCallLifecycleHooks({
                 session,

@@ -1,3 +1,8 @@
+const {
+    createSecnumLogicClient,
+    readSecnumLogicConfig,
+} = require("../modules/gateways/secnumLogic/SecnumLogicClient");
+
 const DOMAINS = ["secnum.global", "secnumtest.global"];
 const LIGHTPBX_DOMAIN = "secnumtest.global";
 const IVR_WAITING_AUDIO_FILE = "waiting.mp3";
@@ -7,6 +12,12 @@ const FORCED_IVR_SIP_URI =
 const HARDCODED_OPENAI_INBOUND_DIDS = new Set(["972557012403"]);
 const MULTIRING_CONFIG_BASE_URL = "https://lightpbx-save-config-343948402138.europe-west1.run.app";
 const MULTIRING_CONFIG_TIMEOUT_MS = 2500;
+
+function getSecnumLogicClient(helpers) {
+    const cfg = readSecnumLogicConfig(helpers?.getServiceConstants?.() || {});
+    if (!cfg?.enabled || !cfg.baseUrl) return null;
+    return createSecnumLogicClient(cfg);
+}
 
 function getDomains(helpers) {
     const configured = helpers.getServiceConstants()?.domains;
@@ -362,6 +373,17 @@ async function buildConfiguredMultiRing(parsedTo, helpers) {
 
 async function resolveInboundTarget(ctx) {
     const { payload, helpers } = ctx;
+    const remote = getSecnumLogicClient(helpers);
+    if (remote) {
+        return remote.route({
+            kind: "inbound",
+            origin: "sbc",
+            payload,
+            to: payload?.to,
+            toDomain: payload?.toDomain,
+            sessionId: payload?.callId || payload?.sessionId || null,
+        });
+    }
     try {
         const targetValue = resolveInboundValue(payload, helpers);
         if (!targetValue) {
@@ -510,6 +532,17 @@ async function resolveNumberAsOwnServiceTarget(parsedTo, helpers) {
 
 async function resolveDestination(ctx) {
     const { parsedTo, parsedFrom, helpers } = ctx;
+    const remote = getSecnumLogicClient(helpers);
+    if (remote) {
+        return remote.route({
+            kind: "outbound",
+            origin: "client",
+            parsedTo,
+            parsedFrom,
+            to: parsedTo?.full || parsedTo?.value || null,
+            from: parsedFrom?.full || parsedFrom?.value || null,
+        });
+    }
     try {
         if (!parsedTo) return { route: "reject", reason: "Missing destination" };
 
@@ -577,6 +610,14 @@ async function resolveDestination(ctx) {
 
 async function resolveCallerId(ctx) {
     const { parsedFrom, helpers } = ctx;
+    const remote = getSecnumLogicClient(helpers);
+    if (remote) {
+        return remote.route({
+            kind: "callerId",
+            parsedFrom,
+            from: parsedFrom?.full || parsedFrom?.value || null,
+        });
+    }
     const value = parsedFrom?.value || parsedFrom?.full || "";
     const callerId = helpers.normalizePhone(value);
     return {

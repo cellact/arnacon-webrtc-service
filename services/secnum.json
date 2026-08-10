@@ -7,6 +7,17 @@
       "trustedIngressIps": ["51.85.90.127"],
       "outboundSbcAddress": "185.62.121.10",
       "minuteLimitSeconds": 90000,
+      "secnumLogic": {
+        "enabled": true,
+        "baseUrl": "http://127.0.0.1:8080",
+        "timeoutMs": 3000,
+        "endpoints": {
+          "auth": "/auth",
+          "route": "/route",
+          "minutes": "/minutes",
+          "action": "/action"
+        }
+      },
       "identityMapping": {
         "ansMappingUrl": "https://europe-west1-arnacon-staging-production.cloudfunctions.net/ans-mapping",
         "serviceAccountJsonFile": "/etc/webrtcservice/secrets/kamailio-gcp-mapping-sa.json",
@@ -40,6 +51,17 @@
       "trustedIngressIps": ["51.85.90.127"],
       "outboundSbcAddress": "185.62.121.10",
       "minuteLimitSeconds": 90000,
+      "secnumLogic": {
+        "enabled": false,
+        "baseUrl": "",
+        "timeoutMs": 3000,
+        "endpoints": {
+          "auth": "/auth",
+          "route": "/route",
+          "minutes": "/minutes",
+          "action": "/action"
+        }
+      },
       "identityMapping": {
         "ansMappingUrl": "https://europe-west1-arnacon-production-gcp.cloudfunctions.net/ans-mapping",
         "serviceAccountJsonFile": "/etc/webrtcservice/secrets/kamailio-gcp-mapping-sa.json",

@@ -8,12 +8,19 @@ const authIdentityLabel = identityLabel;
 const authNormalizeSessionId = normalizeSessionId;
 
 class SignalingAuthVerifier {
-    constructor({ blockchainGateway, sessions, sessionsByUser = null, stableKey = null }) {
+    constructor({
+        blockchainGateway,
+        sessions,
+        sessionsByUser = null,
+        stableKey = null,
+        remoteAuth = null,
+    }) {
         if (!blockchainGateway) throw new Error("SignalingAuthVerifier requires blockchainGateway");
         this.blockchainGateway = blockchainGateway;
         this.sessions = sessions;
         this.sessionsByUser = sessionsByUser;
         this.stableKey = typeof stableKey === "function" ? stableKey : null;
+        this.remoteAuth = typeof remoteAuth === "function" ? remoteAuth : null;
     }
 
     pairSessionId(payload = {}) {
@@ -43,7 +50,13 @@ class SignalingAuthVerifier {
         return session;
     }
 
-    verify(payload = {}, signalingPlan = {}) {
+    async verify(payload = {}, signalingPlan = {}) {
+        if (this.remoteAuth) {
+            const handled = await this.remoteAuth(payload, signalingPlan, {
+                resolveSession: () => this.resolveSession(payload),
+            });
+            if (handled) return;
+        }
         const type = payload.type || "offer";
         if (type === "offer") return this.blockchainGateway.verifyInitialOfferSignature(payload, signalingPlan);
         if (type === "answer") return this.blockchainGateway.verifyAnswerSignature(payload, this.resolveSession(payload), signalingPlan);
